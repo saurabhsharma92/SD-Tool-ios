@@ -1,0 +1,24 @@
+{
+  "originHash" : "a1a2291d4aed8ea879bda0725ee9ad2a9e3bde8768eae702f7cbdb806d9a13b5",
+  "pins" : [
+    {
+      "identity" : "gzipswift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1024jp/GzipSwift",
+      "state" : {
+        "revision" : "7a7f17761c76a932662ab77028a4329f67d645a4",
+        "version" : "5.2.0"
+      }
+    },
+    {
+      "identity" : "ink",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/JohnSundell/Ink",
+      "state" : {
+        "revision" : "bcc9f219900a62c4210e6db726035d7f03ae757b",
+        "version" : "0.6.0"
+      }
+    }
+  ],
+  "version" : 3
+}

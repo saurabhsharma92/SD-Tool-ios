@@ -11,7 +11,7 @@ import SwiftUI
 struct SDToolApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            DocListView()
         }
     }
 }
