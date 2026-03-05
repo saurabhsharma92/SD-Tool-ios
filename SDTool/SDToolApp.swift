@@ -12,6 +12,7 @@ struct SDToolApp: App {
     var body: some Scene {
         WindowGroup {
             DocListView()
+                .tint(Color("AccentColor"))
         }
     }
 }
