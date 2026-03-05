@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0918C7392F5417250071C84F /* Gzip in Frameworks */ = {isa = PBXBuildFile; productRef = 0918C6972F5415010071C84F /* Gzip */; };
 		0918C73A2F5417250071C84F /* Ink in Frameworks */ = {isa = PBXBuildFile; productRef = 0918C69B2F5415130071C84F /* Ink */; };
+		0918C7C02F5800470071C84F /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = 0918C7BF2F5800470071C84F /* MarkdownUI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,6 +58,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0918C7C02F5800470071C84F /* MarkdownUI in Frameworks */,
 				0918C73A2F5417250071C84F /* Ink in Frameworks */,
 				0918C7392F5417250071C84F /* Gzip in Frameworks */,
 			);
@@ -85,6 +87,7 @@
 				0918C6512F540F610071C84F /* SDTool */,
 				0918C65F2F540F630071C84F /* SDToolTests */,
 				0918C6692F540F630071C84F /* SDToolUITests */,
+				0918C7BE2F5800470071C84F /* Frameworks */,
 				0918C6502F540F610071C84F /* Products */,
 			);
 			sourceTree = "<group>";
@@ -97,6 +100,13 @@
 				0918C6662F540F630071C84F /* SDToolUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		0918C7BE2F5800470071C84F /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -122,6 +132,7 @@
 			packageProductDependencies = (
 				0918C6972F5415010071C84F /* Gzip */,
 				0918C69B2F5415130071C84F /* Ink */,
+				0918C7BF2F5800470071C84F /* MarkdownUI */,
 			);
 			productName = SDTool;
 			productReference = 0918C64F2F540F610071C84F /* SDTool.app */;
@@ -208,6 +219,7 @@
 			packageReferences = (
 				0918C6792F540FEF0071C84F /* XCRemoteSwiftPackageReference "Ink" */,
 				0918C6962F5415000071C84F /* XCRemoteSwiftPackageReference "GzipSwift" */,
+				0918C7BD2F57FFA60071C84F /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 0918C6502F540F610071C84F /* Products */;
@@ -638,6 +650,14 @@
 				minimumVersion = 5.0.0;
 			};
 		};
+		0918C7BD2F57FFA60071C84F /* XCRemoteSwiftPackageReference "swift-markdown-ui" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/gonzalezreal/swift-markdown-ui";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.4.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -650,6 +670,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 0918C6792F540FEF0071C84F /* XCRemoteSwiftPackageReference "Ink" */;
 			productName = Ink;
+		};
+		0918C7BF2F5800470071C84F /* MarkdownUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0918C7BD2F57FFA60071C84F /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
+			productName = MarkdownUI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
