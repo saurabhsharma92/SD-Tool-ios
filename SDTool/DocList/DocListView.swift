@@ -9,28 +9,34 @@ import SwiftUI
 
 struct DocListView: View {
     @StateObject private var store = DocStore()
+    @AppStorage(AppSettings.Key.homeViewStyle) private var homeViewStyle = AppSettings.Default.homeViewStyle
 
     var body: some View {
         NavigationStack {
             Group {
-                if store.docs.isEmpty {
-                    ContentUnavailableView(
-                        "No Docs Found",
-                        systemImage: "doc.text",
-                        description: Text("Add .md files to SourceDocs.bundle in Xcode")
-                    )
+                if homeViewStyle == "tile" {
+                    // ── Tile / Grid layout ─────────────────────────
+                    DocGridView(store: store)
                 } else {
-                    List(store.docs) { doc in
-                        NavigationLink(value: doc) {
-                            DocRowView(doc: doc) {
-                                store.download(doc)
+                    // ── List layout (default) ──────────────────────
+                    if store.docs.isEmpty {
+                        ContentUnavailableView(
+                            "No Docs Found",
+                            systemImage: "doc.text",
+                            description: Text("Add .md files to SourceDocs.bundle in Xcode")
+                        )
+                    } else {
+                        List(store.docs) { doc in
+                            NavigationLink(value: doc) {
+                                DocRowView(doc: doc) {
+                                    store.download(doc)
+                                }
                             }
                         }
+                        .listStyle(.insetGrouped)
                     }
-                    .listStyle(.insetGrouped)
                 }
             }
-            .navigationTitle("Docs")
             .navigationDestination(for: Doc.self) { doc in
                 DocReaderView(doc: doc)
             }

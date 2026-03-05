@@ -4,6 +4,7 @@
 //
 //  Created by Saurabh Sharma on 3/4/26.
 //
+
 import SwiftUI
 
 struct SettingsView: View {
@@ -11,7 +12,6 @@ struct SettingsView: View {
     @AppStorage(AppSettings.Key.colorScheme)   private var colorScheme:   String = AppSettings.Default.colorScheme
     @AppStorage(AppSettings.Key.homeViewStyle) private var homeViewStyle: String = AppSettings.Default.homeViewStyle
 
-    // Read the current bundle version for the About section
     private var appVersion: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
         let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
@@ -24,7 +24,6 @@ struct SettingsView: View {
 
                 // ── Appearance ────────────────────────────────────────
                 Section {
-                    // Color Scheme picker
                     Picker(selection: $colorScheme) {
                         Label("System", systemImage: "circle.lefthalf.filled")
                             .tag("system")
@@ -80,8 +79,15 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Preview
-
 #Preview {
     SettingsView()
 }
+
+
+
+
+
+
+
+
+
