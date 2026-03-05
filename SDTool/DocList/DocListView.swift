@@ -8,33 +8,20 @@
 import SwiftUI
 
 struct DocListView: View {
-    @StateObject private var store = DocStore()
+    @StateObject private var docStore     = DocStore()
+    @StateObject private var sectionStore = DocSectionStore()
     @AppStorage(AppSettings.Key.homeViewStyle) private var homeViewStyle = AppSettings.Default.homeViewStyle
 
     var body: some View {
         NavigationStack {
             Group {
                 if homeViewStyle == "tile" {
-                    // ── Tile / Grid layout ─────────────────────────
-                    DocGridView(store: store)
+                    DocGridView(store: docStore)
                 } else {
-                    // ── List layout (default) ──────────────────────
-                    if store.docs.isEmpty {
-                        ContentUnavailableView(
-                            "No Docs Found",
-                            systemImage: "doc.text",
-                            description: Text("Add .md files to SourceDocs.bundle in Xcode")
-                        )
-                    } else {
-                        List(store.docs) { doc in
-                            NavigationLink(value: doc) {
-                                DocRowView(doc: doc) {
-                                    store.download(doc)
-                                }
-                            }
-                        }
-                        .listStyle(.insetGrouped)
-                    }
+                    SectionedDocListView(
+                        docStore: docStore,
+                        sectionStore: sectionStore
+                    )
                 }
             }
             .navigationDestination(for: Doc.self) { doc in
@@ -51,13 +38,24 @@ struct DocRowView: View {
     let onDownload: () -> Void
 
     var body: some View {
-        HStack {
+        HStack(spacing: 12) {
+
+            // Category icon — matches DocTileView
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(doc.iconColor.opacity(0.12))
+                    .frame(width: 44, height: 44)
+                Image(systemName: doc.icon)
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(doc.iconColor)
+            }
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(doc.name)
                     .font(.headline)
-                Text(doc.url.lastPathComponent)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+//                Text(doc.url.lastPathComponent)
+//                    .font(.caption)
+//                    .foregroundStyle(.secondary)
             }
 
             Spacer()
