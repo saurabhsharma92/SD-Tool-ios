@@ -35,9 +35,22 @@
 		0918C6662F540F630071C84F /* SDToolUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SDToolUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		0918C8012F5A8CB70071C84F /* Exceptions for "SDTool" folder in "SDTool" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 0918C64E2F540F610071C84F /* SDTool */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		0918C6512F540F610071C84F /* SDTool */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				0918C8012F5A8CB70071C84F /* Exceptions for "SDTool" folder in "SDTool" target */,
+			);
 			path = SDTool;
 			sourceTree = "<group>";
 		};
@@ -260,6 +273,7 @@
 /* Begin PBXShellScriptBuildPhase section */
 		0918C6912F54137E0071C84F /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
@@ -448,6 +462,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = SDTool/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "System Design Explorer";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -484,6 +499,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = SDTool/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "System Design Explorer";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
