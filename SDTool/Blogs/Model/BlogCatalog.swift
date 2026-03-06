@@ -2,14 +2,10 @@
 //  BlogCatalog.swift
 //  SDTool
 //
-//  Created by Saurabh Sharma on 3/5/26.
-//
 
 import SwiftUI
 
 enum BlogCatalog {
-
-    // MARK: - All companies
 
     static let companies: [BlogCompany] = [
 
@@ -35,7 +31,7 @@ enum BlogCatalog {
             emoji:      "🎮",
             color:      Color(hex: "#5865F2"),
             category:   "Social & Messaging",
-            rssURL:     "https://discord.com/blog/rss",
+            rssURL:     "https://discord.com/blog/rss.xml",
             websiteURL: "https://discord.com/blog"
         ),
         BlogCompany(
@@ -43,7 +39,7 @@ enum BlogCatalog {
             emoji:      "💼",
             color:      Color(hex: "#0A66C2"),
             category:   "Social & Messaging",
-            rssURL:     "https://engineering.linkedin.com/blog.rss",
+            rssURL:     "https://medium.com/feed/tag/linkedin-engineering",
             websiteURL: "https://engineering.linkedin.com/blog"
         ),
 
@@ -53,7 +49,7 @@ enum BlogCatalog {
             emoji:      "🚗",
             color:      Color(hex: "#000000"),
             category:   "Infrastructure & Platforms",
-            rssURL:     "https://eng.uber.com/feed/",
+            rssURL:     "https://medium.com/feed/uber-engineering",
             websiteURL: "https://eng.uber.com"
         ),
         BlogCompany(
@@ -124,40 +120,67 @@ enum BlogCatalog {
             color:      Color(hex: "#4285F4"),
             category:   "AI & Research",
             rssURL:     "https://blog.google/technology/ai/rss/",
-            websiteURL: "https://ai.googleblog.com"
+            websiteURL: "https://blog.google/technology/ai"
         ),
         BlogCompany(
             name:       "OpenAI Blog",
             emoji:      "🤖",
             color:      Color(hex: "#10A37F"),
             category:   "AI & Research",
-            rssURL:     "https://openai.com/blog/rss/",
+            rssURL:     "https://openai.com/news/rss.xml",
             websiteURL: "https://openai.com/blog"
         ),
         BlogCompany(
-            name:       "Anthropic Blog",
+            name:       "Anthropic Engineering",
             emoji:      "✳️",
             color:      Color(hex: "#CC785C"),
             category:   "AI & Research",
-            rssURL:     "https://www.anthropic.com/rss.xml",
-            websiteURL: "https://www.anthropic.com/blog"
+            rssURL:     nil,
+            websiteURL: "https://www.anthropic.com/engineering",
+            browserOnly: true       // No public RSS — opens Safari directly
+        ),
+        BlogCompany(
+            name:       "Hugging Face Blog",
+            emoji:      "🤗",
+            color:      Color(hex: "#FF9D00"),
+            category:   "AI & Research",
+            rssURL:     "https://huggingface.co/blog/feed.xml",
+            websiteURL: "https://huggingface.co/blog"
+        ),
+        BlogCompany(
+            name:       "DeepMind Blog",
+            emoji:      "🧠",
+            color:      Color(hex: "#4353FF"),
+            category:   "AI & Research",
+            rssURL:     "https://deepmind.google/blog/rss.xml",
+            websiteURL: "https://deepmind.google/blog"
         ),
     ]
 
-    // MARK: - Grouped by category (preserves insertion order)
+    // MARK: - Default category order
+    static let defaultCategoryOrder: [String] = [
+        "Social & Messaging",
+        "Infrastructure & Platforms",
+        "Streaming & Media",
+        "Dev Tools & Cloud",
+        "AI & Research"
+    ]
 
-    static var categorized: [(category: String, companies: [BlogCompany])] {
-        // Use an ordered approach to preserve the category order above
-        var seen: [String: Int] = [:]
-        var result: [(category: String, companies: [BlogCompany])] = []
-
+    // MARK: - Grouped by a given category order
+    static func categorized(orderedBy order: [String]) -> [(category: String, companies: [BlogCompany])] {
+        var map: [String: [BlogCompany]] = [:]
         for company in companies {
-            if let index = seen[company.category] {
-                result[index].companies.append(company)
-            } else {
-                seen[company.category] = result.count
-                result.append((category: company.category, companies: [company]))
+            map[company.category, default: []].append(company)
+        }
+        var result: [(category: String, companies: [BlogCompany])] = []
+        for category in order {
+            if let cats = map[category] {
+                result.append((category: category, companies: cats))
+                map.removeValue(forKey: category)
             }
+        }
+        for (category, cats) in map {
+            result.append((category: category, companies: cats))
         }
         return result
     }
@@ -172,16 +195,9 @@ extension Color {
         Scanner(string: hex).scanHexInt64(&int)
         let r, g, b: UInt64
         switch hex.count {
-        case 6:
-            (r, g, b) = ((int >> 16) & 0xFF, (int >> 8) & 0xFF, int & 0xFF)
-        default:
-            (r, g, b) = (0, 0, 0)
+        case 6: (r, g, b) = ((int >> 16) & 0xFF, (int >> 8) & 0xFF, int & 0xFF)
+        default: (r, g, b) = (0, 0, 0)
         }
-        self.init(
-            red:   Double(r) / 255,
-            green: Double(g) / 255,
-            blue:  Double(b) / 255
-        )
+        self.init(red: Double(r) / 255, green: Double(g) / 255, blue: Double(b) / 255)
     }
 }
-

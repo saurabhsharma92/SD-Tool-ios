@@ -2,8 +2,6 @@
 //  CompanyBlogView.swift
 //  SDTool
 //
-//  Created by Saurabh Sharma on 3/5/26.
-//
 
 import SwiftUI
 
@@ -14,6 +12,7 @@ struct CompanyBlogView: View {
     @State private var isLoading: Bool       = false
     @State private var error:     String?    = nil
 
+    @AppStorage(AppSettings.Key.feedCacheHours) private var feedCacheHours = AppSettings.Default.feedCacheHours
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -28,8 +27,14 @@ struct CompanyBlogView: View {
         }
         .navigationTitle(company.name)
         .navigationBarTitleDisplayMode(.large)
-        .task { await load() }
-        .refreshable { await load(ignoreCache: true) }
+        .task(id: company.id) {
+            // task(id:) automatically cancels and restarts whenever
+            // company.id changes — guaranteed fresh load per company
+            await resetAndLoad()
+        }
+        .refreshable {
+            await load(ignoreCache: true)
+        }
     }
 
     // MARK: - Sub-views
@@ -61,7 +66,6 @@ struct CompanyBlogView: View {
             }
             .buttonStyle(.bordered)
 
-            // Fallback: open website in browser
             Button("Open in Browser") {
                 openURL(company.websiteURL)
             }
@@ -76,43 +80,49 @@ struct CompanyBlogView: View {
             Button {
                 openURL(post.url)
             } label: {
-                BlogPostRow(post: post)
+                BlogPostRow(post: post, company: company)
             }
             .tint(.primary)
         }
         .listStyle(.insetGrouped)
         .overlay(alignment: .top) {
-            // Subtle loading indicator while refreshing in background
             if isLoading {
-                ProgressView()
-                    .padding(.top, 8)
+                ProgressView().padding(.top, 8)
             }
         }
     }
 
-    // MARK: - Data loading
+    // MARK: - Load
+
+    /// Wipes state before loading — called when company changes
+    private func resetAndLoad() async {
+        posts     = []
+        error     = nil
+        isLoading = false
+        await load()
+    }
 
     private func load(ignoreCache: Bool = false) async {
         isLoading = true
         error     = nil
 
-        // Show stale cache immediately while fetching
+        // Show stale cache immediately while refreshing
         if let cached = await BlogFeedService.shared.cachedPosts(for: company) {
             posts = cached
         }
 
         if ignoreCache {
-            await BlogFeedService.shared.clearCache()
+            await BlogFeedService.shared.clearCache(for: company)
         }
 
         do {
-            posts     = try await BlogFeedService.shared.fetchPosts(for: company)
-            error     = nil
+            posts = try await BlogFeedService.shared.fetchPosts(
+                for: company,
+                cacheHours: feedCacheHours
+            )
+            error = nil
         } catch {
-            // Keep showing stale posts if we have them
-            if posts.isEmpty {
-                self.error = error.localizedDescription
-            }
+            if posts.isEmpty { self.error = error.localizedDescription }
         }
 
         isLoading = false

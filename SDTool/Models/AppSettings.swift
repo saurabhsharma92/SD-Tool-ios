@@ -2,29 +2,37 @@
 //  AppSettings.swift
 //  SDTool
 //
+
 import SwiftUI
 
-/// Centralized key constants and defaults for app preferences.
-/// Views read/write preferences directly via @AppStorage(AppSettings.Key.xxx)
 enum AppSettings {
 
     enum Key {
-        static let colorScheme   = "colorScheme"    // "system" | "light" | "dark"
-        static let homeViewStyle = "homeViewStyle"  // "list" | "tile"
+        static let colorScheme       = "colorScheme"
+        static let homeViewStyle     = "homeViewStyle"
+        static let feedCacheHours    = "feedCacheHours"   // Double 0.0 – 24.0
     }
 
     enum Default {
-        static let colorScheme:   String = "system"
-        static let homeViewStyle: String = "list"
+        static let colorScheme:    String = "system"
+        static let homeViewStyle:  String = "list"
+        static let feedCacheHours: Double = 6.0           // 6 hours default
     }
 
-    /// Converts the stored string to SwiftUI's ColorScheme type.
     static func preferredColorScheme(for value: String) -> ColorScheme? {
         switch value {
         case "light": return .light
         case "dark":  return .dark
-        default:      return nil  // nil = follow system
+        default:      return nil
         }
     }
-}
 
+    /// Human-readable label for the cache duration slider value
+    static func cacheLabel(for hours: Double) -> String {
+        if hours < 0.017 { return "Always refresh" }   // < 1 min
+        if hours < 1     { return "\(Int(hours * 60)) min" }
+        if hours == 1    { return "1 hour" }
+        if hours == 24   { return "24 hours" }
+        return "\(Int(hours)) hours"
+    }
+}

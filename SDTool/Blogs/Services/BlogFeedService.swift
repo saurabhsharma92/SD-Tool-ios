@@ -2,81 +2,156 @@
 //  BlogFeedService.swift
 //  SDTool
 //
-//  Created by Saurabh Sharma on 3/5/26.
 
 import Foundation
 
-// MARK: - Cache entry
+// MARK: - Disk structs
+// Defined at file scope (not nested in actor) so Swift 6 never
+// associates them with any actor's isolation domain.
 
-private struct CacheEntry {
-    let posts:     [BlogPost]
-    let fetchedAt: Date
+private struct DiskCacheEntry: Codable, Sendable {
+    var fetchedAt: Date
+    var posts:     [DiskPost]
+}
 
-    /// Cache is fresh for 30 minutes
-    var isStale: Bool {
-        Date().timeIntervalSince(fetchedAt) > 30 * 60
+private struct DiskPost: Codable, Sendable {
+    var title:       String
+    var urlString:   String
+    var publishedAt: Date?
+    var summary:     String?
+}
+
+// MARK: - Free helper functions (nonisolated, no actor context)
+
+private func encodeDiskEntry(_ entry: DiskCacheEntry) -> Data? {
+    try? JSONEncoder().encode(entry)
+}
+
+private func decodeDiskEntry(_ data: Data) -> DiskCacheEntry? {
+    try? JSONDecoder().decode(DiskCacheEntry.self, from: data)
+}
+
+private func makeDiskEntry(posts: [BlogPost], fetchedAt: Date) -> DiskCacheEntry {
+    DiskCacheEntry(
+        fetchedAt: fetchedAt,
+        posts: posts.map {
+            DiskPost(
+                title:       $0.title,
+                urlString:   $0.url.absoluteString,
+                publishedAt: $0.publishedAt,
+                summary:     $0.summary
+            )
+        }
+    )
+}
+
+private func makeBlogPosts(from disk: DiskCacheEntry) -> [BlogPost] {
+    disk.posts.compactMap { dp -> BlogPost? in
+        guard let url = URL(string: dp.urlString) else { return nil }
+        return BlogPost(
+            title:       dp.title,
+            url:         url,
+            publishedAt: dp.publishedAt,
+            summary:     dp.summary
+        )
     }
 }
 
-// MARK: - Service
+private func checkStale(fetchedAt: Date, hours: Double) -> Bool {
+    guard hours > 0 else { return true }
+    return Date().timeIntervalSince(fetchedAt) > hours * 3600
+}
 
-/// Fetches RSS feeds, parses them and caches results in memory.
-/// All network work runs off the main thread via async/await.
+// MARK: - Actor
+
 actor BlogFeedService {
 
     static let shared = BlogFeedService()
 
-    private var cache: [UUID: CacheEntry] = [:]
-    private let parser = RSSParser()
+    // Memory cache: company UUID → (fetchedAt, posts)
+    private var cache: [UUID: (fetchedAt: Date, posts: [BlogPost])] = [:]
+    private let keyPrefix = "rss_cache_"
 
     // MARK: - Public API
 
-    /// Returns posts for a company.
-    /// - Returns cached posts instantly if fresh; fetches otherwise.
-    /// - Throws `RSSParserError` on network or parse failure.
-    func fetchPosts(for company: BlogCompany) async throws -> [BlogPost] {
-
-        // Return fresh cache immediately
-        if let entry = cache[company.id], !entry.isStale {
-            return entry.posts
+    func fetchPosts(for company: BlogCompany, cacheHours: Double) async throws -> [BlogPost] {
+        guard let rssURL = company.rssURL else {
+            throw RSSParserError.invalidURL
         }
 
-        // Fetch from network
-        let data = try await fetchData(from: company.rssURL)
-
-        // Parse on current (background) actor context
-        let posts = try parser.parse(data: data)
-
-        guard !posts.isEmpty else {
-            throw RSSParserError.emptyFeed
+        // Memory cache hit
+        if let hit = cache[company.id], !checkStale(fetchedAt: hit.fetchedAt, hours: cacheHours) {
+            return hit.posts
         }
 
-        // Store in cache
-        cache[company.id] = CacheEntry(posts: posts, fetchedAt: Date())
+        // Disk cache hit — load and decode outside actor via nonisolated helper
+        if let posts = loadDiskCache(for: company.id, cacheHours: cacheHours) {
+            cache[company.id] = (fetchedAt: Date(), posts: posts)
+            return posts
+        }
+
+        // Network fetch
+        let data = try await fetchData(from: rssURL)
+
+        // Parse on detached task — RSSParser is @unchecked Sendable
+        let posts: [BlogPost] = try await Task.detached(priority: .utility) {
+            try RSSParser().parse(data: data)
+        }.value
+
+        guard !posts.isEmpty else { throw RSSParserError.emptyFeed }
+
+        // Store
+        let now = Date()
+        cache[company.id] = (fetchedAt: now, posts: posts)
+        writeDiskCache(posts: posts, fetchedAt: now, for: company.id)
+
         return posts
     }
 
-    /// Returns cached posts without triggering a network fetch.
-    /// Useful for showing stale data while a refresh is in progress.
     func cachedPosts(for company: BlogCompany) -> [BlogPost]? {
-        cache[company.id]?.posts
+        if let hit = cache[company.id] { return hit.posts }
+        return loadDiskCache(for: company.id, cacheHours: .infinity)
     }
 
-    /// Clears the entire in-memory cache.
-    func clearCache() {
-        cache.removeAll()
+    func clearCache(for company: BlogCompany) {
+        cache.removeValue(forKey: company.id)
+        UserDefaults.standard.removeObject(forKey: keyPrefix + company.id.uuidString)
     }
 
-    // MARK: - Private
+    // MARK: - Disk helpers (call free functions — no Codable inside actor)
+
+    private func writeDiskCache(posts: [BlogPost], fetchedAt: Date, for id: UUID) {
+        let entry = makeDiskEntry(posts: posts, fetchedAt: fetchedAt)
+        guard let data = encodeDiskEntry(entry) else { return }
+        UserDefaults.standard.set(data, forKey: keyPrefix + id.uuidString)
+    }
+
+    private func loadDiskCache(for id: UUID, cacheHours: Double) -> [BlogPost]? {
+        guard
+            let data  = UserDefaults.standard.data(forKey: keyPrefix + id.uuidString),
+            let entry = decodeDiskEntry(data),
+            !checkStale(fetchedAt: entry.fetchedAt, hours: cacheHours)
+        else { return nil }
+        return makeBlogPosts(from: entry)
+    }
+
+    // MARK: - Network
 
     private func fetchData(from url: URL) async throws -> Data {
-        var request = URLRequest(url: url, timeoutInterval: 15)
-        // Some feeds reject requests without a User-Agent
-        request.setValue("SDTool/1.0 (iOS RSS Reader)", forHTTPHeaderField: "User-Agent")
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.setValue(
+            "application/rss+xml, application/xml, text/xml, */*;q=0.8",
+            forHTTPHeaderField: "Accept"
+        )
+        req.setValue(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            + "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+            forHTTPHeaderField: "User-Agent"
+        )
+        req.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-
+            let (data, response) = try await URLSession.shared.data(for: req)
             if let http = response as? HTTPURLResponse,
                !(200..<300).contains(http.statusCode) {
                 throw RSSParserError.networkError(
@@ -88,9 +163,8 @@ actor BlogFeedService {
                 )
             }
             return data
-
-        } catch let error as RSSParserError {
-            throw error
+        } catch let e as RSSParserError {
+            throw e
         } catch {
             throw RSSParserError.networkError(error)
         }

@@ -2,35 +2,36 @@
 //  BlogCompany.swift
 //  SDTool
 //
-//  Created by Saurabh Sharma on 3/5/26.
-//
 
 import SwiftUI
 
 struct BlogCompany: Identifiable, Hashable {
     let id: UUID
-    let name: String        // "Netflix Tech Blog"
-    let emoji: String       // fallback when no SF Symbol fits
-    let color: Color        // brand accent color
-    let category: String    // groups companies on the home screen
-    let rssURL: URL
+    let name: String
+    let emoji: String
+    let color: Color
+    let category: String
+    let rssURL: URL?           // nil when browserOnly = true
     let websiteURL: URL
+    let browserOnly: Bool      // true = no RSS, opens website directly
 
     init(
         name: String,
         emoji: String,
         color: Color,
         category: String,
-        rssURL: String,
-        websiteURL: String
+        rssURL: String? = nil,
+        websiteURL: String,
+        browserOnly: Bool = false
     ) {
-        self.id         = UUID()
-        self.name       = name
-        self.emoji      = emoji
-        self.color      = color
-        self.category   = category
-        self.rssURL     = URL(string: rssURL)!
-        self.websiteURL = URL(string: websiteURL)!
+        self.id          = UUID()
+        self.name        = name
+        self.emoji       = emoji
+        self.color       = color
+        self.category    = category
+        self.rssURL      = rssURL.flatMap { URL(string: $0) }
+        self.websiteURL  = URL(string: websiteURL)!
+        self.browserOnly = browserOnly
     }
 
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
