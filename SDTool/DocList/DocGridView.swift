@@ -8,7 +8,8 @@
 import SwiftUI
 
 struct DocGridView: View {
-    @ObservedObject var store: DocStore
+    @ObservedObject var docStore:     DocStore
+    @ObservedObject var sectionStore: DocSectionStore
 
     private let columns = [
         GridItem(.flexible(), spacing: 12),
@@ -17,28 +18,49 @@ struct DocGridView: View {
 
     var body: some View {
         ScrollView {
-            if store.docs.isEmpty {
-                ContentUnavailableView(
-                    "No Docs Found",
-                    systemImage: "doc.text",
-                    description: Text("Add .md files to SourceDocs.bundle in Xcode")
-                )
-                .padding(.top, 60)
-            } else {
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(store.docs) { doc in
-                        NavigationLink(value: doc) {
-                            DocTileView(doc: doc) {
-                                store.download(doc)
-                            }
-                        }
-                        .buttonStyle(.plain)
+            LazyVStack(alignment: .leading, spacing: 24) {
+
+                // ── Named sections ─────────────────────────────────
+                ForEach(sectionStore.sections) { section in
+                    let sectionDocs = sectionStore.docs(in: section, from: docStore.docs)
+                    if !sectionDocs.isEmpty {
+                        sectionBlock(title: "\(section.emoji) \(section.name)",
+                                     docs: sectionDocs)
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+
+                // ── Unsorted ───────────────────────────────────────
+                let unsorted = sectionStore.unsortedDocs(from: docStore.docs)
+                if !unsorted.isEmpty {
+                    sectionBlock(title: "Unsorted", docs: unsorted)
+                }
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
         .background(Color(.systemGroupedBackground))
+    }
+
+    // MARK: - Section block
+
+    @ViewBuilder
+    private func sectionBlock(title: String, docs: [Doc]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 4)
+
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(docs) { doc in
+                    NavigationLink(value: doc) {
+                        DocTileView(doc: doc) {
+                            docStore.download(doc)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
     }
 }

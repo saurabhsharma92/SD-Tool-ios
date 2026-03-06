@@ -16,14 +16,12 @@ struct DocListView: View {
         NavigationStack {
             Group {
                 if homeViewStyle == "tile" {
-                    DocGridView(store: docStore)
+                    DocGridView(docStore: docStore, sectionStore: sectionStore)
                 } else {
-                    SectionedDocListView(
-                        docStore: docStore,
-                        sectionStore: sectionStore
-                    )
+                    SectionedDocListView(docStore: docStore, sectionStore: sectionStore)
                 }
             }
+            .navigationTitle("Article")
             .navigationDestination(for: Doc.self) { doc in
                 DocReaderView(doc: doc)
             }
@@ -39,8 +37,6 @@ struct DocRowView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-
-            // Category icon — matches DocTileView
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
                     .fill(doc.iconColor.opacity(0.12))

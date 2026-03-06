@@ -2,26 +2,32 @@
 //  ContentView.swift
 //  SDTool
 //
-//  Created by Saurabh Sharma on 3/4/26.
-//
+
 import SwiftUI
 
 struct ContentView: View {
     var body: some View {
         TabView {
-            // Tab 1: Home — document library
-            DocListView()
+
+            // Tab 1: Home — dashboard
+            HomeView()
                 .tabItem {
                     Label("Home", systemImage: "house.fill")
                 }
 
-            // Tab 2: Blogs — engineering blog feeds (Phase 6)
+            // Tab 2: Article — doc library (renamed from Home)
+            DocListView()
+                .tabItem {
+                    Label("Article", systemImage: "text.book.closed.fill")
+                }
+
+            // Tab 3: Blogs — engineering blog feeds
             BlogsView()
                 .tabItem {
                     Label("Blogs", systemImage: "newspaper.fill")
                 }
 
-            // Tab 3: Settings — preferences
+            // Tab 4: Settings
             SettingsView()
                 .tabItem {
                     Label("Settings", systemImage: "gear")
