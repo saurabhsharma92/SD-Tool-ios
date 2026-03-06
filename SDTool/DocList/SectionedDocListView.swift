@@ -2,84 +2,73 @@
 //  SectionedDocListView.swift
 //  SDTool
 //
-//  Created by Saurabh Sharma on 3/4/26.
-//
 
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct SectionedDocListView: View {
-    @ObservedObject var docStore: DocStore
+    @ObservedObject var docStore:     DocStore
     @ObservedObject var sectionStore: DocSectionStore
 
-    // Drag state
-    @State private var draggingFilename: String? = nil
-    @State private var showAddSection  = false
-    @State private var newSectionName  = ""
-    @State private var newSectionEmoji = "📁"
+    @State private var showAddSection    = false
+    @State private var newSectionName    = ""
+    @State private var newSectionEmoji   = "📁"
+    @State private var sectionToDelete:  DocSection? = nil
+    @State private var showDeleteConfirm = false
+    @State private var sectionToRename:  DocSection? = nil
+    @State private var renameName        = ""
+    @State private var renameEmoji       = ""
+    @State private var showRenameSheet   = false
 
     var body: some View {
         List {
-            // ── Named sections ─────────────────────────────────────
-            ForEach(sectionStore.sections) { section in
-                let sectionDocs = sectionStore.docs(in: section, from: docStore.docs)
 
+            // ── Pinned Docs ────────────────────────────────────────
+            let pinned = sectionStore.pinnedDocs(from: docStore.docs)
+            if !pinned.isEmpty {
                 Section {
-                    if sectionDocs.isEmpty {
-                        dropTarget(for: section)
-                    } else {
-                        ForEach(sectionDocs) { doc in
-                            NavigationLink(value: doc) {
-                                DocRowView(doc: doc) {
-                                    docStore.download(doc)
-                                }
-                            }
-                            // Long-press to start drag
-                            .onDrag {
-                                draggingFilename = doc.url.lastPathComponent
-                                return NSItemProvider(object: doc.url.lastPathComponent as NSString)
-                            }
-                        }
-                        .onMove { from, to in
-                            sectionStore.moveDocs(in: section.id, from: from, to: to)
-                        }
-
-                        // Drop zone at bottom of non-empty section
-                        dropTarget(for: section)
+                    ForEach(pinned) { doc in
+                        docRow(doc: doc, section: nil)
                     }
                 } header: {
-                    SectionHeader(section: section, sectionStore: sectionStore)
+                    HStack(spacing: 4) {
+                        Text("📌")
+                        Text("Pinned")
+                            .font(.subheadline.bold())
+                    }
                 }
             }
-            .onMove(perform: sectionStore.moveSection)
-            .onDelete(perform: sectionStore.deleteSection)
 
-            // ── Unsorted docs ──────────────────────────────────────
+            // ── Pinned Sections ────────────────────────────────────
+            ForEach(sectionStore.pinnedSections) { section in
+                sectionBlock(section: section)
+            }
+
+            // ── Regular Sections ───────────────────────────────────
+            ForEach(sectionStore.unpinnedSections) { section in
+                sectionBlock(section: section)
+            }
+
+            // ── Unsorted ───────────────────────────────────────────
             let unsorted = sectionStore.unsortedDocs(from: docStore.docs)
             if !unsorted.isEmpty {
                 Section {
                     ForEach(unsorted) { doc in
-                        NavigationLink(value: doc) {
-                            DocRowView(doc: doc) {
-                                docStore.download(doc)
-                            }
-                        }
-                        .onDrag {
-                            draggingFilename = doc.url.lastPathComponent
-                            return NSItemProvider(object: doc.url.lastPathComponent as NSString)
-                        }
+                        docRow(doc: doc, section: nil)
                     }
                 } header: {
                     Text("Unsorted")
-                        .font(.subheadline)
+                        .font(.subheadline.bold())
                         .foregroundStyle(.secondary)
                 }
             }
 
-            // ── Add section button ─────────────────────────────────
+            // ── Add Section ────────────────────────────────────────
             Section {
                 Button {
-                    showAddSection = true
+                    newSectionName  = ""
+                    newSectionEmoji = "📁"
+                    showAddSection  = true
                 } label: {
                     Label("Add Section", systemImage: "plus.circle")
                 }
@@ -92,74 +81,182 @@ struct SectionedDocListView: View {
             Button("Add") {
                 guard !newSectionName.isEmpty else { return }
                 sectionStore.addSection(name: newSectionName, emoji: newSectionEmoji)
-                newSectionName  = ""
-                newSectionEmoji = "📁"
             }
             Button("Cancel", role: .cancel) {}
         }
+        .alert("Rename Section", isPresented: $showRenameSheet) {
+            TextField("Emoji", text: $renameEmoji)
+            TextField("Section name", text: $renameName)
+            Button("Save") {
+                if let section = sectionToRename, !renameName.isEmpty {
+                    sectionStore.rename(section: section, name: renameName, emoji: renameEmoji)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog(
+            "Delete \"\(sectionToDelete?.name ?? "")\"?",
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Keep docs in Unsorted", role: .none) {
+                if let s = sectionToDelete {
+                    sectionStore.delete(section: s, mode: .removeFromSectionOnly,
+                                        allDocs: docStore.docs)
+                }
+            }
+            Button("Delete docs from device permanently", role: .destructive) {
+                if let s = sectionToDelete {
+                    sectionStore.delete(section: s, mode: .deleteFilesFromDevice,
+                                        allDocs: docStore.docs)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("What should happen to the docs inside this section?")
+        }
     }
 
-    // MARK: - Drop target row
+    // MARK: - Section block
 
     @ViewBuilder
-    private func dropTarget(for section: DocSection) -> some View {
-        Color.clear
-            .frame(height: 36)
-            .overlay(
-                Text("Drop here to add to \(section.emoji) \(section.name)")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            )
-            .onDrop(of: [.plainText], isTargeted: nil) { providers in
-                providers.first?.loadObject(ofClass: NSString.self) { item, _ in
-                    guard let filename = item as? String else { return }
-                    DispatchQueue.main.async {
-                        sectionStore.move(filename: filename, toSection: section.id)
-                        draggingFilename = nil
+    private func sectionBlock(section: DocSection) -> some View {
+        let sectionDocs = sectionStore.docs(in: section, from: docStore.docs)
+        Section {
+            ForEach(sectionDocs) { doc in
+                docRow(doc: doc, section: section)
+                    .onDrag {
+                        NSItemProvider(object: doc.url.lastPathComponent as NSString)
                     }
-                }
-                return true
             }
+            .onMove { from, to in
+                sectionStore.moveDocs(in: section, from: from, to: to)
+            }
+
+            // Drop target at bottom of each section
+            Color.clear
+                .frame(height: 4)
+                .listRowBackground(Color.clear)
+                .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in
+                    handleDrop(providers: providers, toSection: section)
+                }
+        } header: {
+            sectionHeader(section: section)
+        }
+        .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in
+            handleDrop(providers: providers, toSection: section)
+        }
     }
-}
 
-// MARK: - Section header with rename support
+    // MARK: - Section header
 
-private struct SectionHeader: View {
-    let section: DocSection
-    @ObservedObject var sectionStore: DocSectionStore
-
-    @State private var showRename = false
-    @State private var editName   = ""
-    @State private var editEmoji  = ""
-
-    var body: some View {
-        HStack {
-            Text("\(section.emoji) \(section.name)")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(.primary)
-
+    private func sectionHeader(section: DocSection) -> some View {
+        HStack(spacing: 4) {
+            Text(section.isPinned ? "📌" : section.emoji)
+            Text(section.name)
+                .font(.subheadline.bold())
             Spacer()
+        }
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button {
+                sectionStore.togglePin(section: section)
+            } label: {
+                Label(
+                    section.isPinned ? "Unpin Section" : "Pin Section",
+                    systemImage: section.isPinned ? "pin.slash" : "pin"
+                )
+            }
 
             Button {
-                editName  = section.name
-                editEmoji = section.emoji
-                showRename = true
+                sectionToRename = section
+                renameName      = section.name
+                renameEmoji     = section.emoji
+                showRenameSheet = true
             } label: {
-                Image(systemName: "pencil")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Label("Rename", systemImage: "pencil")
             }
-            .buttonStyle(.borderless)
-        }
-        .alert("Rename Section", isPresented: $showRename) {
-            TextField("Emoji", text: $editEmoji)
-            TextField("Name", text: $editName)
-            Button("Save") {
-                sectionStore.rename(section: section, name: editName, emoji: editEmoji)
+
+            if !section.isDefault {
+                Divider()
+                Button(role: .destructive) {
+                    sectionToDelete  = section
+                    showDeleteConfirm = true
+                } label: {
+                    Label("Delete Section", systemImage: "trash")
+                }
             }
-            Button("Cancel", role: .cancel) {}
         }
+    }
+
+    // MARK: - Doc row
+
+    private func docRow(doc: Doc, section: DocSection?) -> some View {
+        NavigationLink(value: doc) {
+            DocRowView(doc: doc) { docStore.download(doc) }
+        }
+        .contextMenu {
+            docContextMenu(doc: doc, section: section)
+        }
+        .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in
+            guard let section else { return false }
+            return handleDrop(providers: providers, toSection: section)
+        }
+    }
+
+    // MARK: - Doc context menu
+
+    @ViewBuilder
+    private func docContextMenu(doc: Doc, section: DocSection?) -> some View {
+        Button {
+            sectionStore.togglePinDoc(doc)
+        } label: {
+            Label(
+                sectionStore.isPinned(doc: doc) ? "Unpin" : "Pin",
+                systemImage: sectionStore.isPinned(doc: doc) ? "pin.slash" : "pin.fill"
+            )
+        }
+
+        Menu {
+            ForEach(sectionStore.sections) { s in
+                Button("\(s.emoji) \(s.name)") {
+                    sectionStore.move(doc: doc, toSection: s)
+                }
+            }
+            if section != nil {
+                Divider()
+                Button("Move to Unsorted") {
+                    sectionStore.removeFromSection(doc: doc)
+                }
+            }
+        } label: {
+            Label("Move to Section", systemImage: "folder")
+        }
+
+        if section != nil {
+            Divider()
+            Button(role: .destructive) {
+                sectionStore.removeFromSection(doc: doc)
+            } label: {
+                Label("Remove from Section", systemImage: "minus.circle")
+            }
+        }
+    }
+
+    // MARK: - Drop handler
+
+    @discardableResult
+    private func handleDrop(providers: [NSItemProvider], toSection: DocSection) -> Bool {
+        providers.first?.loadObject(ofClass: NSString.self) { item, _ in
+            guard let filename = item as? String else { return }
+            DispatchQueue.main.async {
+                if let doc = docStore.docs.first(where: {
+                    $0.url.lastPathComponent == filename
+                }) {
+                    sectionStore.move(doc: doc, toSection: toSection)
+                }
+            }
+        }
+        return true
     }
 }

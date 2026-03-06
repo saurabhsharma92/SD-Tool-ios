@@ -2,8 +2,6 @@
 //  DocListView.swift
 //  SDTool
 //
-//  Created by Saurabh Sharma on 2/28/26.
-//
 
 import SwiftUI
 
@@ -22,6 +20,17 @@ struct DocListView: View {
                 }
             }
             .navigationTitle("Article")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        homeViewStyle = homeViewStyle == "tile" ? "list" : "tile"
+                    } label: {
+                        Image(systemName: homeViewStyle == "tile"
+                              ? "list.bullet"
+                              : "square.grid.2x2")
+                    }
+                }
+            }
             .navigationDestination(for: Doc.self) { doc in
                 DocReaderView(doc: doc)
             }
@@ -32,7 +41,7 @@ struct DocListView: View {
 // MARK: - DocRowView
 
 struct DocRowView: View {
-    let doc: Doc
+    let doc:        Doc
     let onDownload: () -> Void
 
     var body: some View {
@@ -49,9 +58,9 @@ struct DocRowView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(doc.name)
                     .font(.headline)
-//                Text(doc.url.lastPathComponent)
-//                    .font(.caption)
-//                    .foregroundStyle(.secondary)
+                Text(doc.url.lastPathComponent)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Spacer()
