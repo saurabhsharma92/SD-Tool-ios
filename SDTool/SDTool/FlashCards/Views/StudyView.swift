@@ -76,7 +76,8 @@ struct StudyView: View {
                     .gesture(
                         DragGesture(minimumDistance: 40)
                             .onEnded { value in
-                                guard isFlipped else { return }
+                                // Works from both question and answer side.
+                                // Never shows the answer when swiping from question.
                                 if value.translation.width > 0 {
                                     markKnown()
                                 } else {
@@ -85,14 +86,11 @@ struct StudyView: View {
                             }
                     )
 
-                Text(isFlipped
-                     ? "Swipe right to mark known  ·  Swipe left to review later"
-                     : "Tap card to reveal answer")
+                Text("Swipe right  ✓ Know it  ·  Swipe left  ↩ Review later")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .padding(.top, 16)
                     .multilineTextAlignment(.center)
-                    .animation(.easeInOut, value: isFlipped)
             }
 
             Spacer()

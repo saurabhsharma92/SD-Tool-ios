@@ -9,14 +9,23 @@ import SwiftUI
 
 struct SplashView: View {
     let onComplete: () -> Void
-    @State private var animationIndex = Int.random(in: 0..<2)
+
+    // Static so it is chosen once per process launch, not per view reinit.
+    // This ensures different animations across launches.
+    private static var chosenIndex: Int = Int.random(in: 0..<4)
 
     var body: some View {
         Group {
-            switch animationIndex {
+            switch SplashView.chosenIndex {
             case 0:  TheArchitectSplash(onComplete: onComplete)
-            default: StackOverflowSplash(onComplete: onComplete)
+            case 1:  StackOverflowSplash(onComplete: onComplete)
+            case 2:  LoadingBarSplash(onComplete: onComplete)
+            default: WhiteboardSplash(onComplete: onComplete)
             }
+        }
+        .onAppear {
+            // Re-randomise for the NEXT launch so it's always different
+            SplashView.chosenIndex = Int.random(in: 0..<4)
         }
     }
 }
@@ -540,4 +549,294 @@ struct CodeLine: Identifiable {
     let text:    String
     var opacity: Double
     let isError: Bool
+}
+
+// MARK: ─────────────────────────────────────────────────────────────────────
+// ANIMATION 3 — "Loading Bar"
+// A classic fake progress bar that gets to 99%… stalls… then rockets to 100%.
+// Tagline: "Almost done. (We were never done.)"
+// Duration: ~4s
+// ─────────────────────────────────────────────────────────────────────────
+
+struct LoadingBarSplash: View {
+    let onComplete: () -> Void
+
+    @State private var progress:     Double = 0.0
+    @State private var statusText:   String = "Initialising neurons..."
+    @State private var showTagline:  Bool   = false
+    @State private var pulse:        Bool   = false
+    @State private var stuckWiggle:  Double = 0
+    @State private var showCheckmark: Bool  = false
+
+    private let stages: [(Double, String, Double)] = [
+        (0.25,  "Downloading common sense...",   0.5),
+        (0.50,  "Compiling best practices...",   0.5),
+        (0.72,  "Reticulating splines...",       0.4),
+        (0.88,  "Untangling spaghetti code...",  0.4),
+        (0.99,  "Almost there...",               0.5),
+    ]
+
+    var body: some View {
+        ZStack {
+            Color(.systemBackground).ignoresSafeArea()
+
+            VStack(spacing: 28) {
+                Spacer()
+
+                // App icon placeholder
+                ZStack {
+                    RoundedRectangle(cornerRadius: 22)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.accentColor.opacity(0.9), Color.accentColor],
+                                startPoint: .topLeading, endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 80, height: 80)
+                        .shadow(color: Color.accentColor.opacity(0.4), radius: 16, x: 0, y: 8)
+                        .scaleEffect(pulse ? 1.04 : 1.0)
+                        .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse)
+
+                    Image(systemName: showCheckmark ? "checkmark" : "cpu")
+                        .font(.system(size: 36, weight: .medium))
+                        .foregroundStyle(.white)
+                        .transition(.scale.combined(with: .opacity))
+                }
+
+                Text("SD Tool")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+
+                // Progress bar
+                VStack(spacing: 10) {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color(.systemFill))
+                                .frame(height: 10)
+
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [Color.accentColor, Color.accentColor.opacity(0.7)],
+                                        startPoint: .leading, endPoint: .trailing
+                                    )
+                                )
+                                .frame(width: geo.size.width * progress, height: 10)
+                                .animation(.easeInOut(duration: 0.5), value: progress)
+                        }
+                    }
+                    .frame(height: 10)
+                    .padding(.horizontal, 40)
+                    .offset(x: stuckWiggle)
+
+                    HStack {
+                        Text(statusText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .animation(.none, value: statusText)
+                        Spacer()
+                        Text("\(Int(progress * 100))%")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .animation(.none, value: progress)
+                    }
+                    .padding(.horizontal, 40)
+                }
+
+                if showTagline {
+                    Text("Almost done. (We were never done.)")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .italic()
+                        .transition(.opacity)
+                }
+
+                Spacer()
+            }
+        }
+        .onAppear { runAnimation() }
+    }
+
+    private func runAnimation() {
+        pulse = true
+        var delay = 0.3
+        for (target, text, dur) in stages {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                withAnimation { progress = target }
+                statusText = text
+            }
+            delay += dur
+        }
+        // Stuck at 99% — wiggle
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            withAnimation(.easeInOut(duration: 0.08).repeatCount(6, autoreverses: true)) {
+                stuckWiggle = 6
+            }
+            showTagline = true
+        }
+        delay += 0.8
+        // Rocket to 100%
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            stuckWiggle = 0
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) {
+                progress = 1.0
+            }
+            statusText = "Ready! ✓"
+            withAnimation { showCheckmark = true }
+        }
+        delay += 0.7
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            onComplete()
+        }
+    }
+}
+
+// MARK: ─────────────────────────────────────────────────────────────────────
+// ANIMATION 4 — "Whiteboard Interview"
+// Words appear on a whiteboard one by one as if being written.
+// Then the interviewer asks "And what's the time complexity?"
+// Engineer writes "O(it works on my machine)"
+// Duration: ~4.2s
+// ─────────────────────────────────────────────────────────────────────────
+
+struct WhiteboardSplash: View {
+    let onComplete: () -> Void
+
+    @State private var visibleLines: Int    = 0
+    @State private var showQuestion: Bool   = false
+    @State private var showAnswer:   Bool   = false
+    @State private var cursorBlink:  Bool   = false
+    @State private var boardShake:   Double = 0
+
+    private let boardLines = [
+        "struct Solution {",
+        "  func solve() {",
+        "    // TODO: figure out later",
+        "    return 42",
+        "  }",
+        "}",
+    ]
+
+    var body: some View {
+        ZStack {
+            Color(red: 0.13, green: 0.16, blue: 0.20).ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                Spacer()
+
+                // Whiteboard
+                ZStack(alignment: .topLeading) {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color(red: 0.94, green: 0.96, blue: 0.95))
+                        .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 8)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(0..<boardLines.count, id: \.self) { i in
+                            if i < visibleLines {
+                                Text(boardLines[i])
+                                    .font(.system(size: 15, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(lineColor(i))
+                                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                            }
+                        }
+                        // Blinking cursor
+                        if visibleLines > 0 && visibleLines < boardLines.count {
+                            Text("_")
+                                .font(.system(size: 15, weight: .bold, design: .monospaced))
+                                .foregroundStyle(Color.green)
+                                .opacity(cursorBlink ? 1 : 0)
+                                .animation(.easeInOut(duration: 0.4).repeatForever(), value: cursorBlink)
+                        }
+                    }
+                    .padding(20)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 220)
+                .padding(.horizontal, 32)
+                .offset(x: boardShake)
+
+                Spacer().frame(height: 32)
+
+                // Interviewer question bubble
+                if showQuestion {
+                    HStack {
+                        Text("🧑‍💼")
+                            .font(.system(size: 28))
+                        Text("\"And what's the time complexity?\"")
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.85))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .padding(.horizontal, 32)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+
+                Spacer().frame(height: 12)
+
+                // Answer
+                if showAnswer {
+                    HStack {
+                        Text("🧑‍💻")
+                            .font(.system(size: 28))
+                        Text("\"O(it works on my machine)\"")
+                            .font(.subheadline.italic())
+                            .foregroundStyle(Color.green.opacity(0.9))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.green.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .padding(.horizontal, 32)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+
+                Spacer()
+            }
+        }
+        .onAppear { runAnimation() }
+    }
+
+    private func lineColor(_ index: Int) -> Color {
+        let line = boardLines[index]
+        if line.contains("struct") || line.contains("func") { return Color(red: 0.4, green: 0.6, blue: 1.0) }
+        if line.contains("//")                              { return Color(red: 0.5, green: 0.7, blue: 0.5) }
+        if line.contains("return")                         { return Color(red: 1.0, green: 0.5, blue: 0.3) }
+        if line.contains("{") || line.contains("}")        { return Color(red: 0.3, green: 0.3, blue: 0.3) }
+        return Color(red: 0.2, green: 0.2, blue: 0.2)
+    }
+
+    private func runAnimation() {
+        cursorBlink = true
+        // Type lines one by one
+        for i in 1...boardLines.count {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.28) {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    visibleLines = i
+                }
+            }
+        }
+        let afterCode = Double(boardLines.count) * 0.28 + 0.3
+
+        // Shake board after code is done
+        DispatchQueue.main.asyncAfter(deadline: .now() + afterCode) {
+            withAnimation(.easeInOut(duration: 0.07).repeatCount(5, autoreverses: true)) {
+                boardShake = 5
+            }
+        }
+        // Interviewer asks
+        DispatchQueue.main.asyncAfter(deadline: .now() + afterCode + 0.5) {
+            withAnimation { showQuestion = true }
+        }
+        // Engineer answers
+        DispatchQueue.main.asyncAfter(deadline: .now() + afterCode + 1.3) {
+            withAnimation { showAnswer = true }
+        }
+        // Done
+        DispatchQueue.main.asyncAfter(deadline: .now() + afterCode + 2.2) {
+            onComplete()
+        }
+    }
 }
