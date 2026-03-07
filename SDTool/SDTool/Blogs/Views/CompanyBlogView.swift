@@ -17,7 +17,10 @@ struct CompanyBlogView: View {
 
     var body: some View {
         Group {
-            if isLoading && posts.isEmpty {
+            // browserOnly companies (Anthropic, LinkedIn etc.) — open Safari immediately
+            if company.browserOnly {
+                browserOnlyView
+            } else if isLoading && posts.isEmpty {
                 loadingView
             } else if let error, posts.isEmpty {
                 errorView(message: error)
@@ -28,12 +31,39 @@ struct CompanyBlogView: View {
         .navigationTitle(company.name)
         .navigationBarTitleDisplayMode(.large)
         .task(id: company.id) {
-            // task(id:) automatically cancels and restarts whenever
-            // company.id changes — guaranteed fresh load per company
+            guard !company.browserOnly else {
+                // Auto-open browser for website-only companies
+                openURL(company.websiteURL)
+                return
+            }
             await resetAndLoad()
         }
         .refreshable {
+            guard !company.browserOnly else { return }
             await load(ignoreCache: true)
+        }
+    }
+
+    // MARK: - Browser only view
+
+    private var browserOnlyView: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            Image(systemName: "safari.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(Color.accentColor)
+            Text("Opens in Browser")
+                .font(.headline)
+            Text("\(company.name) doesn't have an RSS feed. Tap below to read in Safari.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+            Button("Open \(company.name)") {
+                openURL(company.websiteURL)
+            }
+            .buttonStyle(.borderedProminent)
+            Spacer()
         }
     }
 

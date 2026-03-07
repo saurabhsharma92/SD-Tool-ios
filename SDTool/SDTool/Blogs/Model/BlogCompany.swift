@@ -5,40 +5,54 @@
 
 import SwiftUI
 
-struct BlogCompany: Identifiable, Hashable {
-    let id:            UUID
-    let name:          String
-    let emoji:         String
-    let color:         Color
-    let category:      String
-    let rssURL:        URL?
-    let websiteURL:    URL
-    let faviconDomain: String   // always the real brand domain, never medium.com
-    let browserOnly:   Bool
+enum BlogType: String, Codable {
+    case rss     // has RSS feed
+    case website // browser-only, no RSS
+}
+
+struct BlogCompany: Identifiable, Hashable, Codable {
+    var id:            UUID
+    var name:          String
+    var emoji:         String
+    var category:      String
+    var rssURL:        URL?
+    var websiteURL:    URL
+    var faviconDomain: String
+    var blogType:      BlogType
+    var isSubscribed:  Bool      // user has added this blog
+
+    // Derived
+    var browserOnly: Bool { blogType == .website }
+    var color: Color {
+        switch category {
+        case "AI & Research":            return .purple
+        case "Social & Messaging":       return .blue
+        case "Streaming & Media":        return .red
+        case "Infrastructure & Platforms": return .orange
+        case "Dev Tools & Cloud":        return .green
+        default:                         return .indigo
+        }
+    }
 
     init(
         name:          String,
         emoji:         String,
-        color:         Color,
         category:      String,
-        rssURL:        String? = nil,
+        rssURL:        String?,
         websiteURL:    String,
-        faviconDomain: String? = nil,  // explicit override; falls back to websiteURL host
-        browserOnly:   Bool   = false
+        faviconDomain: String,
+        blogType:      BlogType,
+        isSubscribed:  Bool = false
     ) {
-        self.id          = UUID()
-        self.name        = name
-        self.emoji       = emoji
-        self.color       = color
-        self.category    = category
-        self.rssURL      = rssURL.flatMap { URL(string: $0) }
-        self.websiteURL  = URL(string: websiteURL)!
-        self.browserOnly = browserOnly
-        if let explicit = faviconDomain {
-            self.faviconDomain = explicit
-        } else {
-            self.faviconDomain = URL(string: websiteURL)?.host ?? websiteURL
-        }
+        self.id            = UUID()
+        self.name          = name
+        self.emoji         = emoji
+        self.category      = category
+        self.rssURL        = rssURL.flatMap { URL(string: $0) }
+        self.websiteURL    = URL(string: websiteURL)!
+        self.faviconDomain = faviconDomain
+        self.blogType      = blogType
+        self.isSubscribed  = isSubscribed
     }
 
     func hash(into hasher: inout Hasher) { hasher.combine(id) }

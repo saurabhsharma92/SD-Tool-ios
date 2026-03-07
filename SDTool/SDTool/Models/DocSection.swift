@@ -30,28 +30,11 @@ struct DocSection: Identifiable, Codable, Equatable {
     }
 
     // MARK: - Built-in sections (seeded on first launch)
+    // Filenames are empty — articles are grouped by category from the GitHub index.
+    // Users can drag articles into these sections to organise manually.
     static var defaults: [DocSection] {[
-        DocSection(
-            name:         "Basics",
-            emoji:        "🧱",
-            docFilenames: ["back-of-envelope-calculations.md", "latency-numbers.md"],
-            isDefault:    true
-        ),
-        DocSection(
-            name:         "AI / ML",
-            emoji:        "🤖",
-            docFilenames: ["ai-concepts-staff-engineer-guide.md"],
-            isDefault:    true
-        ),
-        DocSection(
-            name:         "System Design",
-            emoji:        "🏗",
-            docFilenames: [
-                "chat-system-design.md",
-                "caching-system-design-reference.md",
-                "drive-system-design.md"
-            ],
-            isDefault:    true
-        ),
+        DocSection(name: "Basics",        emoji: "🧱", isDefault: true),
+        DocSection(name: "AI / ML",       emoji: "🤖", isDefault: true),
+        DocSection(name: "System Design", emoji: "🏗", isDefault: true),
     ]}
 }

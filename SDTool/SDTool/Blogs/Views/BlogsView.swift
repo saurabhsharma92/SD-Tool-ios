@@ -6,147 +6,231 @@
 import SwiftUI
 
 struct BlogsView: View {
-
-    @ObservedObject private var likedStore    = LikedPostsStore.shared
-    @ObservedObject private var categoryStore = BlogCategoryStore.shared
-
-    @State private var isEditing = false
-
-    @Environment(\.openURL) private var openURL
-
-    private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12)
-    ]
+    @StateObject private var blogStore = BlogStore.shared
+    @State private var showSyncAlert  = false
+    @State private var syncMessage    = ""
 
     var body: some View {
         NavigationStack {
             Group {
-                if isEditing {
-                    editView
+                if blogStore.companies.isEmpty && !blogStore.isSyncing {
+                    emptyState
                 } else {
-                    browseView
+                    blogList
                 }
             }
             .navigationTitle("Blogs")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    NavigationLink(destination: LikedPostsView()) {
-                        HStack(spacing: 4) {
-                            Image(systemName: likedStore.likedPosts.isEmpty
-                                  ? "heart" : "heart.fill")
-                                .foregroundStyle(.red)
-                            if !likedStore.likedPosts.isEmpty {
-                                Text("\(likedStore.likedPosts.count)")
-                                    .font(.caption)
-                                    .foregroundStyle(.red)
-                            }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if blogStore.isSyncing {
+                        ProgressView().scaleEffect(0.8)
+                    } else {
+                        Button {
+                            syncBlogs()
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
                         }
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(isEditing ? "Done" : "Edit") {
-                        withAnimation { isEditing.toggle() }
-                    }
-                }
             }
-            .navigationDestination(for: BlogCompany.self) { company in
-                CompanyBlogView(company: company)
-                    .id(company.id)
+            .alert("Sync Complete", isPresented: $showSyncAlert) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(syncMessage)
+            }
+            .alert("Sync Error", isPresented: .constant(blogStore.syncError != nil)) {
+                Button("OK") { blogStore.syncError = nil }
+            } message: {
+                Text(blogStore.syncError ?? "")
             }
         }
     }
 
-    // MARK: - Browse view
+    // MARK: - Blog list
 
-    private var browseView: some View {
+    private var blogList: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 24, pinnedViews: .sectionHeaders) {
-                ForEach(
-                    BlogCatalog.categorized(orderedBy: categoryStore.categoryOrder),
-                    id: \.category
-                ) { group in
-                    Section {
+            LazyVStack(alignment: .leading, spacing: 0) {
+
+                // ── My Blogs ───────────────────────────────────────
+                if !blogStore.subscribed.isEmpty {
+                    myBlogsSectionHeader
+
+                    ForEach(blogStore.subscribedCategories, id: \.self) { category in
+                        categoryHeader(category)
+                        let columns = [GridItem(.flexible(), spacing: 12),
+                                       GridItem(.flexible(), spacing: 12)]
                         LazyVGrid(columns: columns, spacing: 12) {
-                            ForEach(group.companies) { company in
-                                // Browser-only: tap opens Safari directly
-                                if company.browserOnly {
-                                    Button {
-                                        openURL(company.websiteURL)
+                            ForEach(blogStore.subscribed(in: category)) { company in
+                                NavigationLink {
+                                    CompanyBlogView(company: company)
+                                } label: {
+                                    CompanyTileView(company: company)
+                                }
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    // RSS type badge
+                                    Text(company.blogType == .rss ? "RSS Feed" : "Website Only")
+                                    Divider()
+                                    Button(role: .destructive) {
+                                        blogStore.unsubscribe(company)
                                     } label: {
-                                        CompanyTileView(company: company)
+                                        Label("Remove Blog", systemImage: "minus.circle")
                                     }
-                                    .buttonStyle(.plain)
-                                } else {
-                                    NavigationLink(value: company) {
-                                        CompanyTileView(company: company)
-                                    }
-                                    .buttonStyle(.plain)
                                 }
                             }
                         }
                         .padding(.horizontal, 16)
-                    } header: {
-                        categoryHeader(group.category)
+                        .padding(.bottom, 12)
                     }
                 }
+
+                // ── Available ──────────────────────────────────────
+                if !blogStore.available.isEmpty {
+                    availableSectionHeader
+
+                    ForEach(blogStore.availableCategories, id: \.self) { category in
+                        categoryHeader(category)
+                        ForEach(blogStore.available(in: category)) { company in
+                            availableRow(company: company)
+                        }
+                    }
+                    .padding(.bottom, 8)
+                }
             }
-            .padding(.bottom, 24)
+            .padding(.top, 8)
         }
         .background(Color(.systemGroupedBackground))
     }
 
-    // MARK: - Edit view
+    // MARK: - Available row
 
-    private var editView: some View {
-        List {
-            Section {
-                ForEach(categoryStore.categoryOrder, id: \.self) { category in
-                    HStack(spacing: 12) {
-                        Image(systemName: "line.3.horizontal")
-                            .foregroundStyle(.secondary)
-                        Text(category)
-                        Spacer()
-                        Text("\(companyCount(for: category)) companies")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 4)
+    private func availableRow(company: BlogCompany) -> some View {
+        HStack(spacing: 12) {
+            // Favicon
+            AsyncImage(url: faviconURL(company)) { phase in
+                switch phase {
+                case .success(let img):
+                    img.resizable().scaledToFit()
+                        .frame(width: 32, height: 32)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                default:
+                    Text(company.emoji).font(.system(size: 24))
                 }
-                .onMove(perform: categoryStore.move)
-            } footer: {
-                Text("Drag to reorder categories in the Blogs tab.")
+            }
+            .frame(width: 36, height: 36)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(company.name)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                // Type badge
+                Label(
+                    company.blogType == .rss ? "RSS Feed" : "Website",
+                    systemImage: company.blogType == .rss ? "dot.radiowaves.left.and.right" : "safari"
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             }
 
-            Section {
-                Button("Reset to Default Order") {
-                    withAnimation { categoryStore.reset() }
-                }
-                .foregroundStyle(.red)
+            Spacer()
+
+            Button {
+                blogStore.subscribe(company)
+            } label: {
+                Image(systemName: "plus.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(Color.accentColor)
             }
+            .buttonStyle(.borderless)
         }
-        .listStyle(.insetGrouped)
-        .environment(\.editMode, .constant(.active))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
 
-    // MARK: - Helpers
+    // MARK: - Section / category headers
 
-    private func categoryHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.headline)
+    private func sectionHeader(_ title: String, systemImage: String, color: Color) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage).foregroundStyle(color)
+            Text(title).font(.title3.bold())
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 20)
+        .padding(.bottom, 8)
+    }
+
+    private func categoryHeader(_ category: String) -> some View {
+        Text(category)
+            .font(.subheadline.bold())
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
+    }
+
+    // MARK: - My blogs section header
+
+    private var myBlogsSectionHeader: some View {
+        Text("My Blogs")
+            .font(.title3.bold())
             .foregroundStyle(.primary)
             .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(.systemGroupedBackground))
+            .padding(.top, 20)
+            .padding(.bottom, 8)
     }
 
-    private func companyCount(for category: String) -> Int {
-        BlogCatalog.companies(in: category).count
-    }
-}
+    // MARK: - Available section header
 
-#Preview {
-    BlogsView()
+    private var availableSectionHeader: some View {
+        Text("Available")
+            .font(.title3.bold())
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 16)
+            .padding(.top, 20)
+            .padding(.bottom, 8)
+    }
+
+    // MARK: - Empty state
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "newspaper")
+                .font(.system(size: 56))
+                .foregroundStyle(.tertiary)
+            Text("No Blogs Yet")
+                .font(.headline)
+            Text("Tap sync to fetch the blog directory from GitHub.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+            Button("Sync Now") { syncBlogs() }
+                .buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Sync
+
+    private func syncBlogs() {
+        let beforeCount = blogStore.companies.count
+        blogStore.sync()
+        // Brief delay to let sync complete for the message
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            guard !blogStore.isSyncing else { return }
+            let newCount = blogStore.companies.count - beforeCount
+            syncMessage  = newCount > 0
+                ? "\(newCount) new blog\(newCount > 1 ? "s" : "") added."
+                : "Blog directory is up to date."
+            showSyncAlert = true
+        }
+    }
+
+    // MARK: - Favicon URL
+
+    private func faviconURL(_ company: BlogCompany) -> URL? {
+        URL(string: "https://www.google.com/s2/favicons?domain=\(company.faviconDomain)&sz=64")
+    }
 }

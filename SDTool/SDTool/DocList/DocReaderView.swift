@@ -195,10 +195,8 @@ struct MermaidCard: View {
 
 struct DocReaderView: View {
     let doc: Doc
-    @State private var segments:      [MDSegment] = []
-    @State private var isLoading:     Bool        = true
-    @State private var contentHeight: CGFloat     = 1
-    @State private var scrollOffset:  CGFloat     = 0
+    @State private var segments: [MDSegment] = []
+    @State private var isLoading = true
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
@@ -222,30 +220,9 @@ struct DocReaderView: View {
                                 .padding(.horizontal, 16)
                         }
                     }
-
-                    // Measures total content height once laid out
-                    GeometryReader { geo in
-                        Color.clear.onAppear {
-                            contentHeight = geo.frame(in: .named("scrollArea")).maxY
-                        }
-                    }
-                    .frame(height: 0)
                 }
                 .padding(.vertical, 12)
             }
-        }
-        .coordinateSpace(name: "scrollArea")
-        .background(
-            GeometryReader { geo in
-                Color.clear.preference(
-                    key: ScrollOffsetPreferenceKey.self,
-                    value: -geo.frame(in: .named("scrollArea")).minY
-                )
-            }
-        )
-        .onPreferenceChange(ScrollOffsetPreferenceKey.self) { offset in
-            scrollOffset = offset
-            reportProgress(offset: offset)
         }
         .navigationTitle(doc.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -256,28 +233,8 @@ struct DocReaderView: View {
         let readURL = doc.localURL ?? doc.url
         let raw = (try? String(contentsOf: readURL, encoding: .utf8))
             ?? "Failed to load document."
-        segments  = splitSegments(raw)
+        segments = splitSegments(raw)
         isLoading = false
-        // Preserve existing progress on re-open
-        let existing = ReadingProgressStore.shared.articles
-            .first { $0.filename == doc.url.lastPathComponent }?.progress ?? 0
-        ReadingProgressStore.shared.update(doc: doc, progress: existing)
-    }
-
-    private func reportProgress(offset: CGFloat) {
-        guard contentHeight > 1 else { return }
-        let screenH  = UIScreen.main.bounds.height
-        let progress = min((offset + screenH) / contentHeight, 1.0)
-        guard progress > 0.02 else { return }
-        ReadingProgressStore.shared.update(doc: doc, progress: progress)
-    }
-}
-
-// MARK: - Scroll offset preference key
-private struct ScrollOffsetPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 
@@ -286,9 +243,10 @@ private struct ScrollOffsetPreferenceKey: PreferenceKey {
 #Preview {
     NavigationStack {
         DocReaderView(doc: Doc(
-            name: "Preview",
-            url: Bundle.main.url(forResource: "chat_system", withExtension: "md")
-                ?? URL(fileURLWithPath: "")
+            filename: "chat-system-design.md",
+            name:     "Chat System Design",
+            category: "System Design",
+            state:    .remote
         ))
     }
 }

@@ -2,32 +2,50 @@
 //  Doc.swift
 //  SDTool
 //
-//  Created by Saurabh Sharma on 2/28/26.
-//
 
 import Foundation
 import SwiftUI
 
-struct Doc: Identifiable, Hashable {
-    let id: UUID
-    let name: String
-    let url: URL
-    var isDownloaded: Bool
-    var localURL: URL?
+enum DocState: String, Codable {
+    case remote       // known from index, not on device
+    case downloading  // fetch in progress
+    case downloaded   // saved to Documents/articles/
+}
 
-    init(name: String, url: URL, isDownloaded: Bool = false, localURL: URL? = nil) {
-        self.id = UUID()
-        self.name = name
-        self.url = url
-        self.isDownloaded = isDownloaded
-        self.localURL = localURL
+struct Doc: Identifiable, Hashable, Codable {
+    var id:         UUID
+    var filename:   String       // "back-of-envelope-calculations.md"
+    var name:       String       // "Back Of Envelope Calculations"
+    var category:   String       // "Basics"
+    var state:      DocState
+    var remoteSHA:  String?      // GitHub SHA for change detection
+    var localURL:   URL?         // set when downloaded
+
+    // Compatibility shim used by DocReaderView and DocSectionStore
+    var url: URL { localURL ?? URL(string: "about:blank")! }
+    var isDownloaded: Bool { state == .downloaded }
+
+    init(
+        filename:  String,
+        name:      String,
+        category:  String   = "Uncategorized",
+        state:     DocState = .remote,
+        remoteSHA: String?  = nil,
+        localURL:  URL?     = nil
+    ) {
+        self.id        = UUID()
+        self.filename  = filename
+        self.name      = name
+        self.category  = category
+        self.state     = state
+        self.remoteSHA = remoteSHA
+        self.localURL  = localURL
     }
 
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
     static func == (lhs: Doc, rhs: Doc) -> Bool { lhs.id == rhs.id }
 
-    // MARK: - Category icon & color
-    // Shared by DocRowView (list) and DocTileView (grid) so they always match.
+    // MARK: - Icon & color
 
     var icon: String {
         let n = name.lowercased()
@@ -52,21 +70,3 @@ struct Doc: Identifiable, Hashable {
         return .indigo
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

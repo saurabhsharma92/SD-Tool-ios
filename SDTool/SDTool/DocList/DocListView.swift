@@ -13,15 +13,29 @@ struct DocListView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if homeViewStyle == "tile" {
+                if docStore.docs.isEmpty && !docStore.isSyncing {
+                    emptyState
+                } else if homeViewStyle == "tile" {
                     DocGridView(docStore: docStore, sectionStore: sectionStore)
                 } else {
                     SectionedDocListView(docStore: docStore, sectionStore: sectionStore)
                 }
             }
-            .navigationTitle("Article")
+            .navigationTitle("Articles")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .topBarLeading) {
+                    if docStore.isSyncing {
+                        ProgressView().scaleEffect(0.8)
+                    }
+                }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        docStore.sync()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .disabled(docStore.isSyncing)
+
                     Button {
                         homeViewStyle = homeViewStyle == "tile" ? "list" : "tile"
                     } label: {
@@ -34,11 +48,33 @@ struct DocListView: View {
             .navigationDestination(for: Doc.self) { doc in
                 DocReaderView(doc: doc)
             }
+            .alert("Sync Error", isPresented: .constant(docStore.syncError != nil)) {
+                Button("OK") { docStore.syncError = nil }
+            } message: {
+                Text(docStore.syncError ?? "")
+            }
         }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 56))
+                .foregroundStyle(.tertiary)
+            Text("No Articles Yet")
+                .font(.headline)
+            Text("Tap sync to fetch articles from GitHub.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Sync Now") { docStore.sync() }
+                .buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
-// MARK: - DocRowView
+// MARK: - DocRowView (used by SectionedDocListView)
 
 struct DocRowView: View {
     let doc:        Doc
@@ -54,25 +90,16 @@ struct DocRowView: View {
                     .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(doc.iconColor)
             }
-
             VStack(alignment: .leading, spacing: 4) {
-                Text(doc.name)
-                    .font(.headline)
-                Text(doc.url.lastPathComponent)
+                Text(doc.name).font(.headline)
+                Text(doc.filename)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-
             Spacer()
-
-            if doc.isDownloaded {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.title2)
-            } else {
+            if !doc.isDownloaded {
                 Button(action: onDownload) {
-                    Label("Save offline", systemImage: "arrow.down.circle")
-                        .labelStyle(.iconOnly)
+                    Image(systemName: "arrow.down.circle")
                         .font(.title2)
                 }
                 .buttonStyle(.borderless)
@@ -82,6 +109,4 @@ struct DocRowView: View {
     }
 }
 
-#Preview {
-    DocListView()
-}
+#Preview { DocListView() }
