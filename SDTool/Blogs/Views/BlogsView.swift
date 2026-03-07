@@ -143,7 +143,7 @@ struct BlogsView: View {
     }
 
     private func companyCount(for category: String) -> Int {
-        BlogCatalog.companies.filter { $0.category == category }.count
+        BlogCatalog.companies(in: category).count
     }
 }
 

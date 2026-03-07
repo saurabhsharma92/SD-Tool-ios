@@ -39,17 +39,29 @@
 		0918C8012F5A8CB70071C84F /* Exceptions for "SDTool" folder in "SDTool" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				"FlashCards/Bundled/system-design.md",
 				Info.plist,
 			);
 			target = 0918C64E2F540F610071C84F /* SDTool */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		0918C87C2F5B922E0071C84F /* Exceptions for "SDTool" folder in "Compile Sources" phase from "SDTool" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = 0918C64B2F540F610071C84F /* Sources */;
+			membershipExceptions = (
+				"FlashCards/Bundled/system-design.md",
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		0918C6512F540F610071C84F /* SDTool */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				0918C8012F5A8CB70071C84F /* Exceptions for "SDTool" folder in "SDTool" target */,
+				0918C87C2F5B922E0071C84F /* Exceptions for "SDTool" folder in "Compile Sources" phase from "SDTool" target */,
 			);
 			path = SDTool;
 			sourceTree = "<group>";

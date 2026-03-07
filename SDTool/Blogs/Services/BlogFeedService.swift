@@ -139,16 +139,20 @@ actor BlogFeedService {
 
     private func fetchData(from url: URL) async throws -> Data {
         var req = URLRequest(url: url, timeoutInterval: 15)
+        // Full browser-like Accept header — some servers (Uber, etc.) reject
+        // RSS-specific Accept values and return 406
         req.setValue(
-            "application/rss+xml, application/xml, text/xml, */*;q=0.8",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             forHTTPHeaderField: "Accept"
         )
         req.setValue(
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-            + "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            + "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            + "Version/17.0 Safari/605.1.15",
             forHTTPHeaderField: "User-Agent"
         )
         req.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
 
         do {
             let (data, response) = try await URLSession.shared.data(for: req)

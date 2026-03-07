@@ -6,101 +6,130 @@
 import SwiftUI
 
 struct SettingsView: View {
-
     @AppStorage(AppSettings.Key.colorScheme)    private var colorScheme    = AppSettings.Default.colorScheme
-    @AppStorage(AppSettings.Key.homeViewStyle)  private var homeViewStyle  = AppSettings.Default.homeViewStyle
     @AppStorage(AppSettings.Key.feedCacheHours) private var feedCacheHours = AppSettings.Default.feedCacheHours
 
-    private var appVersion: String {
-        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-        return "\(v) (\(b))"
-    }
+    @ObservedObject private var flashStore    = FlashCardStore.shared
+    @ObservedObject private var flashProgress = FlashCardProgress.shared
+
+    @State private var showResetAllConfirm   = false
+    @State private var deckToReset: FlashDeck? = nil
+    @State private var showDeckResetConfirm  = false
 
     var body: some View {
         NavigationStack {
-            List {
+            Form {
 
-                // ── Appearance ────────────────────────────────────────
-                Section {
-                    Picker(selection: $colorScheme) {
-                        Label("System", systemImage: "circle.lefthalf.filled").tag("system")
-                        Label("Light",  systemImage: "sun.max").tag("light")
-                        Label("Dark",   systemImage: "moon").tag("dark")
-                    } label: {
-                        Label("Appearance", systemImage: "paintbrush")
+                // ── Appearance ─────────────────────────────────────
+                Section("Appearance") {
+                    Picker("Theme", selection: $colorScheme) {
+                        Text("System").tag("system")
+                        Text("Light").tag("light")
+                        Text("Dark").tag("dark")
                     }
-                    .pickerStyle(.navigationLink)
-                } header: { Text("Appearance") }
-
-                // ── Home Screen ───────────────────────────────────────
-                Section {
-                    Picker(selection: $homeViewStyle) {
-                        Label("List", systemImage: "list.bullet").tag("list")
-                        Label("Tile", systemImage: "square.grid.2x2").tag("tile")
-                    } label: {
-                        Label("Home Layout", systemImage: "square.grid.2x2")
-                    }
-                    .pickerStyle(.navigationLink)
-                } header: {
-                    Text("Home Screen")
-                } footer: {
-                    Text("Choose how documents are displayed on the home screen.")
+                    .pickerStyle(.segmented)
                 }
 
-                // ── Blogs ─────────────────────────────────────────────
+                // ── Blogs ──────────────────────────────────────────
                 Section {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Label("Blog Refresh", systemImage: "arrow.clockwise")
+                            Text("Blog Refresh")
                             Spacer()
                             Text(AppSettings.cacheLabel(for: feedCacheHours))
-                                .font(.subheadline)
                                 .foregroundStyle(.secondary)
-                                .monospacedDigit()
+                                .font(.subheadline)
                         }
-
-                        Slider(
-                            value: $feedCacheHours,
-                            in: 0...24,
-                            step: 0.5
-                        )
-                        .tint(Color("AccentColor"))
-
-                        HStack {
-                            Text("Always")
-                            Spacer()
-                            Text("24 hrs")
-                        }
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        Slider(value: $feedCacheHours, in: 0...24, step: 0.5)
+                            .tint(.accentColor)
                     }
                     .padding(.vertical, 4)
                 } header: {
                     Text("Blogs")
                 } footer: {
-                    Text("How often to fetch new posts. Set to 0 to refresh every time you open a company.")
+                    Text("How often to refresh blog feeds. Set to 0 to always fetch the latest.")
                 }
 
-                // ── About ─────────────────────────────────────────────
-                Section(header: Text("About")) {
-                    LabeledContent("Version", value: appVersion)
-                    LabeledContent("Documents") {
-                        Text("\(documentCount) bundled")
-                            .foregroundStyle(.secondary)
+                // ── Flash Cards ────────────────────────────────────
+                Section {
+                    ForEach(flashStore.decks) { deck in
+                        Button {
+                            deckToReset         = deck
+                            showDeckResetConfirm = true
+                        } label: {
+                            HStack {
+                                Text(deck.emoji)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Reset \(deck.displayName)")
+                                        .foregroundStyle(.primary)
+                                    let known = deck.knownCount(progress: flashProgress)
+                                    let total = deck.totalCards
+                                    Text("\(known) of \(total) cards known")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if deck.knownCount(progress: flashProgress) > 0 {
+                                    Image(systemName: "arrow.counterclockwise")
+                                        .foregroundStyle(.orange)
+                                        .font(.caption)
+                                }
+                            }
+                        }
+                        .disabled(deck.knownCount(progress: flashProgress) == 0)
                     }
+
+                    Button(role: .destructive) {
+                        showResetAllConfirm = true
+                    } label: {
+                        Label("Reset All Progress", systemImage: "arrow.counterclockwise")
+                    }
+                    .disabled(flashProgress.knownCardKeys.isEmpty)
+
+                } header: {
+                    Text("Flash Cards")
+                } footer: {
+                    Text("Resetting progress marks all cards as unlearned for that deck.")
+                }
+
+                // ── About ──────────────────────────────────────────
+                Section("About") {
+                    LabeledContent("Version", value: appVersion)
+                    LabeledContent("Build",   value: buildNumber)
                 }
             }
             .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.large)
+            .confirmationDialog(
+                "Reset \"\(deckToReset?.displayName ?? "")\"?",
+                isPresented: $showDeckResetConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Reset Progress", role: .destructive) {
+                    if let deck = deckToReset { flashProgress.reset(deck: deck) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("All cards in this deck will be marked as unlearned.")
+            }
+            .confirmationDialog(
+                "Reset All Flash Card Progress?",
+                isPresented: $showResetAllConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Reset All", role: .destructive) { flashProgress.resetAll() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("All cards across every deck will be marked as unlearned.")
+            }
         }
     }
 
-    private var documentCount: Int {
-        Bundle.main.urls(forResourcesWithExtension: "md", subdirectory: nil)?.count ?? 0
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+    private var buildNumber: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
     }
 }
 
-#Preview {
-    SettingsView()
-}
+#Preview { SettingsView() }

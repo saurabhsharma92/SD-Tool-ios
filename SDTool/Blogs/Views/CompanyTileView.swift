@@ -8,9 +8,10 @@ import SwiftUI
 struct CompanyTileView: View {
     let company: BlogCompany
 
+    // Always use faviconDomain — never websiteURL — so Medium-hosted
+    // blogs (Airbnb, Lyft, Netflix etc.) show the brand logo not Medium's
     private var faviconURL: URL? {
-        let domain = company.websiteURL.host ?? ""
-        return URL(string: "https://www.google.com/s2/favicons?domain=\(domain)&sz=64")
+        URL(string: "https://www.google.com/s2/favicons?domain=\(company.faviconDomain)&sz=64")
     }
 
     var body: some View {
