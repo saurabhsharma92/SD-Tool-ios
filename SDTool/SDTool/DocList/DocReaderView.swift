@@ -195,8 +195,12 @@ struct MermaidCard: View {
 
 struct DocReaderView: View {
     let doc: Doc
-    @State private var segments: [MDSegment] = []
-    @State private var isLoading = true
+    @State private var segments:  [MDSegment] = []
+    @State private var isLoading: Bool        = true
+    @State private var viewportHeight: CGFloat = 0
+    @State private var hasRecordedOpen: Bool   = false
+
+    private let progressStore = ReadingProgressStore.shared
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
@@ -230,11 +234,24 @@ struct DocReaderView: View {
     }
 
     private func loadContent() {
-        let readURL = doc.localURL ?? doc.url
-        let raw = (try? String(contentsOf: readURL, encoding: .utf8))
+        // Use DocSyncService as source of truth for local file path
+        let localURL = DocSyncService.shared.localURL(for: doc.filename)
+        guard FileManager.default.fileExists(atPath: localURL.path) else {
+            segments  = splitSegments("**This article has not been downloaded yet.**\n\nGo to the Article tab and tap the download button.")
+            isLoading = false
+            return
+        }
+        let raw = (try? String(contentsOf: localURL, encoding: .utf8))
             ?? "Failed to load document."
-        segments = splitSegments(raw)
+        segments  = splitSegments(raw)
         isLoading = false
+
+        // Record article open as activity (once per view session)
+        if !hasRecordedOpen {
+            hasRecordedOpen = true
+            ActivityStore.shared.recordArticleRead(filename: doc.filename)
+            progressStore.update(doc: doc, progress: 0.01)
+        }
     }
 }
 

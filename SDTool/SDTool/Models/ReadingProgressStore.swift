@@ -39,7 +39,9 @@ class ReadingProgressStore: ObservableObject {
 
     /// Call from DocReaderView whenever scroll position changes.
     func update(doc: Doc, progress: Double) {
-        let filename = doc.url.lastPathComponent
+        let filename = doc.filename
+        // Record daily activity
+        ActivityStore.shared.recordArticleRead(filename: filename)
         if let i = articles.firstIndex(where: { $0.filename == filename }) {
             articles[i].progress = progress
             articles[i].lastRead = Date()

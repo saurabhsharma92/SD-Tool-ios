@@ -32,7 +32,11 @@ struct CompanyBlogView: View {
         .navigationBarTitleDisplayMode(.large)
         .task(id: company.id) {
             guard !company.browserOnly else {
-                // Auto-open browser for website-only companies
+                // Record activity then open browser
+                ActivityStore.shared.recordBlogRead(
+                    companyName: company.name,
+                    postTitle:   company.name
+                )
                 openURL(company.websiteURL)
                 return
             }
@@ -108,6 +112,10 @@ struct CompanyBlogView: View {
     private var postList: some View {
         List(posts) { post in
             Button {
+                ActivityStore.shared.recordBlogRead(
+                    companyName: company.name,
+                    postTitle:   post.title
+                )
                 openURL(post.url)
             } label: {
                 BlogPostRow(post: post, company: company)

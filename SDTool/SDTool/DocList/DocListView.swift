@@ -15,10 +15,21 @@ struct DocListView: View {
             Group {
                 if docStore.docs.isEmpty && !docStore.isSyncing {
                     emptyState
-                } else if homeViewStyle == "tile" {
-                    DocGridView(docStore: docStore, sectionStore: sectionStore)
                 } else {
-                    SectionedDocListView(docStore: docStore, sectionStore: sectionStore)
+                    VStack(spacing: 0) {
+                        // ── Activity dial ──────────────────────────
+                        ActivityDialView(accentColor: .indigo)
+                            .padding(.top, 12)
+                        ActivityDialLegend(accentColor: .indigo)
+                            .padding(.top, 6)
+                            .padding(.bottom, 8)
+
+                        if homeViewStyle == "tile" {
+                            DocGridView(docStore: docStore, sectionStore: sectionStore)
+                        } else {
+                            SectionedDocListView(docStore: docStore, sectionStore: sectionStore)
+                        }
+                    }
                 }
             }
             .navigationTitle("Articles")

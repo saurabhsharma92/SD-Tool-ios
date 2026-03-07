@@ -53,6 +53,13 @@ struct BlogsView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
 
+                // ── Activity dial ──────────────────────────────────
+                ActivityDialView(accentColor: .orange)
+                    .padding(.top, 12)
+                ActivityDialLegend(accentColor: .orange)
+                    .padding(.top, 6)
+                    .padding(.bottom, 4)
+
                 // ── My Blogs ───────────────────────────────────────
                 if !blogStore.subscribed.isEmpty {
                     myBlogsSectionHeader

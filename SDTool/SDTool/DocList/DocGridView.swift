@@ -149,6 +149,9 @@ struct DocGridView: View {
             }
             .buttonStyle(.plain)
             .contextMenu { downloadedTileMenu(doc: doc, section: section) }
+            .simultaneousGesture(TapGesture().onEnded {
+                ActivityStore.shared.recordArticleRead(filename: doc.filename)
+            })
         }
     }
 

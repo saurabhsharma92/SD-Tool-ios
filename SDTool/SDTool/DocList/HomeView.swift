@@ -9,6 +9,8 @@ struct HomeView: View {
 
     @ObservedObject private var progressStore = ReadingProgressStore.shared
     @ObservedObject private var likedStore    = LikedPostsStore.shared
+    @ObservedObject private var blogStore     = BlogStore.shared
+    @ObservedObject private var dailyPick     = DailyPickStore.shared
     @StateObject   private var docStore       = DocStore()
 
     @Environment(\.openURL) private var openURL
@@ -20,6 +22,23 @@ struct HomeView: View {
 
                     // ── Stats row ──────────────────────────────────
                     statsRow
+
+                    // ── Daily picks ─────────────────────────────────
+                    if dailyPick.articlePick != nil || dailyPick.blogPick != nil {
+                        sectionHeader("Today's Picks", icon: "star.fill", color: .yellow)
+                        VStack(spacing: 10) {
+                            if let doc = dailyPick.articlePick {
+                                NavigationLink(value: doc) {
+                                    DailyArticlePickCard(doc: doc)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            if let blogPost = dailyPick.blogPick {
+                                DailyBlogPickCard(pick: blogPost)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                    }
 
                     // ── In Progress ────────────────────────────────
                     if !progressStore.inProgress.isEmpty {
@@ -53,6 +72,37 @@ struct HomeView: View {
             .navigationBarTitleDisplayMode(.large)
             .navigationDestination(for: Doc.self) { doc in
                 DocReaderView(doc: doc)
+            }
+            .onAppear {
+                dailyPick.refreshArticle(docs: docStore.docs)
+                loadBlogPickIfNeeded()
+            }
+            .onChange(of: docStore.docs.count) {
+                dailyPick.refreshArticle(docs: docStore.docs)
+            }
+        }
+    }
+
+    // MARK: - Blog pick loader
+
+    private func loadBlogPickIfNeeded() {
+        // Only fetch if no blog pick saved for today
+        guard dailyPick.blogPick == nil else { return }
+        let subscribed = blogStore.subscribed.filter { !$0.browserOnly }
+        guard !subscribed.isEmpty else { return }
+
+        Task {
+            var allPosts: [(company: BlogCompany, posts: [BlogPost])] = []
+            for company in subscribed.prefix(6) { // check up to 6 companies for speed
+                if let posts = await BlogFeedService.shared.cachedPosts(for: company),
+                   !posts.isEmpty {
+                    allPosts.append((company: company, posts: posts))
+                }
+            }
+            await MainActor.run {
+                if !allPosts.isEmpty {
+                    dailyPick.refreshBlogPost(allPosts: allPosts)
+                }
             }
         }
     }
@@ -106,7 +156,7 @@ struct HomeView: View {
             HStack(spacing: 12) {
                 ForEach(entries) { entry in
                     let doc = docStore.docs.first {
-                        $0.url.lastPathComponent == entry.filename
+                        $0.filename == entry.filename
                     }
                     if let doc {
                         NavigationLink(value: doc) {
@@ -302,6 +352,112 @@ private struct LikedBlogRow: View {
         }
         .padding(.vertical, 12)
     }
+}
+
+// MARK: - Daily Article Pick Card
+
+struct DailyArticlePickCard: View {
+    let doc: Doc
+
+    var body: some View {
+        pickCard(
+            emoji:    articleEmoji(doc),
+            title:    doc.name,
+            subtitle: doc.category,
+            badge:    "Article",
+            color:    doc.iconColor
+        )
+    }
+
+    private func articleEmoji(_ doc: Doc) -> String {
+        switch doc.icon {
+        case "brain":                   return "🧠"
+        case "message.fill":            return "💬"
+        case "bolt.fill":               return "⚡️"
+        case "externaldrive.fill":      return "💾"
+        case "network":                 return "🌐"
+        case "cylinder.split.1x2.fill": return "🗄️"
+        case "cpu":                     return "⚙️"
+        default:                        return "📄"
+        }
+    }
+}
+
+// MARK: - Daily Blog Post Pick Card
+
+struct DailyBlogPickCard: View {
+    let pick: DailyBlogPick
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        Button {
+            // Record as blog read then open the specific post
+            ActivityStore.shared.recordBlogRead(
+                companyName: pick.companyName,
+                postTitle:   pick.postTitle
+            )
+            if let url = pick.postURL { openURL(url) }
+        } label: {
+            pickCard(
+                emoji:    pick.companyEmoji,
+                title:    pick.postTitle,
+                subtitle: pick.companyName + " · " + pick.category,
+                badge:    "Blog Post",
+                color:    .orange
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Shared pick card layout
+
+private func pickCard(
+    emoji:    String,
+    title:    String,
+    subtitle: String,
+    badge:    String,
+    color:    Color
+) -> some View {
+    HStack(spacing: 14) {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14)
+                .fill(color.opacity(0.15))
+                .frame(width: 56, height: 56)
+            Text(emoji)
+                .font(.system(size: 28))
+        }
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(badge.uppercased())
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(color)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(color.opacity(0.12))
+                    .clipShape(Capsule())
+                Text("of the day")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            Text(title)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        Spacer()
+        Image(systemName: "chevron.right")
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+    }
+    .padding(14)
+    .background(Color(.secondarySystemGroupedBackground))
+    .clipShape(RoundedRectangle(cornerRadius: 16))
 }
 
 #Preview {
