@@ -7,5 +7,16 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSFaceIDUsageDescription</key>
+	<string>SDTool uses Face ID to protect your study data</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+            <array>
+                <string>com.googleusercontent.apps.1056624256196-vq8ckg489a0dnad7i2og2beitc7puesm</string>
+            </array>
+		</dict>
+	</array>
 </dict>
 </plist>

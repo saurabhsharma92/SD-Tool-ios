@@ -79,6 +79,20 @@ class ActivityStore: ObservableObject {
         return days.first(where: { $0.id == key })
     }
 
+    // MARK: - Summary stats for AccountView
+
+    var activeDayCount: Int {
+        days.filter { $0.hasActivity }.count
+    }
+
+    var totalArticlesRead: Int {
+        days.reduce(0) { $0 + $1.articleReads.count }
+    }
+
+    var totalBlogsRead: Int {
+        days.reduce(0) { $0 + $1.blogReads.count }
+    }
+
     // MARK: - Helpers
 
     private func todayKey() -> String {

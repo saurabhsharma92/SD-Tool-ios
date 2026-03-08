@@ -6,12 +6,15 @@
 import SwiftUI
 
 struct BlogsView: View {
-    @StateObject private var blogStore = BlogStore.shared
-    @State private var showSyncAlert  = false
-    @State private var syncMessage    = ""
+    @StateObject  private var blogStore = BlogStore.shared
+    @ObservedObject private var router  = NavigationRouter.shared
+
+    @State private var navPath       = NavigationPath()
+    @State private var showSyncAlert = false
+    @State private var syncMessage   = ""
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navPath) {
             Group {
                 if blogStore.companies.isEmpty && !blogStore.isSyncing {
                     emptyState
@@ -38,6 +41,11 @@ struct BlogsView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(syncMessage)
+            }
+            .onChange(of: router.blogDestination) { dest in
+                guard let company = dest else { return }
+                navPath.append(company)
+                router.blogDestination = nil   // consume
             }
             .alert("Sync Error", isPresented: .constant(blogStore.syncError != nil)) {
                 Button("OK") { blogStore.syncError = nil }

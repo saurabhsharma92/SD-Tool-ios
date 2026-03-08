@@ -2,8 +2,6 @@
 //  LikedPostsStore.swift
 //  SDTool
 //
-//  Created by Saurabh Sharma on 3/5/26.
-//
 
 import Foundation
 import Combine
@@ -79,6 +77,11 @@ class LikedPostsStore: ObservableObject {
     }
 
     func unlikeAll() {
+        likedPosts.removeAll()
+        save()
+    }
+
+    func clearAll() {
         likedPosts.removeAll()
         save()
     }

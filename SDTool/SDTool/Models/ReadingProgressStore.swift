@@ -76,6 +76,8 @@ class ReadingProgressStore: ObservableObject {
         articles.filter { $0.progress > 0 }
     }
 
+    func clearAll() { clear() }
+
     func clear() {
         articles.removeAll()
         save()

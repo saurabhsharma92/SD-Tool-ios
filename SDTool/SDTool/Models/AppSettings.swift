@@ -11,12 +11,14 @@ enum AppSettings {
         static let colorScheme       = "colorScheme"
         static let homeViewStyle     = "homeViewStyle"
         static let feedCacheHours    = "feedCacheHours"   // Double 0.0 – 24.0
+        static let faceIDEnabled     = "faceIDEnabled"
     }
 
     enum Default {
         static let colorScheme:    String = "system"
         static let homeViewStyle:  String = "list"
         static let feedCacheHours: Double = 6.0           // 6 hours default
+        static let faceIDEnabled:  Bool   = true
     }
 
     static func preferredColorScheme(for value: String) -> ColorScheme? {

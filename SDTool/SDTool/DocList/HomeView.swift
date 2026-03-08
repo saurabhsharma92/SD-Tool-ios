@@ -12,6 +12,7 @@ struct HomeView: View {
     @ObservedObject private var blogStore     = BlogStore.shared
     @ObservedObject private var dailyPick     = DailyPickStore.shared
     @StateObject   private var docStore       = DocStore()
+    @ObservedObject private var router        = NavigationRouter.shared
 
     @Environment(\.openURL) private var openURL
 
@@ -28,7 +29,7 @@ struct HomeView: View {
                         sectionHeader("Today's Picks", icon: "star.fill", color: .yellow)
                         VStack(spacing: 10) {
                             if let doc = dailyPick.articlePick {
-                                NavigationLink(value: doc) {
+                                Button { router.openArticle(doc) } label: {
                                     DailyArticlePickCard(doc: doc)
                                 }
                                 .buttonStyle(.plain)
@@ -159,7 +160,7 @@ struct HomeView: View {
                         $0.filename == entry.filename
                     }
                     if let doc {
-                        NavigationLink(value: doc) {
+                        Button { router.openArticle(doc) } label: {
                             ArticleProgressCard(entry: entry, doc: doc)
                         }
                         .buttonStyle(.plain)
@@ -198,7 +199,16 @@ struct HomeView: View {
             let posts = Array(likedStore.likedPosts.prefix(5))
             ForEach(posts) { liked in
                 Button {
-                    if let url = liked.url { openURL(url) }
+                    // Find the company for this liked post and deep-link to Blogs tab
+                    let company = blogStore.companies.first {
+                        $0.name == liked.companyName
+                    }
+                    if let company, !company.browserOnly {
+                        router.blogDestination = company
+                        router.selectedTab = 2
+                    } else if let url = liked.url {
+                        openURL(url)
+                    }
                 } label: {
                     LikedBlogRow(liked: liked)
                         .padding(.horizontal, 16)
