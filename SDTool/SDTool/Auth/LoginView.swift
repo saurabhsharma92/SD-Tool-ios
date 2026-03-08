@@ -72,6 +72,24 @@ struct LoginView: View {
                             .scaleEffect(1.2)
                             .frame(height: 50)
                     } else {
+                        #if DEBUG
+                        Button {
+                            Task { await authStore.signInAnonymously() }
+                        } label: {
+                            Text("⚡ Skip Sign-In (Debug)")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.yellow.opacity(0.8))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 44)
+                                .background(Color.yellow.opacity(0.1))
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(Color.yellow.opacity(0.3), lineWidth: 1)
+                                )
+                        }
+                        #endif
+
                         // Sign in with Google
                         Button {
                             Task { await authStore.signInWithGoogle() }
@@ -112,7 +130,8 @@ struct LoginView: View {
                     .foregroundStyle(.white.opacity(0.3))
                     .multilineTextAlignment(.center)
                     .padding(.top, 20)
-                    .padding(.bottom, 40)
+
+                Spacer().frame(height: 40)
             }
         }
     }

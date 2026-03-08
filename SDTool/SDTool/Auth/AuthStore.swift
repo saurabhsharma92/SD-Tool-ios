@@ -7,6 +7,7 @@ import SwiftUI
 import FirebaseAuth
 import Combine
 
+
 final class AuthStore: ObservableObject {
     static let shared: AuthStore = AuthStore()
 
@@ -25,6 +26,12 @@ final class AuthStore: ObservableObject {
                 self?.isLoading = false
             }
         }
+
+        // Safety timeout — if listener doesn't fire in 4s (e.g. no network), unblock UI
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            guard let self, self.isLoading else { return }
+            self.isLoading = false
+        }
     }
 
     deinit {
@@ -35,10 +42,24 @@ final class AuthStore: ObservableObject {
 
     // MARK: - Computed
 
-    var isSignedIn: Bool { user != nil }
+    var isSignedIn: Bool {
+        #if DEBUG
+        return user != nil || debugBypass
+        #else
+        return user != nil
+        #endif
+    }
+
+    #if DEBUG
+    @Published var debugBypass: Bool = false
+    #endif
 
     var displayName: String {
-        user?.displayName ?? user?.email?.components(separatedBy: "@").first ?? "User"
+        #if DEBUG
+        if debugBypass { return "Debug User" }
+        if user?.isAnonymous == true { return "Debug User" }
+        #endif
+        return user?.displayName ?? user?.email?.components(separatedBy: "@").first ?? "User"
     }
 
     var email: String {
@@ -47,6 +68,10 @@ final class AuthStore: ObservableObject {
 
     var photoURL: URL? {
         user?.photoURL
+    }
+
+    var isAnonymous: Bool {
+        user?.isAnonymous ?? false
     }
 
     var initials: String {
@@ -92,6 +117,24 @@ final class AuthStore: ObservableObject {
             isLoading    = false
         }
     }
+
+    // MARK: - Anonymous (debug only)
+
+    #if DEBUG
+    @MainActor func signInAnonymously() async {
+        isLoading    = true
+        errorMessage = nil
+        do {
+            let result = try await Auth.auth().signInAnonymously()
+            user      = result.user
+            isLoading = false
+        } catch {
+            // Firebase anonymous failed (e.g. not enabled) — use local bypass
+            debugBypass = true
+            isLoading   = false
+        }
+    }
+    #endif
 
     // MARK: - Sign Out
 

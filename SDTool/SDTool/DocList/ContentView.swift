@@ -7,8 +7,6 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var router = NavigationRouter.shared
-    @AppStorage(AppSettings.Key.colorScheme) private var colorScheme = AppSettings.Default.colorScheme
-
     var body: some View {
         TabView(selection: $router.selectedTab) {
             HomeView()
@@ -31,7 +29,6 @@ struct ContentView: View {
                 .tabItem { Label("Settings", systemImage: "gear") }
                 .tag(4)
         }
-        .preferredColorScheme(AppSettings.preferredColorScheme(for: colorScheme))
     }
 }
 

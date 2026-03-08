@@ -11,6 +11,7 @@ import FirebaseAuth
 struct SettingsView: View {
     @AppStorage(AppSettings.Key.colorScheme)   private var colorScheme   = AppSettings.Default.colorScheme
     @AppStorage(AppSettings.Key.faceIDEnabled) private var faceIDEnabled = AppSettings.Default.faceIDEnabled
+    @AppStorage(AppSettings.Key.appFont)       private var appFont       = AppSettings.Default.appFont
     @ObservedObject private var biometric = BiometricService.shared
 
     private var appVersion: String {
@@ -66,6 +67,12 @@ struct SettingsView: View {
                         Text("Dark").tag("dark")
                     }
                     .pickerStyle(.segmented)
+
+                    Picker("Font", selection: $appFont) {
+                        ForEach(AppSettings.AppFont.allCases, id: \.rawValue) { font in
+                            Text(font.label).tag(font.rawValue)
+                        }
+                    }
                 }
 
                 // ── About ──────────────────────────────────────────

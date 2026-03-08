@@ -9,6 +9,8 @@ import FirebaseCore
 @main
 struct SDToolApp: App {
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(AppSettings.Key.colorScheme) private var colorScheme = AppSettings.Default.colorScheme
+    @AppStorage(AppSettings.Key.appFont)      private var appFont      = AppSettings.Default.appFont
 
     // Both stores initialized AFTER FirebaseApp.configure() in init()
     @ObservedObject private var authStore: AuthStore
@@ -36,6 +38,8 @@ struct SDToolApp: App {
             }
             .animation(.easeInOut(duration: 0.3), value: authStore.isSignedIn)
             .animation(.easeInOut(duration: 0.3), value: biometric.isUnlocked)
+            .preferredColorScheme(AppSettings.preferredColorScheme(for: colorScheme))
+            .environment(\.font, AppSettings.AppFont(rawValue: appFont)?.font ?? .body)
         }
         .onChange(of: scenePhase) { phase in
             switch phase {

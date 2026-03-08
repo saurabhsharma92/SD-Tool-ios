@@ -195,36 +195,47 @@ struct MermaidCard: View {
 
 struct DocReaderView: View {
     let doc: Doc
-    @State private var segments:    [MDSegment]    = []
-    @State private var isLoading:   Bool           = true
-    @State private var rawMarkdown: String         = ""
-    @State private var showChat:    Bool           = false
-    @State private var showAISheet: Bool           = false
-    @State private var aiMode:      ArticleAIMode  = .summarize
-    @State private var hasRecordedOpen: Bool       = false
+    @State private var segments:        [MDSegment]   = []
+    @State private var isLoading:       Bool          = true
+    @State private var rawMarkdown:     String        = ""
+    @State private var showChat:        Bool          = false
+    @State private var showAISheet:     Bool          = false
+    @State private var aiMode:          ArticleAIMode = .summarize
+    @State private var hasRecordedOpen: Bool          = false
 
     private let progressStore = ReadingProgressStore.shared
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            if isLoading {
-                ProgressView("Loading…")
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 60)
-            } else {
+        GeometryReader { viewportGeo in
+            ScrollView(.vertical, showsIndicators: true) {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
-                        switch seg {
-                        case .markdown(let text):
-                            Markdown(text)
-                                .markdownTheme(.gitHub)
-                                .textSelection(.enabled)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 4)
-
-                        case .mermaid(let code):
-                            MermaidCard(code: code)
-                                .padding(.horizontal, 16)
+                    if isLoading {
+                        ProgressView("Loading…")
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 60)
+                    } else {
+                        ForEach(Array(segments.enumerated()), id: \.offset) { index, seg in
+                            Group {
+                                switch seg {
+                                case .markdown(let text):
+                                    Markdown(text)
+                                        .markdownTheme(.gitHub)
+                                        .textSelection(.enabled)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 4)
+                                case .mermaid(let code):
+                                    MermaidCard(code: code)
+                                        .padding(.horizontal, 16)
+                                }
+                            }
+                            // Track when each segment becomes visible
+                            .onAppear {
+                                guard segments.count > 0 else { return }
+                                let progress = Double(index + 1) / Double(segments.count)
+                                let clamped  = min(max(progress, 0.01), 1.0)
+                                // Only update if meaningful forward progress
+                                progressStore.updateIfBetter(doc: doc, progress: clamped)
+                            }
                         }
                     }
                 }
@@ -250,7 +261,7 @@ struct DocReaderView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
-                    aiMode     = .summarize
+                    aiMode      = .summarize
                     showAISheet = true
                 } label: {
                     Label("Summary", systemImage: "text.quote")
@@ -258,7 +269,7 @@ struct DocReaderView: View {
                 .disabled(isLoading)
 
                 Button {
-                    aiMode     = .eli5
+                    aiMode      = .eli5
                     showAISheet = true
                 } label: {
                     Label("ELI5", systemImage: "face.smiling")
@@ -294,7 +305,7 @@ struct DocReaderView: View {
         if !hasRecordedOpen {
             hasRecordedOpen = true
             ActivityStore.shared.recordArticleRead(filename: doc.filename)
-            progressStore.update(doc: doc, progress: 0.01)
+            progressStore.updateIfBetter(doc: doc, progress: 0.02)
         }
     }
 }
