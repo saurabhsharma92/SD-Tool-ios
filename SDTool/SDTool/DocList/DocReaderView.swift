@@ -15,27 +15,27 @@ import WebKit
 private enum MDSegment {
     case markdown(String)
     case mermaid(String)
+    case image(url: String, alt: String)
 }
 
 private func splitSegments(_ raw: String) -> [MDSegment] {
+    // ── Pass 1: split on mermaid fences ─────────────────────────────
     var segments: [MDSegment] = []
     let pattern = #"```mermaid[ \t]*\r?\n([\s\S]*?)```"#
     guard let regex = try? NSRegularExpression(pattern: pattern) else {
         return [.markdown(raw)]
     }
 
-    let ns = raw as NSString
+    let ns   = raw as NSString
     let full = NSRange(location: 0, length: ns.length)
     var cursor = 0
 
     for match in regex.matches(in: raw, range: full) {
-        let blockRange = match.range        // the whole ```mermaid … ``` fence
-        let codeRange  = match.range(at: 1) // just the diagram source
+        let blockRange = match.range
+        let codeRange  = match.range(at: 1)
 
-        // text before this mermaid block
         if blockRange.location > cursor {
-            let textRange = NSRange(location: cursor,
-                                    length: blockRange.location - cursor)
+            let textRange = NSRange(location: cursor, length: blockRange.location - cursor)
             let text = ns.substring(with: textRange)
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 segments.append(.markdown(text))
@@ -48,7 +48,6 @@ private func splitSegments(_ raw: String) -> [MDSegment] {
         cursor = blockRange.location + blockRange.length
     }
 
-    // trailing text after last block
     if cursor < ns.length {
         let text = ns.substring(from: cursor)
         if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -56,8 +55,56 @@ private func splitSegments(_ raw: String) -> [MDSegment] {
         }
     }
 
-    return segments.isEmpty ? [.markdown(raw)] : segments
+    // ── Pass 2: extract standalone image lines ───────────────────────
+    // Matches:  ![alt text](https://example.com/image.png)
+    let imgRegex = try? NSRegularExpression(
+        pattern: #"^!\[([^\]]*)\]\(([^)]+)\)$"#,
+        options: .anchorsMatchLines
+    )
+
+    var finalSegments: [MDSegment] = []
+
+    for seg in segments {
+        guard case .markdown(let text) = seg else {
+            finalSegments.append(seg)
+            continue
+        }
+
+        var buffer: [String] = []
+
+        for line in text.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let nsRange = NSRange(trimmed.startIndex..., in: trimmed)
+
+            if let match = imgRegex?.firstMatch(in: trimmed, range: nsRange),
+               let altRange = Range(match.range(at: 1), in: trimmed),
+               let urlRange = Range(match.range(at: 2), in: trimmed) {
+
+                // Flush buffered text first
+                let buffered = buffer.joined(separator: "\n")
+                if !buffered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    finalSegments.append(.markdown(buffered))
+                }
+                buffer.removeAll()
+
+                finalSegments.append(.image(
+                    url: String(trimmed[urlRange]),
+                    alt: String(trimmed[altRange])
+                ))
+            } else {
+                buffer.append(line)
+            }
+        }
+
+        let remaining = buffer.joined(separator: "\n")
+        if !remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            finalSegments.append(.markdown(remaining))
+        }
+    }
+
+    return finalSegments.isEmpty ? [.markdown(raw)] : finalSegments
 }
+
 
 // MARK: - Mermaid WKWebView
 
@@ -66,6 +113,7 @@ private func splitSegments(_ raw: String) -> [MDSegment] {
 struct MermaidWebView: UIViewRepresentable {
     let diagram: String
     @Binding var height: CGFloat
+    var onWebViewCreated: ((WKWebView) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -81,6 +129,8 @@ struct MermaidWebView: UIViewRepresentable {
         wv.backgroundColor = .clear
         wv.scrollView.isScrollEnabled = false
         wv.scrollView.bounces = false
+        // Report WKWebView instance back for snapshotting
+        DispatchQueue.main.async { self.onWebViewCreated?(wv) }
         return wv
     }
 
@@ -170,24 +220,58 @@ struct MermaidWebView: UIViewRepresentable {
 
 struct MermaidCard: View {
     let code: String
-    @State private var webHeight: CGFloat = 120
+    @State private var webHeight:    CGFloat    = 120
+    @State private var snapshot:     UIImage?   = nil
+    @State private var showFullscreen            = false
+    @State private var webViewRef:   WKWebView? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label("Diagram", systemImage: "arrow.triangle.branch")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 4)
+            HStack {
+                Label("Diagram", systemImage: "arrow.triangle.branch")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+                Spacer()
+                Button {
+                    takeSnapshot()
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                        .padding(6)
+                        .background(Color.secondary.opacity(0.12),
+                                    in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+            }
 
-            MermaidWebView(diagram: code, height: $webHeight)
-                .frame(height: webHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
-                )
+            MermaidWebView(diagram: code, height: $webHeight, onWebViewCreated: { wv in
+                webViewRef = wv
+            })
+            .frame(height: webHeight)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+            )
+            .onTapGesture { takeSnapshot() }
         }
         .padding(.vertical, 6)
+        .fullScreenCover(isPresented: $showFullscreen) {
+            ZoomableSnapshotViewer(image: snapshot, isPresented: $showFullscreen)
+        }
+    }
+
+    private func takeSnapshot() {
+        guard let wv = webViewRef else { return }
+        let config = WKSnapshotConfiguration()
+        wv.takeSnapshot(with: config) { image, _ in
+            DispatchQueue.main.async {
+                self.snapshot     = image
+                self.showFullscreen = true
+            }
+        }
     }
 }
 
@@ -203,7 +287,38 @@ struct DocReaderView: View {
     @State private var aiMode:          ArticleAIMode = .summarize
     @State private var hasRecordedOpen: Bool          = false
 
+    @AppStorage(AppSettings.Key.fontSize) private var fontSize = AppSettings.Default.fontSize
+    @AppStorage(AppSettings.Key.appFont)  private var appFont  = AppSettings.Default.appFont
+
     private let progressStore = ReadingProgressStore.shared
+
+    private var markdownTheme: MarkdownUI.Theme {
+        let design = AppSettings.AppFont(rawValue: appFont)?.design ?? .default
+        let basePt = 16.0 * fontSize
+        return .gitHub.text {
+            FontSize(basePt)
+            if design == .serif {
+                FontFamily(.custom("Georgia"))
+            } else if design == .monospaced {
+                FontFamily(.custom("Menlo"))
+            }
+        }
+        .code {
+            FontSize(basePt * 0.875)
+        }
+        .heading1 { configuration in
+            configuration.label
+                .markdownTextStyle { FontWeight(.bold); FontSize(basePt * 1.6) }
+        }
+        .heading2 { configuration in
+            configuration.label
+                .markdownTextStyle { FontWeight(.bold); FontSize(basePt * 1.4) }
+        }
+        .heading3 { configuration in
+            configuration.label
+                .markdownTextStyle { FontWeight(.semibold); FontSize(basePt * 1.2) }
+        }
+    }
 
     var body: some View {
         GeometryReader { viewportGeo in
@@ -219,13 +334,24 @@ struct DocReaderView: View {
                                 switch seg {
                                 case .markdown(let text):
                                     Markdown(text)
-                                        .markdownTheme(.gitHub)
+                                        .markdownTheme(markdownTheme)
                                         .textSelection(.enabled)
                                         .padding(.horizontal, 16)
                                         .padding(.vertical, 4)
                                 case .mermaid(let code):
                                     MermaidCard(code: code)
                                         .padding(.horizontal, 16)
+                                case .image(let urlString, let alt):
+                                    if let url = URL(string: urlString) {
+                                        TappableAsyncImage(url: url, maxHeight: 260)
+                                            .padding(.horizontal, 16)
+                                            .padding(.vertical, 6)
+                                    } else {
+                                        Text("[\(alt)]")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .padding(.horizontal, 16)
+                                    }
                                 }
                             }
                             // Track when each segment becomes visible

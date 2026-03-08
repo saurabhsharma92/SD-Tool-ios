@@ -42,7 +42,7 @@ struct BlogsView: View {
             } message: {
                 Text(syncMessage)
             }
-            .onChange(of: router.blogDestination) { dest in
+            .onChange(of: router.blogDestination) { _, dest in
                 guard let company = dest else { return }
                 navPath.append(company)
                 router.blogDestination = nil   // consume

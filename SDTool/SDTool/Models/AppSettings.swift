@@ -13,6 +13,7 @@ enum AppSettings {
         static let feedCacheHours    = "feedCacheHours"   // Double 0.0 – 24.0
         static let faceIDEnabled     = "faceIDEnabled"
         static let appFont           = "appFont"
+        static let fontSize          = "fontSize"
     }
 
     enum Default {
@@ -21,6 +22,7 @@ enum AppSettings {
         static let feedCacheHours: Double = 6.0           // 6 hours default
         static let faceIDEnabled:  Bool   = true
         static let appFont:        String = "system"
+        static let fontSize:       Double = 1.0   // scale multiplier 0.8–1.6
     }
 
     static func preferredColorScheme(for value: String) -> ColorScheme? {
@@ -39,6 +41,7 @@ enum AppSettings {
         if hours == 24   { return "24 hours" }
         return "\(Int(hours)) hours"
     }
+
 
     // MARK: - Font
 

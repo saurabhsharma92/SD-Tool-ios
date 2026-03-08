@@ -12,6 +12,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.Key.colorScheme)   private var colorScheme   = AppSettings.Default.colorScheme
     @AppStorage(AppSettings.Key.faceIDEnabled) private var faceIDEnabled = AppSettings.Default.faceIDEnabled
     @AppStorage(AppSettings.Key.appFont)       private var appFont       = AppSettings.Default.appFont
+    @AppStorage(AppSettings.Key.fontSize)      private var fontSize      = AppSettings.Default.fontSize
     @ObservedObject private var biometric = BiometricService.shared
 
     private var appVersion: String {
@@ -19,6 +20,11 @@ struct SettingsView: View {
     }
     private var buildNumber: String {
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
+    }
+
+    private var fontSizeLabel: String {
+        let pct = Int((fontSize * 100).rounded())
+        return "\(pct)%"
     }
 
     var body: some View {
@@ -69,9 +75,46 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
 
                     Picker("Font", selection: $appFont) {
-                        ForEach(AppSettings.AppFont.allCases, id: \.rawValue) { font in
-                            Text(font.label).tag(font.rawValue)
+                        ForEach(AppSettings.AppFont.allCases, id: \.rawValue) { f in
+                            Text(f.label).tag(f.rawValue as String)
                         }
+                    }
+
+                    // Font size stepper — fixed size so it doesn't self-scale
+                    HStack {
+                        Text("Font Size")
+                        Spacer()
+                        Button { fontSize = max(0.8, fontSize - 0.1) } label: {
+                            Image(systemName: "textformat.size.smaller")
+                                .frame(width: 36, height: 36)
+                                .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                        Text(fontSizeLabel)
+                            .font(.subheadline.monospacedDigit())
+                            .frame(width: 44, alignment: .center)
+                            .foregroundStyle(.secondary)
+                        Button { fontSize = min(1.6, fontSize + 0.1) } label: {
+                            Image(systemName: "textformat.size.larger")
+                                .frame(width: 36, height: 36)
+                                .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                        Button { fontSize = 1.0 } label: {
+                            Image(systemName: "arrow.uturn.backward")
+                                .frame(width: 36, height: 36)
+                                .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(abs(fontSize - 1.0) < 0.05)
+                    }
+                    .environment(\.sizeCategory, .medium)
+                }
+
+                // ── Community ──────────────────────────────────────
+                Section("Community") {
+                    NavigationLink(destination: HowToView()) {
+                        Label("How to Contribute", systemImage: "hand.raised.fill")
                     }
                 }
 

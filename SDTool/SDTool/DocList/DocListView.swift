@@ -62,7 +62,7 @@ struct DocListView: View {
                     }
                 }
             }
-            .onChange(of: store.isSyncing) { syncing in
+            .onChange(of: store.isSyncing) { _, syncing in
                 if !syncing, let _ = store.syncError { showSyncAlert = true }
             }
             .alert("Sync Error", isPresented: $showSyncAlert) {
@@ -74,7 +74,7 @@ struct DocListView: View {
                 DocReaderView(doc: doc)
             }
         }
-        .onChange(of: router.articleDestination) { dest in
+        .onChange(of: router.articleDestination) { _, dest in
             guard let doc = dest else { return }
             navPath.append(doc)
             router.articleDestination = nil
