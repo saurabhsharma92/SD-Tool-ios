@@ -49,7 +49,7 @@ struct BlogCompany: Identifiable, Hashable, Codable {
         self.emoji         = emoji
         self.category      = category
         self.rssURL        = rssURL.flatMap { URL(string: $0) }
-        self.websiteURL    = URL(string: websiteURL)!
+        self.websiteURL    = URL(string: websiteURL) ?? URL(string: "https://example.com")!
         self.faviconDomain = faviconDomain
         self.blogType      = blogType
         self.isSubscribed  = isSubscribed

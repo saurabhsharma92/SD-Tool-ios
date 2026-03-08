@@ -22,7 +22,7 @@ struct Doc: Identifiable, Hashable, Codable {
     var localURL:   URL?         // set when downloaded
 
     // Compatibility shim used by DocReaderView and DocSectionStore
-    var url: URL { localURL ?? URL(string: "about:blank")! }
+    var url: URL { localURL ?? URL(string: "about:blank") ?? URL(fileURLWithPath: "") }
     var isDownloaded: Bool { state == .downloaded }
 
     init(

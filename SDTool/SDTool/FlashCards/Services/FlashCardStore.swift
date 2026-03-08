@@ -63,24 +63,39 @@ class FlashCardStore: ObservableObject {
     /// Seeds bundled decks on every launch for any missing deck.
     /// Safe to call repeatedly — only inserts decks not already in store.
     func seedBundledDecksIfNeeded() {
+        // Log all .md files visible in bundle to help debug missing decks
+        let allMD = Bundle.main.urls(forResourcesWithExtension: "md", subdirectory: nil) ?? []
+        #if DEBUG
+        print("[FlashCardStore] Bundle .md files found: \(allMD.map { $0.lastPathComponent })")
+        #endif
+
         let bundled = ["system-design.md", "ai-ml.md"]
         for filename in bundled {
             // Skip only if we already have this deck WITH cards
-            if let existing = deck(for: filename), !existing.cards.isEmpty { continue }
-            
-            let cards = FlashCardParser.parseBundle(filename: filename)
-            guard !cards.isEmpty else {
-                print("[FlashCardStore] WARNING: Could not parse bundled file: \(filename)")
+            if let existing = deck(for: filename), !existing.cards.isEmpty {
+                #if DEBUG
+                print("[FlashCardStore] Already have \(filename) with \(existing.cards.count) cards, skipping")
+                #endif
                 continue
             }
-            var newDeck = FlashDeck(
+
+            let cards = FlashCardParser.parseBundle(filename: filename)
+            guard !cards.isEmpty else {
+                #if DEBUG
+                print("[FlashCardStore] WARNING: Could not parse bundled file: \(filename) — not found in bundle")
+                #endif
+                continue
+            }
+            let newDeck = FlashDeck(
                 filename:     filename,
                 cards:        cards,
                 lastSyncedAt: Date(timeIntervalSince1970: 0),
                 isBundled:    true
             )
             upsert(deck: newDeck)
+            #if DEBUG
             print("[FlashCardStore] Seeded bundled deck: \(filename) with \(cards.count) cards")
+            #endif
         }
     }
 
@@ -96,7 +111,14 @@ class FlashCardStore: ObservableObject {
            let saved  = try? JSONDecoder().decode([FlashDeck].self, from: data) {
             decks = saved
         }
-        // Always ensure bundled decks exist
+        // Always seed bundled decks — adds any missing ones even after updates
+        seedBundledDecksIfNeeded()
+    }
+
+    /// Call from Settings to wipe cached deck data and force reseed (debug helper)
+    func resetAndReseed() {
+        UserDefaults.standard.removeObject(forKey: saveKey)
+        decks = []
         seedBundledDecksIfNeeded()
     }
 

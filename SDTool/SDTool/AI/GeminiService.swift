@@ -11,8 +11,10 @@ actor GeminiService {
     private let model: GenerativeModel
 
     private init() {
+        // .googleAI() uses Gemini Developer API (free tier)
+        // isDefaultAppCheckTokenAutoRefreshEnabled = false avoids App Check
+        // errors on Personal Team / debug builds
         let ai = FirebaseAI.firebaseAI(backend: .googleAI())
-        // gemini-2.5-flash-lite: free tier, fast, good for summarisation & chat
         model = ai.generativeModel(modelName: "gemini-2.5-flash-lite")
     }
 
@@ -102,7 +104,9 @@ actor GeminiService {
     // MARK: - Blog: summarise post
 
     func summarizeBlogPost(title: String, content: String) async throws -> String {
+        #if DEBUG
         print("[Gemini] summarizeBlogPost called — title: \(title), content: \(content.count) chars")
+        #endif
         let prompt = """
         Summarize this blog post for a software engineer.
         Start with one sentence stating the main point.
@@ -119,7 +123,9 @@ actor GeminiService {
     // MARK: - Blog: ELI5
 
     func explainBlogPost(title: String, content: String) async throws -> String {
+        #if DEBUG
         print("[Gemini] explainBlogPost called — title: \(title), content: \(content.count) chars")
+        #endif
         let prompt = """
         Explain the key idea of this blog post to someone who doesn't work in tech.
         Use simple language, short sentences, and one everyday analogy.
@@ -135,10 +141,14 @@ actor GeminiService {
     // MARK: - Private helpers
 
     private func generate(_ prompt: String) async throws -> String {
+        #if DEBUG
         print("[Gemini] Sending prompt (\(prompt.count) chars) to Firebase AI…")
+        #endif
         do {
             let response = try await model.generateContent(prompt)
+            #if DEBUG
             print("[Gemini] Got response")
+            #endif
             guard let text = response.text, !text.isEmpty else { throw AIError.emptyResponse }
             return text
         } catch let aiErr as AIError {

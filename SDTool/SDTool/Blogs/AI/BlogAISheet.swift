@@ -39,7 +39,9 @@ struct BlogAISheet: View {
         NavigationStack {
             VStack(spacing: 0) {
                 // Debug: confirm view is alive
+                #if DEBUG
                 let _ = print("[BlogAI] body rendered — isLoading: \(isLoading), result: \(result.count) chars, error: \(String(describing: error))")
+                #endif
                 // Mode picker
                 Picker("Mode", selection: $mode) {
                     ForEach(BlogAIMode.allCases, id: \.self) { m in
@@ -115,7 +117,9 @@ struct BlogAISheet: View {
 
     @MainActor
     private func generate() async {
+        #if DEBUG
         print("[BlogAI] generate() called — mode: \(mode), post: \(post.title)")
+        #endif
         isLoading = true
         error     = nil
         result    = ""
@@ -123,7 +127,9 @@ struct BlogAISheet: View {
         do {
             // Step 1: try to fetch full article; fall back to RSS summary or just title
             let content: String = await fetchContent()
+            #if DEBUG
             print("[BlogAI] Content ready (\(content.count) chars), calling Gemini…")
+            #endif
 
             // Step 2: ask Gemini
             let text: String
@@ -136,15 +142,21 @@ struct BlogAISheet: View {
                     title: post.title, content: content)
             }
 
+            #if DEBUG
             print("[BlogAI] Gemini response (\(text.count) chars): \(text.prefix(100))")
+            #endif
             result    = text
             isLoading = false
         } catch let aiErr as AIError {
+            #if DEBUG
             print("[BlogAI] AIError: \(aiErr)")
+            #endif
             error     = aiErr
             isLoading = false
         } catch {
+            #if DEBUG
             print("[BlogAI] Unknown error: \(error)")
+            #endif
             self.error = .from(error)
             isLoading  = false
         }
@@ -153,35 +165,51 @@ struct BlogAISheet: View {
     // Content strategy: RSS summary first (always available, no network needed),
     // then attempt full fetch as an upgrade, fall back gracefully.
     private func fetchContent() async -> String {
+        #if DEBUG
         print("[BlogAI] fetchContent() start — post: \(post.title)")
+        #endif
 
         // 1. Use RSS summary immediately if available (no extra network call needed)
         if let rss = post.summary, !rss.isEmpty {
+            #if DEBUG
             print("[BlogAI] Using RSS summary (\(rss.count) chars), will try to enrich…")
+            #endif
             // Try to get more content in background
             if let full = try? await BlogTextExtractor.shared.extract(from: post.url),
                full.count > rss.count {
+                #if DEBUG
                 print("[BlogAI] Full fetch succeeded (\(full.count) chars)")
+                #endif
                 return full
             }
+            #if DEBUG
             print("[BlogAI] Using RSS summary as final content")
+            #endif
             return rss
         }
 
         // 2. No RSS summary — must fetch
+        #if DEBUG
         print("[BlogAI] No RSS summary, attempting fetch…")
+        #endif
         do {
             let extracted = try await BlogTextExtractor.shared.extract(from: post.url)
             if !extracted.isEmpty {
+                #if DEBUG
                 print("[BlogAI] Fetch succeeded (\(extracted.count) chars)")
+                #endif
                 return extracted
             }
         } catch {
+            #if DEBUG
             print("[BlogAI] Fetch FAILED: \(error)")
+            #endif
         }
 
         // 3. Nothing worked — title only
+        #if DEBUG
         print("[BlogAI] Using title-only fallback")
+        #endif
         return "Blog post title: \(post.title). Published by \(post.url.host ?? "unknown")."
     }
 }
