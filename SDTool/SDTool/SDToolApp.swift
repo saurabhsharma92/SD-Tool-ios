@@ -4,33 +4,29 @@
 //
 
 import SwiftUI
+import FirebaseCore
+import FirebaseAppCheck
 
 @main
 struct SDToolApp: App {
 
-    @AppStorage(AppSettings.Key.colorScheme) private var colorScheme = AppSettings.Default.colorScheme
+    init() {
+        // App Check — debug provider in simulator/DEBUG, App Attest in production
+        #if DEBUG
+        let providerFactory = AppCheckDebugProviderFactory()
+        #else
+        let providerFactory: any AppCheckProviderFactory = AppAttestProvider.isSupported
+            ? AppAttestProviderFactory()
+            : DeviceCheckProviderFactory()
+        #endif
+        AppCheck.setAppCheckProviderFactory(providerFactory)
 
-    @State private var showSplash = true
+        FirebaseApp.configure()
+    }
 
     var body: some Scene {
         WindowGroup {
-            ZStack {
-                ContentView()
-                    .tint(Color("AccentColor"))
-                    .preferredColorScheme(AppSettings.preferredColorScheme(for: colorScheme))
-
-                if showSplash {
-                    SplashView {
-                        withAnimation(.easeOut(duration: 0.35)) {
-                            showSplash = false
-                        }
-                    }
-                    .preferredColorScheme(AppSettings.preferredColorScheme(for: colorScheme))
-                    .zIndex(1)
-                    .transition(.opacity)
-                }
-            }
-            .animation(.easeOut(duration: 0.35), value: showSplash)
+            ContentView()
         }
     }
 }

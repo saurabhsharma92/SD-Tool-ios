@@ -195,10 +195,13 @@ struct MermaidCard: View {
 
 struct DocReaderView: View {
     let doc: Doc
-    @State private var segments:  [MDSegment] = []
-    @State private var isLoading: Bool        = true
-    @State private var viewportHeight: CGFloat = 0
-    @State private var hasRecordedOpen: Bool   = false
+    @State private var segments:    [MDSegment]    = []
+    @State private var isLoading:   Bool           = true
+    @State private var rawMarkdown: String         = ""
+    @State private var showChat:    Bool           = false
+    @State private var showAISheet: Bool           = false
+    @State private var aiMode:      ArticleAIMode  = .summarize
+    @State private var hasRecordedOpen: Bool       = false
 
     private let progressStore = ReadingProgressStore.shared
 
@@ -228,25 +231,66 @@ struct DocReaderView: View {
                 .padding(.vertical, 12)
             }
         }
+        .overlay(alignment: .bottomTrailing) {
+            if !isLoading {
+                Button { showChat = true } label: {
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .font(.title2)
+                        .foregroundStyle(.white)
+                        .padding(16)
+                        .background(Color.indigo)
+                        .clipShape(Circle())
+                        .shadow(color: .black.opacity(0.2), radius: 6, y: 3)
+                }
+                .padding(20)
+            }
+        }
         .navigationTitle(doc.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    aiMode     = .summarize
+                    showAISheet = true
+                } label: {
+                    Label("Summary", systemImage: "text.quote")
+                }
+                .disabled(isLoading)
+
+                Button {
+                    aiMode     = .eli5
+                    showAISheet = true
+                } label: {
+                    Label("ELI5", systemImage: "face.smiling")
+                }
+                .disabled(isLoading)
+            }
+        }
+        .sheet(isPresented: $showAISheet) {
+            ArticleAISheet(doc: doc, rawMarkdown: rawMarkdown, mode: $aiMode)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showChat) {
+            ArticleChatView(doc: doc, rawMarkdown: rawMarkdown)
+        }
         .onAppear { loadContent() }
     }
 
     private func loadContent() {
-        // Use DocSyncService as source of truth for local file path
         let localURL = DocSyncService.shared.localURL(for: doc.filename)
         guard FileManager.default.fileExists(atPath: localURL.path) else {
-            segments  = splitSegments("**This article has not been downloaded yet.**\n\nGo to the Article tab and tap the download button.")
+            let msg = "**This article has not been downloaded yet.**\n\nGo to the Articles tab and tap the download button."
+            segments  = splitSegments(msg)
             isLoading = false
             return
         }
         let raw = (try? String(contentsOf: localURL, encoding: .utf8))
             ?? "Failed to load document."
-        segments  = splitSegments(raw)
-        isLoading = false
+        rawMarkdown = raw
+        segments    = splitSegments(raw)
+        isLoading   = false
 
-        // Record article open as activity (once per view session)
         if !hasRecordedOpen {
             hasRecordedOpen = true
             ActivityStore.shared.recordArticleRead(filename: doc.filename)

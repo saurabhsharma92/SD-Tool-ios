@@ -5,6 +5,13 @@
 
 import SwiftUI
 
+// Identifiable wrapper so .sheet(item:) always gets a fresh non-nil value
+struct AISheetItem: Identifiable {
+    let id   = UUID()
+    let post: BlogPost
+    let mode: BlogAIMode
+}
+
 struct CompanyBlogView: View {
     let company: BlogCompany
 
@@ -14,6 +21,9 @@ struct CompanyBlogView: View {
 
     @AppStorage(AppSettings.Key.feedCacheHours) private var feedCacheHours = AppSettings.Default.feedCacheHours
     @Environment(\.openURL) private var openURL
+
+    // AI sheet state
+    @State private var aiSheet: AISheetItem? = nil
 
     var body: some View {
         Group {
@@ -111,22 +121,61 @@ struct CompanyBlogView: View {
 
     private var postList: some View {
         List(posts) { post in
-            Button {
-                ActivityStore.shared.recordBlogRead(
-                    companyName: company.name,
-                    postTitle:   post.title
-                )
-                openURL(post.url)
-            } label: {
-                BlogPostRow(post: post, company: company)
+            VStack(alignment: .leading, spacing: 0) {
+                // Post row — tap to open in browser
+                Button {
+                    ActivityStore.shared.recordBlogRead(
+                        companyName: company.name,
+                        postTitle:   post.title
+                    )
+                    openURL(post.url)
+                } label: {
+                    BlogPostRow(post: post, company: company)
+                }
+                .tint(.primary)
+
+                // AI action buttons — visible before opening browser
+                HStack(spacing: 10) {
+                    Button {
+                        aiSheet = AISheetItem(post: post, mode: .summarize)
+                    } label: {
+                        Label("Summary", systemImage: "text.quote")
+                            .font(.caption)
+                            .foregroundStyle(.indigo)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.indigo.opacity(0.1))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        aiSheet = AISheetItem(post: post, mode: .eli5)
+                    } label: {
+                        Label("Explain Simply", systemImage: "face.smiling")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.orange.opacity(0.1))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.bottom, 8)
+                .padding(.leading, 4)
             }
-            .tint(.primary)
         }
         .listStyle(.insetGrouped)
         .overlay(alignment: .top) {
             if isLoading {
                 ProgressView().padding(.top, 8)
             }
+        }
+        .sheet(item: $aiSheet) { item in
+            BlogAISheet(post: item.post, initialMode: item.mode)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
     }
 

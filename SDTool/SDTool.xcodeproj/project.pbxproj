@@ -10,6 +10,9 @@
 		0918C7392F5417250071C84F /* Gzip in Frameworks */ = {isa = PBXBuildFile; productRef = 0918C6972F5415010071C84F /* Gzip */; };
 		0918C73A2F5417250071C84F /* Ink in Frameworks */ = {isa = PBXBuildFile; productRef = 0918C69B2F5415130071C84F /* Ink */; };
 		0918C7C02F5800470071C84F /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = 0918C7BF2F5800470071C84F /* MarkdownUI */; };
+		0918C89F2F5CEB420071C84F /* FirebaseAI in Frameworks */ = {isa = PBXBuildFile; productRef = 0918C89E2F5CEB420071C84F /* FirebaseAI */; };
+		0918C8A12F5CEB420071C84F /* FirebaseAILogic in Frameworks */ = {isa = PBXBuildFile; productRef = 0918C8A02F5CEB420071C84F /* FirebaseAILogic */; };
+		09A85FDB2F5CEECA004EC8FB /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = 09A85FDA2F5CEECA004EC8FB /* FirebaseAppCheck */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -84,8 +87,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				0918C7C02F5800470071C84F /* MarkdownUI in Frameworks */,
+				0918C89F2F5CEB420071C84F /* FirebaseAI in Frameworks */,
 				0918C73A2F5417250071C84F /* Ink in Frameworks */,
 				0918C7392F5417250071C84F /* Gzip in Frameworks */,
+				09A85FDB2F5CEECA004EC8FB /* FirebaseAppCheck in Frameworks */,
+				0918C8A12F5CEB420071C84F /* FirebaseAILogic in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -158,6 +164,9 @@
 				0918C6972F5415010071C84F /* Gzip */,
 				0918C69B2F5415130071C84F /* Ink */,
 				0918C7BF2F5800470071C84F /* MarkdownUI */,
+				0918C89E2F5CEB420071C84F /* FirebaseAI */,
+				0918C8A02F5CEB420071C84F /* FirebaseAILogic */,
+				09A85FDA2F5CEECA004EC8FB /* FirebaseAppCheck */,
 			);
 			productName = SDTool;
 			productReference = 0918C64F2F540F610071C84F /* SDTool.app */;
@@ -245,6 +254,7 @@
 				0918C6792F540FEF0071C84F /* XCRemoteSwiftPackageReference "Ink" */,
 				0918C6962F5415000071C84F /* XCRemoteSwiftPackageReference "GzipSwift" */,
 				0918C7BD2F57FFA60071C84F /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
+				0918C89D2F5CEB420071C84F /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 0918C6502F540F610071C84F /* Products */;
@@ -686,6 +696,14 @@
 				minimumVersion = 2.4.1;
 			};
 		};
+		0918C89D2F5CEB420071C84F /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.10.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -703,6 +721,21 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 0918C7BD2F57FFA60071C84F /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
 			productName = MarkdownUI;
+		};
+		0918C89E2F5CEB420071C84F /* FirebaseAI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0918C89D2F5CEB420071C84F /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAI;
+		};
+		0918C8A02F5CEB420071C84F /* FirebaseAILogic */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0918C89D2F5CEB420071C84F /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAILogic;
+		};
+		09A85FDA2F5CEECA004EC8FB /* FirebaseAppCheck */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0918C89D2F5CEB420071C84F /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAppCheck;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
