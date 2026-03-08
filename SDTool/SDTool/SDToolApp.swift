@@ -5,20 +5,25 @@
 
 import SwiftUI
 import FirebaseCore
+import FirebaseAppCheck
 
 @main
 struct SDToolApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(AppSettings.Key.colorScheme) private var colorScheme = AppSettings.Default.colorScheme
-    @AppStorage(AppSettings.Key.appFont)      private var appFont      = AppSettings.Default.appFont
+    @AppStorage(AppSettings.Key.appFont)     private var appFont     = AppSettings.Default.appFont
 
-    // Both stores initialized AFTER FirebaseApp.configure() in init()
     @ObservedObject private var authStore: AuthStore
     @ObservedObject private var biometric: BiometricService
 
     init() {
+        // App Check — debug provider for simulator/dev, DeviceCheck for release
+        #if DEBUG
+        let providerFactory = AppCheckDebugProviderFactory()
+        AppCheck.setAppCheckProviderFactory(providerFactory)
+        #endif
+
         FirebaseApp.configure()
-        // Now safe to access Firebase services
         authStore = AuthStore.shared
         biometric = BiometricService.shared
     }
@@ -30,7 +35,7 @@ struct SDToolApp: App {
                     splashView
                 } else if !authStore.isSignedIn {
                     LoginView()
-                } else if !biometric.isUnlocked {
+                } else if needsBiometric {
                     LockScreenView()
                 } else {
                     ContentView()
@@ -53,6 +58,14 @@ struct SDToolApp: App {
                 break
             }
         }
+    }
+
+    // Biometric gate — skipped for debug bypass
+    private var needsBiometric: Bool {
+        #if DEBUG
+        if authStore.debugBypass { return false }
+        #endif
+        return !biometric.isUnlocked
     }
 
     private var splashView: some View {
