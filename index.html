@@ -1,0 +1,1599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SDTool — System Design Explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:        #080b14;
+    --surface:   #0e1320;
+    --border:    rgba(255,255,255,0.07);
+    --accent:    #6C7FFF;
+    --accent2:   #A78BFA;
+    --accent3:   #34D399;
+    --text:      #E8ECF4;
+    --muted:     #6B7A99;
+    --card-bg:   rgba(255,255,255,0.035);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 16px;
+    line-height: 1.65;
+    overflow-x: hidden;
+  }
+
+  /* ── NOISE OVERLAY ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 999;
+    opacity: 0.35;
+  }
+
+  /* ── GRID LINES ── */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(108,127,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(108,127,255,0.03) 1px, transparent 1px);
+    background-size: 64px 64px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── TYPOGRAPHY ── */
+  h1, h2, h3, h4 { font-family: 'Syne', sans-serif; line-height: 1.15; }
+  code, .mono { font-family: 'DM Mono', monospace; }
+
+  /* ── NAV ── */
+  nav {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 48px;
+    background: rgba(8,11,20,0.8);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .nav-logo {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 1.25rem;
+    letter-spacing: -0.02em;
+    background: linear-gradient(135deg, #fff 30%, var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .nav-links {
+    display: flex;
+    gap: 32px;
+    list-style: none;
+  }
+
+  .nav-links a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: color 0.2s;
+    letter-spacing: 0.01em;
+  }
+  .nav-links a:hover { color: var(--text); }
+
+  .nav-cta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 20px;
+    background: var(--accent);
+    color: #fff !important;
+    border-radius: 8px;
+    font-weight: 600 !important;
+    font-size: 0.875rem !important;
+    transition: opacity 0.2s !important;
+  }
+  .nav-cta:hover { opacity: 0.85; color: #fff !important; }
+
+  /* ── SECTIONS ── */
+  section { position: relative; z-index: 1; }
+
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 32px;
+  }
+
+  /* ── HERO ── */
+  #hero {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    padding-top: 80px;
+    overflow: hidden;
+  }
+
+  .hero-glow {
+    position: absolute;
+    width: 700px; height: 700px;
+    background: radial-gradient(circle, rgba(108,127,255,0.18) 0%, transparent 65%);
+    top: -100px; left: 50%;
+    transform: translateX(-50%);
+    pointer-events: none;
+  }
+
+  .hero-glow-2 {
+    position: absolute;
+    width: 400px; height: 400px;
+    background: radial-gradient(circle, rgba(167,139,250,0.12) 0%, transparent 65%);
+    bottom: 0; right: 0;
+    pointer-events: none;
+  }
+
+  .hero-inner {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 64px;
+    align-items: center;
+    width: 100%;
+  }
+
+  .hero-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    background: rgba(108,127,255,0.1);
+    border: 1px solid rgba(108,127,255,0.25);
+    border-radius: 100px;
+    font-size: 0.8rem;
+    color: var(--accent);
+    font-weight: 500;
+    margin-bottom: 24px;
+    letter-spacing: 0.03em;
+  }
+
+  .hero-badge::before {
+    content: '';
+    width: 6px; height: 6px;
+    background: var(--accent);
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.4); }
+  }
+
+  .hero-title {
+    font-size: clamp(2.8rem, 5vw, 4.2rem);
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    line-height: 1.05;
+    margin-bottom: 24px;
+  }
+
+  .hero-title .line-accent {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .hero-desc {
+    font-size: 1.1rem;
+    color: var(--muted);
+    max-width: 460px;
+    margin-bottom: 40px;
+    font-weight: 300;
+    line-height: 1.75;
+  }
+
+  .hero-actions {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 28px;
+    background: var(--accent);
+    color: #fff;
+    text-decoration: none;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    transition: transform 0.2s, box-shadow 0.2s;
+    box-shadow: 0 0 30px rgba(108,127,255,0.3);
+  }
+  .btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 40px rgba(108,127,255,0.4);
+  }
+
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 28px;
+    background: transparent;
+    color: var(--text);
+    text-decoration: none;
+    border-radius: 10px;
+    font-weight: 500;
+    font-size: 0.95rem;
+    border: 1px solid var(--border);
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .btn-secondary:hover {
+    border-color: rgba(255,255,255,0.2);
+    background: rgba(255,255,255,0.03);
+  }
+
+  /* Phone mockup */
+  .hero-visual {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+
+  .phone {
+    width: 260px;
+    height: 520px;
+    background: var(--surface);
+    border-radius: 40px;
+    border: 1.5px solid rgba(255,255,255,0.12);
+    position: relative;
+    box-shadow:
+      0 40px 80px rgba(0,0,0,0.6),
+      0 0 0 1px rgba(255,255,255,0.04),
+      inset 0 1px 0 rgba(255,255,255,0.08);
+    overflow: hidden;
+    animation: float 4s ease-in-out infinite;
+  }
+
+  @keyframes float {
+    0%, 100% { transform: translateY(0px) rotate(-1deg); }
+    50% { transform: translateY(-12px) rotate(1deg); }
+  }
+
+  .phone-notch {
+    width: 90px; height: 28px;
+    background: #080b14;
+    border-radius: 0 0 18px 18px;
+    position: absolute;
+    top: 0; left: 50%;
+    transform: translateX(-50%);
+    z-index: 2;
+  }
+
+  .phone-screen {
+    position: absolute;
+    inset: 0;
+    padding: 48px 14px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow: hidden;
+  }
+
+  .phone-tab-bar {
+    display: flex;
+    justify-content: space-around;
+    padding: 10px 0 4px;
+    border-top: 1px solid var(--border);
+    margin-top: auto;
+  }
+
+  .tab-icon {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+  }
+  .tab-icon.active { background: rgba(108,127,255,0.2); }
+
+  .phone-card {
+    background: rgba(108,127,255,0.08);
+    border: 1px solid rgba(108,127,255,0.15);
+    border-radius: 12px;
+    padding: 12px;
+  }
+
+  .phone-card-title {
+    font-size: 9px;
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+
+  .phone-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .phone-row:last-child { border-bottom: none; }
+
+  .phone-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .phone-label {
+    font-size: 8px;
+    color: var(--muted);
+    flex: 1;
+  }
+
+  .phone-chip {
+    font-size: 7px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(52,211,153,0.15);
+    color: var(--accent3);
+    font-family: 'DM Mono', monospace;
+  }
+
+  .phone-ai-card {
+    background: linear-gradient(135deg, rgba(108,127,255,0.12), rgba(167,139,250,0.08));
+    border: 1px solid rgba(108,127,255,0.2);
+    border-radius: 12px;
+    padding: 10px 12px;
+  }
+
+  .phone-ai-label {
+    font-size: 7.5px;
+    color: var(--accent);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+
+  .phone-ai-text {
+    font-size: 7.5px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  /* ── STATS ── */
+  .stats-bar {
+    padding: 48px 0;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0;
+  }
+
+  .stat-item {
+    padding: 0 40px;
+    border-right: 1px solid var(--border);
+    text-align: center;
+  }
+  .stat-item:last-child { border-right: none; }
+  .stat-item:first-child { padding-left: 0; }
+
+  .stat-number {
+    font-family: 'Syne', sans-serif;
+    font-size: 2.5rem;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    background: linear-gradient(135deg, #fff 0%, var(--accent) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .stat-label {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  /* ── FEATURES ── */
+  #features { padding: 120px 0; }
+
+  .section-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 16px;
+  }
+
+  .section-title {
+    font-size: clamp(2rem, 4vw, 3rem);
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    margin-bottom: 16px;
+  }
+
+  .section-desc {
+    color: var(--muted);
+    font-size: 1.05rem;
+    max-width: 560px;
+    margin-bottom: 64px;
+    font-weight: 300;
+  }
+
+  .features-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    overflow: hidden;
+  }
+
+  .feature-card {
+    background: var(--card-bg);
+    padding: 36px 32px;
+    position: relative;
+    transition: background 0.25s;
+  }
+
+  .feature-card:hover {
+    background: rgba(108,127,255,0.05);
+  }
+
+  .feature-card::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    background: radial-gradient(400px circle at var(--mx, 50%) var(--my, 50%), rgba(108,127,255,0.06), transparent 60%);
+    transition: opacity 0.3s;
+    pointer-events: none;
+  }
+
+  .feature-card:hover::after { opacity: 1; }
+
+  .feature-icon {
+    width: 44px; height: 44px;
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px;
+    margin-bottom: 20px;
+  }
+
+  .feature-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 1.05rem;
+    font-weight: 700;
+    margin-bottom: 10px;
+    letter-spacing: -0.01em;
+  }
+
+  .feature-desc {
+    font-size: 0.875rem;
+    color: var(--muted);
+    line-height: 1.7;
+    font-weight: 300;
+  }
+
+  .feature-tag {
+    display: inline-block;
+    margin-top: 16px;
+    font-size: 0.72rem;
+    padding: 3px 10px;
+    border-radius: 100px;
+    font-family: 'DM Mono', monospace;
+    letter-spacing: 0.03em;
+  }
+
+  /* ── ARCHITECTURE ── */
+  #architecture { padding: 120px 0; background: linear-gradient(180deg, transparent, rgba(108,127,255,0.02) 50%, transparent); }
+
+  .arch-grid {
+    display: grid;
+    grid-template-columns: 1fr 1.2fr;
+    gap: 80px;
+    align-items: start;
+  }
+
+  .arch-layers {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .arch-layer {
+    padding: 16px 20px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s, transform 0.2s;
+    cursor: default;
+  }
+
+  .arch-layer:hover {
+    border-color: rgba(108,127,255,0.3);
+    transform: translateX(4px);
+  }
+
+  .arch-layer::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    border-radius: 3px 0 0 3px;
+  }
+
+  .layer-views::before   { background: var(--accent); }
+  .layer-stores::before  { background: var(--accent2); }
+  .layer-services::before { background: var(--accent3); }
+  .layer-external::before { background: #F59E0B; }
+
+  .arch-layer-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  .arch-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .arch-chip {
+    font-size: 0.7rem;
+    padding: 3px 9px;
+    border-radius: 5px;
+    background: rgba(255,255,255,0.05);
+    color: var(--muted);
+    font-family: 'DM Mono', monospace;
+    border: 1px solid var(--border);
+  }
+
+  .arch-connector {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 20px;
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+
+  .connector-line {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border), transparent);
+  }
+
+  /* Flow diagram right side */
+  .flow-diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 32px;
+    position: relative;
+  }
+
+  .flow-title {
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 28px;
+  }
+
+  .flow-step {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 0;
+    position: relative;
+  }
+
+  .flow-step:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    left: 15px;
+    top: 32px;
+    bottom: -28px;
+    width: 1px;
+    background: linear-gradient(180deg, var(--accent), transparent);
+  }
+
+  .flow-num {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: rgba(108,127,255,0.15);
+    border: 1px solid rgba(108,127,255,0.3);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: var(--accent);
+    flex-shrink: 0;
+    font-family: 'DM Mono', monospace;
+  }
+
+  .flow-content { padding-bottom: 28px; }
+
+  .flow-step-title {
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: var(--text);
+  }
+
+  .flow-step-desc {
+    font-size: 0.8rem;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  .flow-code {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.72rem;
+    color: var(--accent2);
+    background: rgba(167,139,250,0.08);
+    border: 1px solid rgba(167,139,250,0.15);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-top: 8px;
+    display: block;
+    line-height: 1.7;
+  }
+
+  /* ── FIREBASE ── */
+  #firebase { padding: 120px 0; }
+
+  .firebase-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 48px;
+    align-items: start;
+  }
+
+  .firebase-services {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .fb-service {
+    display: flex;
+    gap: 16px;
+    padding: 20px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    transition: border-color 0.2s;
+  }
+
+  .fb-service:hover { border-color: rgba(108,127,255,0.25); }
+
+  .fb-icon {
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+
+  .fb-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 0.9rem;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+
+  .fb-desc { font-size: 0.82rem; color: var(--muted); line-height: 1.6; }
+
+  .code-block {
+    background: #0a0d1a;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+
+  .code-header {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .code-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+  }
+
+  .code-filename {
+    font-size: 0.75rem;
+    color: var(--muted);
+    font-family: 'DM Mono', monospace;
+    margin-left: auto;
+  }
+
+  .code-body {
+    padding: 24px;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.8rem;
+    line-height: 1.85;
+    overflow-x: auto;
+  }
+
+  .c-keyword  { color: #C792EA; }
+  .c-type     { color: #82AAFF; }
+  .c-string   { color: #C3E88D; }
+  .c-comment  { color: #546E7A; font-style: italic; }
+  .c-func     { color: #82AAFF; }
+  .c-prop     { color: #F07178; }
+  .c-num      { color: #F78C6C; }
+
+  /* ── CONTENT SYSTEM ── */
+  #content-system { padding: 120px 0; }
+
+  .content-flow {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    overflow: hidden;
+    margin-top: 64px;
+  }
+
+  .content-step {
+    background: var(--card-bg);
+    padding: 40px 28px;
+    position: relative;
+  }
+
+  .content-step-num {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    color: var(--accent);
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    margin-bottom: 16px;
+  }
+
+  .content-step-icon {
+    font-size: 28px;
+    margin-bottom: 16px;
+    display: block;
+  }
+
+  .content-step-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 1rem;
+    font-weight: 700;
+    margin-bottom: 10px;
+  }
+
+  .content-step-desc {
+    font-size: 0.82rem;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+
+  .content-arrow {
+    position: absolute;
+    right: -1px; top: 50%;
+    transform: translateY(-50%);
+    width: 24px; height: 24px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px;
+    color: var(--accent);
+    z-index: 1;
+  }
+
+  /* ── SECURITY ── */
+  #security { padding: 120px 0; }
+
+  .security-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+    margin-top: 64px;
+  }
+
+  .security-item {
+    display: flex;
+    gap: 16px;
+    padding: 24px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    align-items: flex-start;
+  }
+
+  .security-icon {
+    font-size: 22px;
+    flex-shrink: 0;
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .security-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 0.9rem;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+
+  .security-desc {
+    font-size: 0.82rem;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  .badge-safe {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.7rem;
+    padding: 3px 10px;
+    border-radius: 100px;
+    background: rgba(52,211,153,0.1);
+    color: var(--accent3);
+    border: 1px solid rgba(52,211,153,0.2);
+    margin-top: 8px;
+    font-family: 'DM Mono', monospace;
+  }
+
+  /* ── CONTRIBUTE ── */
+  #contribute { padding: 120px 0; }
+
+  .contribute-cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    margin-top: 64px;
+  }
+
+  .contribute-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 36px 28px;
+    transition: border-color 0.2s, transform 0.2s;
+    text-decoration: none;
+    color: inherit;
+    display: block;
+  }
+
+  .contribute-card:hover {
+    border-color: rgba(108,127,255,0.3);
+    transform: translateY(-4px);
+  }
+
+  .contribute-num {
+    font-family: 'DM Mono', monospace;
+    font-size: 2.5rem;
+    font-weight: 500;
+    color: rgba(108,127,255,0.15);
+    line-height: 1;
+    margin-bottom: 20px;
+    letter-spacing: -0.05em;
+  }
+
+  .contribute-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin-bottom: 10px;
+  }
+
+  .contribute-desc {
+    font-size: 0.85rem;
+    color: var(--muted);
+    line-height: 1.7;
+    margin-bottom: 20px;
+  }
+
+  .contribute-link {
+    font-size: 0.82rem;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 500;
+  }
+
+  /* ── CTA ── */
+  #cta {
+    padding: 120px 0;
+    text-align: center;
+    position: relative;
+  }
+
+  .cta-glow {
+    position: absolute;
+    width: 600px; height: 400px;
+    background: radial-gradient(ellipse, rgba(108,127,255,0.12) 0%, transparent 70%);
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+
+  .cta-title {
+    font-size: clamp(2.5rem, 5vw, 4rem);
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    margin-bottom: 20px;
+    position: relative;
+  }
+
+  .cta-desc {
+    font-size: 1.1rem;
+    color: var(--muted);
+    max-width: 500px;
+    margin: 0 auto 48px;
+    font-weight: 300;
+  }
+
+  .cta-actions {
+    display: flex;
+    justify-content: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  /* ── FOOTER ── */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 40px 0;
+    position: relative;
+    z-index: 1;
+  }
+
+  .footer-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .footer-logo {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 1rem;
+    background: linear-gradient(135deg, #fff 30%, var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .footer-links {
+    display: flex;
+    gap: 28px;
+    list-style: none;
+  }
+
+  .footer-links a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.85rem;
+    transition: color 0.2s;
+  }
+  .footer-links a:hover { color: var(--text); }
+
+  .footer-copy {
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+
+  /* ── ANIMATIONS ── */
+  .fade-up {
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+  .fade-up.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 900px) {
+    nav { padding: 16px 24px; }
+    .nav-links { display: none; }
+    .hero-inner { grid-template-columns: 1fr; }
+    .hero-visual { display: none; }
+    .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 32px; }
+    .stat-item { border-right: none; padding: 0; }
+    .features-grid { grid-template-columns: 1fr; }
+    .arch-grid { grid-template-columns: 1fr; }
+    .firebase-grid { grid-template-columns: 1fr; }
+    .content-flow { grid-template-columns: repeat(2, 1fr); }
+    .security-grid { grid-template-columns: 1fr; }
+    .contribute-cards { grid-template-columns: 1fr; }
+    .footer-inner { flex-direction: column; gap: 20px; text-align: center; }
+  }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-logo">SDTool</div>
+  <ul class="nav-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#architecture">Architecture</a></li>
+    <li><a href="#firebase">Firebase</a></li>
+    <li><a href="#contribute">Contribute</a></li>
+    <li><a href="https://github.com/saurabhsharma92/SD-Tool-ios" class="nav-cta">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+      GitHub
+    </a></li>
+  </ul>
+</nav>
+
+<!-- HERO -->
+<section id="hero">
+  <div class="hero-glow"></div>
+  <div class="hero-glow-2"></div>
+  <div class="container">
+    <div class="hero-inner">
+      <div>
+        <div class="hero-badge">iOS 17 · Swift 5.9 · Firebase</div>
+        <h1 class="hero-title">
+          Master<br>
+          <span class="line-accent">System Design</span><br>
+          on the go
+        </h1>
+        <p class="hero-desc">
+          A native iOS app for engineers. Read curated articles, follow top engineering blogs, study with flash cards — with Gemini AI to explain it all.
+        </p>
+        <div class="hero-actions">
+          <a href="https://github.com/saurabhsharma92/SD-Tool-ios" class="btn-primary">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+            View on GitHub
+          </a>
+          <a href="#features" class="btn-secondary">Explore Features →</a>
+        </div>
+      </div>
+
+      <div class="hero-visual">
+        <div class="phone">
+          <div class="phone-notch"></div>
+          <div class="phone-screen">
+            <div style="font-size:8px;color:var(--muted);font-family:'Syne',sans-serif;font-weight:700;letter-spacing:0.05em;padding:4px 0 8px;">HOME</div>
+
+            <div class="phone-card">
+              <div class="phone-card-title">📌 Daily Pick</div>
+              <div class="phone-row">
+                <div class="phone-dot" style="background:var(--accent)"></div>
+                <div class="phone-label">Consistent Hashing Deep Dive</div>
+                <div class="phone-chip">New</div>
+              </div>
+            </div>
+
+            <div class="phone-card" style="background:rgba(167,139,250,0.06);border-color:rgba(167,139,250,0.15)">
+              <div class="phone-card-title">📖 In Progress</div>
+              <div class="phone-row">
+                <div class="phone-dot" style="background:var(--accent2)"></div>
+                <div class="phone-label">Database Indexing</div>
+                <div class="phone-chip" style="background:rgba(167,139,250,0.15);color:var(--accent2)">64%</div>
+              </div>
+              <div class="phone-row">
+                <div class="phone-dot" style="background:var(--accent2)"></div>
+                <div class="phone-label">CAP Theorem</div>
+                <div class="phone-chip" style="background:rgba(167,139,250,0.15);color:var(--accent2)">31%</div>
+              </div>
+            </div>
+
+            <div class="phone-ai-card">
+              <div class="phone-ai-label">✦ AI Summary</div>
+              <div class="phone-ai-text">Consistent hashing minimizes key remapping when nodes join or leave a cluster by mapping both keys and nodes to a ring...</div>
+            </div>
+
+            <div class="phone-tab-bar">
+              <div class="tab-icon active">🏠</div>
+              <div class="tab-icon">📄</div>
+              <div class="tab-icon">📰</div>
+              <div class="tab-icon">🃏</div>
+              <div class="tab-icon">⚙️</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATS -->
+<div class="stats-bar">
+  <div class="container">
+    <div class="stats-grid">
+      <div class="stat-item fade-up">
+        <div class="stat-number">5</div>
+        <div class="stat-label">App Tabs</div>
+      </div>
+      <div class="stat-item fade-up" style="transition-delay:0.1s">
+        <div class="stat-number">3</div>
+        <div class="stat-label">AI Modes</div>
+      </div>
+      <div class="stat-item fade-up" style="transition-delay:0.2s">
+        <div class="stat-number">100%</div>
+        <div class="stat-label">Native SwiftUI</div>
+      </div>
+      <div class="stat-item fade-up" style="transition-delay:0.3s">
+        <div class="stat-number">Free</div>
+        <div class="stat-label">No Subscription</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FEATURES -->
+<section id="features">
+  <div class="container">
+    <div class="section-label">Features</div>
+    <h2 class="section-title fade-up">Everything you need<br>to level up</h2>
+    <p class="section-desc fade-up">Built for engineers who want to learn system design without switching between a dozen tabs.</p>
+
+    <div class="features-grid">
+      <div class="feature-card fade-up">
+        <div class="feature-icon" style="background:rgba(108,127,255,0.12)">📄</div>
+        <div class="feature-title">Articles</div>
+        <div class="feature-desc">Markdown articles synced from GitHub. Native rendering with Mermaid diagram support, syntax highlighting, and tap-to-zoom images.</div>
+        <span class="feature-tag" style="background:rgba(108,127,255,0.1);color:var(--accent)">DocReaderView</span>
+      </div>
+
+      <div class="feature-card fade-up" style="transition-delay:0.05s">
+        <div class="feature-icon" style="background:rgba(167,139,250,0.12)">🤖</div>
+        <div class="feature-title">AI Assistant</div>
+        <div class="feature-desc">Powered by Gemini 2.5 Flash Lite via Firebase AI. Summarize any article or blog post, get an ELI5 explanation, or chat with full article context.</div>
+        <span class="feature-tag" style="background:rgba(167,139,250,0.1);color:var(--accent2)">GeminiService</span>
+      </div>
+
+      <div class="feature-card fade-up" style="transition-delay:0.1s">
+        <div class="feature-icon" style="background:rgba(52,211,153,0.12)">📰</div>
+        <div class="feature-title">Engineering Blogs</div>
+        <div class="feature-desc">RSS feeds from Netflix, Uber, Airbnb, Google and more. Cached locally with configurable refresh. AI summaries on any post.</div>
+        <span class="feature-tag" style="background:rgba(52,211,153,0.1);color:var(--accent3)">BlogFeedService</span>
+      </div>
+
+      <div class="feature-card fade-up" style="transition-delay:0.15s">
+        <div class="feature-icon" style="background:rgba(245,158,11,0.12)">🃏</div>
+        <div class="feature-title">Flash Cards</div>
+        <div class="feature-desc">Study decks synced from GitHub with SHA-based change detection. Know / Don't Know tracking with progress persistence.</div>
+        <span class="feature-tag" style="background:rgba(245,158,11,0.1);color:#F59E0B">FlashCardStore</span>
+      </div>
+
+      <div class="feature-card fade-up" style="transition-delay:0.2s">
+        <div class="feature-icon" style="background:rgba(239,68,68,0.12)">🔐</div>
+        <div class="feature-title">Secure Auth</div>
+        <div class="feature-desc">Google Sign-In via Firebase Authentication. Face ID / Touch ID lock with passcode fallback. App Check enforced on all AI endpoints.</div>
+        <span class="feature-tag" style="background:rgba(239,68,68,0.1);color:#EF4444">BiometricService</span>
+      </div>
+
+      <div class="feature-card fade-up" style="transition-delay:0.25s">
+        <div class="feature-icon" style="background:rgba(20,184,166,0.12)">🏠</div>
+        <div class="feature-title">Smart Home</div>
+        <div class="feature-desc">Daily picks, in-progress articles, completed articles, liked blogs — all surfaced on a dashboard with one-tap deep navigation into any tab.</div>
+        <span class="feature-tag" style="background:rgba(20,184,166,0.1);color:#14B8A6">NavigationRouter</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ARCHITECTURE -->
+<section id="architecture">
+  <div class="container">
+    <div class="section-label">Architecture</div>
+    <h2 class="section-title fade-up">Clean layers,<br>Swift concurrency</h2>
+    <p class="section-desc fade-up">Unidirectional data flow with SwiftUI ObservableObject stores and Swift actor-based services.</p>
+
+    <div class="arch-grid">
+      <div>
+        <div class="arch-layers">
+          <div class="arch-layer layer-views fade-up">
+            <div class="arch-layer-title" style="color:var(--accent)">SwiftUI Views</div>
+            <div style="font-size:0.8rem;color:var(--muted)">Reads @Published stores, drives navigation via NavigationRouter</div>
+            <div class="arch-chips">
+              <span class="arch-chip">HomeView</span>
+              <span class="arch-chip">DocReaderView</span>
+              <span class="arch-chip">CompanyBlogView</span>
+              <span class="arch-chip">StudyView</span>
+            </div>
+          </div>
+
+          <div class="arch-connector">
+            <div class="connector-line"></div>
+            <span style="font-size:0.7rem">@Published bindings</span>
+            <div class="connector-line"></div>
+          </div>
+
+          <div class="arch-layer layer-stores fade-up">
+            <div class="arch-layer-title" style="color:var(--accent2)">ObservableObject Stores</div>
+            <div style="font-size:0.8rem;color:var(--muted)">State management, UserDefaults persistence</div>
+            <div class="arch-chips">
+              <span class="arch-chip">DocStore</span>
+              <span class="arch-chip">BlogStore</span>
+              <span class="arch-chip">ActivityStore</span>
+              <span class="arch-chip">AuthStore</span>
+            </div>
+          </div>
+
+          <div class="arch-connector">
+            <div class="connector-line"></div>
+            <span style="font-size:0.7rem">async / await</span>
+            <div class="connector-line"></div>
+          </div>
+
+          <div class="arch-layer layer-services fade-up">
+            <div class="arch-layer-title" style="color:var(--accent3)">Swift Actors (Services)</div>
+            <div style="font-size:0.8rem;color:var(--muted)">Thread-safe, concurrent-safe network + AI calls</div>
+            <div class="arch-chips">
+              <span class="arch-chip">DocSyncService</span>
+              <span class="arch-chip">GeminiService</span>
+              <span class="arch-chip">BlogFeedService</span>
+            </div>
+          </div>
+
+          <div class="arch-connector">
+            <div class="connector-line"></div>
+            <span style="font-size:0.7rem">HTTPS</span>
+            <div class="connector-line"></div>
+          </div>
+
+          <div class="arch-layer layer-external fade-up">
+            <div class="arch-layer-title" style="color:#F59E0B">External Services</div>
+            <div style="font-size:0.8rem;color:var(--muted)">No backend needed — GitHub + Firebase only</div>
+            <div class="arch-chips">
+              <span class="arch-chip">GitHub Raw</span>
+              <span class="arch-chip">Firebase AI</span>
+              <span class="arch-chip">Firebase Auth</span>
+              <span class="arch-chip">RSS Feeds</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-diagram fade-up">
+        <div class="flow-title">App Launch Sequence</div>
+
+        <div class="flow-step">
+          <div class="flow-num">01</div>
+          <div class="flow-content">
+            <div class="flow-step-title">FirebaseApp.configure()</div>
+            <div class="flow-step-desc">Must be first. AppCheck debug provider registered in #if DEBUG before configure.</div>
+          </div>
+        </div>
+
+        <div class="flow-step">
+          <div class="flow-num">02</div>
+          <div class="flow-content">
+            <div class="flow-step-title">Auth state listener</div>
+            <div class="flow-step-desc">AuthStore subscribes to Firebase auth changes. Fires immediately with persisted session or nil.</div>
+            <code class="flow-code">Auth.auth().addStateDidChangeListener { _, user in
+  self.user      = user
+  self.isLoading = false
+}</code>
+          </div>
+        </div>
+
+        <div class="flow-step">
+          <div class="flow-num">03</div>
+          <div class="flow-content">
+            <div class="flow-step-title">Auth gate</div>
+            <div class="flow-step-desc">isLoading → splash. Not signed in → LoginView. Signed in → check biometric.</div>
+          </div>
+        </div>
+
+        <div class="flow-step">
+          <div class="flow-num">04</div>
+          <div class="flow-content">
+            <div class="flow-step-title">Biometric gate</div>
+            <div class="flow-step-desc">Face ID / passcode. On success → ContentView (TabView). Re-locks on background.</div>
+          </div>
+        </div>
+
+        <div class="flow-step" style="margin-bottom:0">
+          <div class="flow-num">05</div>
+          <div class="flow-content" style="padding-bottom:0">
+            <div class="flow-step-title">ContentView ready</div>
+            <div class="flow-step-desc">5-tab experience. NavigationRouter drives cross-tab deep linking from Home cards.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FIREBASE -->
+<section id="firebase">
+  <div class="container">
+    <div class="section-label">Firebase</div>
+    <h2 class="section-title fade-up">Powered by Firebase,<br>secured end-to-end</h2>
+    <p class="section-desc fade-up">Three Firebase services doing exactly what they're designed for — nothing more.</p>
+
+    <div class="firebase-grid">
+      <div class="firebase-services">
+        <div class="fb-service fade-up">
+          <div class="fb-icon" style="background:rgba(108,127,255,0.12)">🔑</div>
+          <div>
+            <div class="fb-title">Firebase Authentication</div>
+            <div class="fb-desc">Google Sign-In via OAuth. Firebase persists sessions across app launches. Anonymous auth available in development builds.</div>
+            <span class="badge-safe">✓ Tokens managed by SDK</span>
+          </div>
+        </div>
+
+        <div class="fb-service fade-up" style="transition-delay:0.1s">
+          <div class="fb-icon" style="background:rgba(167,139,250,0.12)">✦</div>
+          <div>
+            <div class="fb-title">Firebase AI Logic (Gemini)</div>
+            <div class="fb-desc">Gemini 2.5 Flash Lite via <code style="font-size:0.8em">.googleAI()</code> backend. Free tier, no billing setup. Called through a Swift actor for thread safety.</div>
+            <span class="badge-safe">✓ App Check enforced</span>
+          </div>
+        </div>
+
+        <div class="fb-service fade-up" style="transition-delay:0.2s">
+          <div class="fb-icon" style="background:rgba(52,211,153,0.12)">🛡️</div>
+          <div>
+            <div class="fb-title">App Check</div>
+            <div class="fb-desc">Enforced on Firebase AI endpoint. Debug provider for simulator (registered token). DeviceCheck for physical devices in release. Prevents API abuse.</div>
+            <span class="badge-safe">✓ Enforced in production</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="code-block fade-up">
+        <div class="code-header">
+          <div class="code-dot" style="background:#FF5F56"></div>
+          <div class="code-dot" style="background:#FFBD2E"></div>
+          <div class="code-dot" style="background:#27C93F"></div>
+          <span class="code-filename">GeminiService.swift</span>
+        </div>
+        <div class="code-body">
+<span class="c-comment">// Swift actor — thread-safe AI calls</span>
+<span class="c-keyword">actor</span> <span class="c-type">GeminiService</span> {
+  <span class="c-keyword">static let</span> shared = <span class="c-type">GeminiService</span>()
+
+  <span class="c-keyword">func</span> <span class="c-func">summarizeArticle</span>(
+    _ doc: <span class="c-type">Doc</span>,
+    markdown: <span class="c-type">String</span>
+  ) <span class="c-keyword">async throws</span> -> <span class="c-type">String</span> {
+
+    <span class="c-keyword">let</span> ai = <span class="c-type">FirebaseAI</span>.<span class="c-func">firebaseAI</span>(
+      backend: .<span class="c-func">googleAI</span>()
+    )
+    <span class="c-keyword">let</span> model = ai.<span class="c-func">generativeModel</span>(
+      modelName: <span class="c-string">"gemini-2.5-flash-lite"</span>
+    )
+    <span class="c-keyword">let</span> prompt = <span class="c-func">buildPrompt</span>(doc, markdown)
+    <span class="c-keyword">let</span> response = <span class="c-keyword">try await</span>
+      model.<span class="c-func">generateContent</span>(prompt)
+
+    <span class="c-keyword">return</span> response.text ?? <span class="c-string">""</span>
+  }
+}
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CONTENT SYSTEM -->
+<section id="content-system">
+  <div class="container">
+    <div class="section-label">Content System</div>
+    <h2 class="section-title fade-up">GitHub as your CMS</h2>
+    <p class="section-desc fade-up">All content lives in this repository. No backend, no API keys for content, full community contribution via pull requests.</p>
+
+    <div class="content-flow">
+      <div class="content-step fade-up">
+        <div class="content-step-num">01 / WRITE</div>
+        <span class="content-step-icon">✍️</span>
+        <div class="content-step-title">Author Content</div>
+        <div class="content-step-desc">Write a Markdown article using the template. Add Mermaid diagrams for architecture visuals. Fork the repo and open a PR.</div>
+        <div class="content-arrow">→</div>
+      </div>
+
+      <div class="content-step fade-up" style="transition-delay:0.1s">
+        <div class="content-step-num">02 / REGISTER</div>
+        <span class="content-step-icon">📋</span>
+        <div class="content-step-title">Add to Index</div>
+        <div class="content-step-desc">Add one row to <code style="font-size:0.8em">articles/index.md</code> with filename, display name, and category. The app reads this on sync.</div>
+        <div class="content-arrow">→</div>
+      </div>
+
+      <div class="content-step fade-up" style="transition-delay:0.2s">
+        <div class="content-step-num">03 / MERGE</div>
+        <span class="content-step-icon">🔀</span>
+        <div class="content-step-title">PR Merged</div>
+        <div class="content-step-desc">Maintainer reviews and merges the PR. Content is immediately available on GitHub's raw CDN.</div>
+        <div class="content-arrow">→</div>
+      </div>
+
+      <div class="content-step fade-up" style="transition-delay:0.3s">
+        <div class="content-step-num">04 / LIVE</div>
+        <span class="content-step-icon">📱</span>
+        <div class="content-step-title">Available in App</div>
+        <div class="content-step-desc">Users tap the sync button. App fetches the updated index, detects new articles, downloads them. No app update required.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SECURITY -->
+<section id="security">
+  <div class="container">
+    <div class="section-label">Security</div>
+    <h2 class="section-title fade-up">Security by default,<br>not by accident</h2>
+    <p class="section-desc fade-up">Built with the right defaults from the start.</p>
+
+    <div class="security-grid">
+      <div class="security-item fade-up">
+        <div class="security-icon" style="background:rgba(52,211,153,0.12)">🔒</div>
+        <div>
+          <div class="security-title">No Secrets in Source</div>
+          <div class="security-desc"><code style="font-size:0.82em">GoogleService-Info.plist</code> is in <code style="font-size:0.82em">.gitignore</code>. All API keys are in the plist only. No credentials embedded in Swift code.</div>
+          <span class="badge-safe">✓ gitignore enforced</span>
+        </div>
+      </div>
+
+      <div class="security-item fade-up" style="transition-delay:0.1s">
+        <div class="security-icon" style="background:rgba(108,127,255,0.12)">🛡️</div>
+        <div>
+          <div class="security-title">App Check Enforced</div>
+          <div class="security-desc">Firebase AI endpoint is protected by App Check. Debug token for simulator, DeviceCheck for production. Prevents API key abuse.</div>
+          <span class="badge-safe">✓ Production enforced</span>
+        </div>
+      </div>
+
+      <div class="security-item fade-up" style="transition-delay:0.15s">
+        <div class="security-icon" style="background:rgba(167,139,250,0.12)">🔐</div>
+        <div>
+          <div class="security-title">Debug Code Isolated</div>
+          <div class="security-desc">All debug bypass logic (<code style="font-size:0.82em">debugBypass</code>, <code style="font-size:0.82em">forceUnlock</code>) is strictly inside <code style="font-size:0.82em">#if DEBUG</code>. Zero debug code in release builds.</div>
+          <span class="badge-safe">✓ Compiler-enforced</span>
+        </div>
+      </div>
+
+      <div class="security-item fade-up" style="transition-delay:0.2s">
+        <div class="security-icon" style="background:rgba(245,158,11,0.12)">🌐</div>
+        <div>
+          <div class="security-title">HTTPS Only</div>
+          <div class="security-desc">All network requests use HTTPS. <code style="font-size:0.82em">NSAllowsArbitraryLoads</code> is NOT set. ATS enforced by default. No insecure HTTP anywhere.</div>
+          <span class="badge-safe">✓ ATS enforced</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CONTRIBUTE -->
+<section id="contribute">
+  <div class="container">
+    <div class="section-label">Contributing</div>
+    <h2 class="section-title fade-up">Community-driven<br>from day one</h2>
+    <p class="section-desc fade-up">SDTool grows through the community. Every article, blog, and flash card deck is a pull request away.</p>
+
+    <div class="contribute-cards">
+      <a href="https://github.com/saurabhsharma92/SD-Tool-ios" class="contribute-card fade-up">
+        <div class="contribute-num">01</div>
+        <div class="contribute-title">Submit an Article</div>
+        <div class="contribute-desc">Fork the repo, copy the article template, write your system design deep-dive, add it to the index, and open a PR.</div>
+        <div class="contribute-link">Read the guide →</div>
+      </a>
+
+      <a href="https://github.com/saurabhsharma92/SD-Tool-ios" class="contribute-card fade-up" style="transition-delay:0.1s">
+        <div class="contribute-num">02</div>
+        <div class="contribute-title">Add a Blog</div>
+        <div class="contribute-desc">Know a great engineering blog with an RSS feed? Add one row to <code style="font-size:0.85em">blogs/index.md</code> with the company, website, and RSS URL.</div>
+        <div class="contribute-link">Add a company →</div>
+      </a>
+
+      <a href="https://github.com/saurabhsharma92/SD-Tool-ios/issues" class="contribute-card fade-up" style="transition-delay:0.2s">
+        <div class="contribute-num">03</div>
+        <div class="contribute-title">Report a Bug</div>
+        <div class="contribute-desc">Found something broken? Open a GitHub issue with steps to reproduce, iOS version, and a screenshot if applicable.</div>
+        <div class="contribute-link">Open an issue →</div>
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section id="cta">
+  <div class="cta-glow"></div>
+  <div class="container">
+    <h2 class="cta-title fade-up">Start learning.<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">Today.</span></h2>
+    <p class="cta-desc fade-up">Clone the repo, set up Firebase, and you're running in under 10 minutes.</p>
+    <div class="cta-actions fade-up">
+      <a href="https://github.com/saurabhsharma92/SD-Tool-ios" class="btn-primary">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+        Clone on GitHub
+      </a>
+      <a href="docs/FIREBASE_SETUP.md" class="btn-secondary">Firebase Setup Guide →</a>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">SDTool</div>
+      <ul class="footer-links">
+        <li><a href="docs/ARCHITECTURE.md">Architecture</a></li>
+        <li><a href="docs/FIREBASE_SETUP.md">Firebase</a></li>
+        <li><a href="docs/CONTRIBUTING.md">Contributing</a></li>
+        <li><a href="docs/SECURITY.md">Security</a></li>
+        <li><a href="https://github.com/saurabhsharma92/SD-Tool-ios">GitHub</a></li>
+      </ul>
+      <div class="footer-copy">MIT License · Built with Swift & Firebase</div>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Intersection observer for fade-up animations
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(el => {
+      if (el.isIntersecting) {
+        el.target.classList.add('visible');
+      }
+    });
+  }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+
+  document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+
+  // Mouse spotlight on feature cards
+  document.querySelectorAll('.feature-card').forEach(card => {
+    card.addEventListener('mousemove', (e) => {
+      const rect = card.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width * 100).toFixed(1);
+      const y = ((e.clientY - rect.top) / rect.height * 100).toFixed(1);
+      card.style.setProperty('--mx', x + '%');
+      card.style.setProperty('--my', y + '%');
+    });
+  });
+</script>
+
+</body>
+</html>
