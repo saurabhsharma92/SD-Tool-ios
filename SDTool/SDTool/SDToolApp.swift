@@ -7,6 +7,14 @@ import SwiftUI
 import FirebaseCore
 import FirebaseAppCheck
 
+// MARK: - App Check Factory (Release builds — App Attest only)
+
+private final class SDToolAppCheckFactory: NSObject, AppCheckProviderFactory {
+    func createProvider(with app: FirebaseApp) -> (any AppCheckProvider)? {
+        return AppAttestProvider(app: app)
+    }
+}
+
 @main
 struct SDToolApp: App {
     @Environment(\.scenePhase) private var scenePhase
@@ -21,14 +29,13 @@ struct SDToolApp: App {
     @State private var showSplash: Bool = false
 
     init() {
-        // App Check provider:
-        // - DEBUG builds (simulator + direct Xcode runs): debug token
-        // - RELEASE builds (TestFlight + App Store): App Attest
-        // AppCheckAppAttestProviderFactory is Firebase's built-in factory — no custom class needed.
+        // App Check provider selection:
+        // - DEBUG (simulator + direct Xcode runs): debug token
+        // - RELEASE (TestFlight + App Store): App Attest (registered in Firebase Console)
         #if DEBUG
         AppCheck.setAppCheckProviderFactory(AppCheckDebugProviderFactory())
         #else
-        AppCheck.setAppCheckProviderFactory(AppCheckAppAttestProviderFactory())
+        AppCheck.setAppCheckProviderFactory(SDToolAppCheckFactory())
         #endif
 
         FirebaseApp.configure()

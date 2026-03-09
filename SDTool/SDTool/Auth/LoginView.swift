@@ -5,6 +5,7 @@
 
 import SwiftUI
 import GoogleSignInSwift
+import AuthenticationServices
 
 struct LoginView: View {
     @ObservedObject private var authStore = AuthStore.shared
@@ -62,10 +63,10 @@ struct LoginView: View {
                     }
                 }
 
-                Spacer()
+                Spacer(minLength: 20)
 
-                // Sign-in buttons
-                VStack(spacing: 14) {
+                // Sign-in buttons — wrapped to prevent clipping on small screens
+                VStack(spacing: 12) {
                     if authStore.isLoading {
                         ProgressView()
                             .tint(.white)
@@ -112,6 +113,23 @@ struct LoginView: View {
                                     .stroke(Color.white.opacity(0.2), lineWidth: 1)
                             )
                         }
+
+                        // Sign in with Apple
+                        Button {
+                            Task { await authStore.signInWithApple() }
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "apple.logo")
+                                    .font(.system(size: 18, weight: .medium))
+                                Text("Continue with Apple")
+                                    .font(.system(size: 16, weight: .semibold))
+                            }
+                            .foregroundStyle(.black)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 52)
+                            .background(Color.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                        }
                     }
 
                     if let error = authStore.errorMessage {
@@ -123,6 +141,7 @@ struct LoginView: View {
                     }
                 }
                 .padding(.horizontal, 28)
+                .padding(.bottom, 8)
 
                 // Footer
                 Text("By continuing you agree to our Terms of Service")
