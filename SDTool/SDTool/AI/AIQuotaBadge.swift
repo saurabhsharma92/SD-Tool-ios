@@ -22,14 +22,28 @@ struct AIQuotaBadge: View {
     private var remaining: Int    { quota.remaining(for: model) }
     private var fraction: Double  { quota.fraction(for: model) }
     private var used: Int         { quota.usedToday }
+    private var isExhausted: Bool { quota.isExhausted }
 
     private var statusColor: Color {
+        if isExhausted { return .red }
         switch fraction {
         case ..<0.5:  return .green
         case ..<0.75: return .yellow
         case ..<0.9:  return .orange
         default:      return .red
         }
+    }
+
+    /// Label shown for "Est. Left" — clarifies server-confirmed exhaustion
+    private var remainingLabel: String {
+        isExhausted ? "Confirmed 0" : "Est. Left*"
+    }
+
+    /// Footer disclaimer
+    private var disclaimer: String {
+        isExhausted
+            ? "⚠️ Server confirmed quota exhausted. Resets midnight PT."
+            : "* Tracks your device only. Quota is shared across all users."
     }
 
     var body: some View {
@@ -112,7 +126,7 @@ struct AIQuotaBadge: View {
             HStack {
                 quotaStat(value: "\(used)",              label: "Used")
                 Divider().frame(height: 28)
-                quotaStat(value: "\(remaining)",         label: "Est. Left*", color: statusColor)
+                quotaStat(value: "\(remaining)",         label: remainingLabel, color: statusColor)
                 Divider().frame(height: 28)
                 quotaStat(value: "\(model.dailyLimit)",  label: "Daily Limit")
             }
@@ -134,7 +148,7 @@ struct AIQuotaBadge: View {
             Text("Resets at midnight Pacific Time")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
-            Text("* Tracks your device only. Quota is shared across all users.")
+            Text(disclaimer)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)

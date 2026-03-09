@@ -207,10 +207,15 @@ actor GeminiService {
             for (k, v) in nsErr.userInfo { print("[Gemini]   \(k): \(v)") }
             #endif
             let mapped = AIError.from(error)
-            // Charge quota for 429s even though the call failed —
-            // the request DID count against the project quota server-side
-            if case .quotaExceeded = mapped { await chargeQuota(.summary) }
-            if case .rateLimited   = mapped { await chargeQuota(.summary) }
+            // On quota exceeded: mark exhausted so counter shows full even after reinstall
+            if case .quotaExceeded = mapped {
+                let model = AppSettings.GeminiModel(rawValue:
+                    UserDefaults.standard.string(forKey: AppSettings.Key.geminiModel)
+                    ?? AppSettings.Default.geminiModel) ?? .flashLite
+                AIQuotaStore.shared.markExhausted(for: model, type: .summary)
+            } else if case .rateLimited = mapped {
+                await chargeQuota(.summary)
+            }
             throw mapped
         }
     }
@@ -230,8 +235,14 @@ actor GeminiService {
             for (k, v) in nsErr.userInfo { print("[Gemini]   \(k): \(v)") }
             #endif
             let mapped = AIError.from(error)
-            if case .quotaExceeded = mapped { await chargeQuota(.chat) }
-            if case .rateLimited   = mapped { await chargeQuota(.chat) }
+            if case .quotaExceeded = mapped {
+                let model = AppSettings.GeminiModel(rawValue:
+                    UserDefaults.standard.string(forKey: AppSettings.Key.geminiModel)
+                    ?? AppSettings.Default.geminiModel) ?? .flashLite
+                AIQuotaStore.shared.markExhausted(for: model, type: .chat)
+            } else if case .rateLimited = mapped {
+                await chargeQuota(.chat)
+            }
             throw mapped
         }
     }

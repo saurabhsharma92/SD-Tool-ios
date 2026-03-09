@@ -21,9 +21,14 @@ struct SDToolApp: App {
     @State private var showSplash: Bool = false
 
     init() {
+        // App Check provider:
+        // - DEBUG builds (simulator + direct Xcode runs): debug token
+        // - RELEASE builds (TestFlight + App Store): App Attest
+        // AppCheckAppAttestProviderFactory is Firebase's built-in factory — no custom class needed.
         #if DEBUG
-        let providerFactory = AppCheckDebugProviderFactory()
-        AppCheck.setAppCheckProviderFactory(providerFactory)
+        AppCheck.setAppCheckProviderFactory(AppCheckDebugProviderFactory())
+        #else
+        AppCheck.setAppCheckProviderFactory(AppCheckAppAttestProviderFactory())
         #endif
 
         FirebaseApp.configure()
