@@ -19,24 +19,35 @@ struct DocListView: View {
         NavigationStack(path: $navPath) {
             Group {
                 if store.docs.isEmpty && !store.isSyncing {
-                    ContentUnavailableView(
-                        "No Articles Found",
-                        systemImage: "doc.text",
-                        description: Text("Tap ↓ to sync articles from GitHub")
-                    )
+                    VStack(spacing: 0) {
+                        ActivityDialView(accentColor: .indigo)
+                            .padding(.top, 8)
+                        ContentUnavailableView(
+                            "No Articles Found",
+                            systemImage: "doc.text",
+                            description: Text("Tap ↓ to sync articles from GitHub")
+                        )
+                    }
                 } else if viewStyle == "grid" {
                     DocGridView(docStore: store, sectionStore: sectionStore)
+                        .safeAreaInset(edge: .top, spacing: 0) {
+                            ActivityDialView(accentColor: .indigo)
+                                .padding(.top, 8)
+                        }
                 } else {
                     SectionedDocListView(docStore: store, sectionStore: sectionStore)
+                        .safeAreaInset(edge: .top, spacing: 0) {
+                            ActivityDialView(accentColor: .indigo)
+                                .padding(.top, 8)
+                        }
                 }
             }
             .navigationTitle("Articles")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
-                // Activity dial — left side
-                ToolbarItem(placement: .topBarLeading) {
-                    ActivityDialView(accentColor: .indigo)
-                        .frame(width: 32, height: 32)
+                // AI quota pill — centre of toolbar
+                ToolbarItem(placement: .bottomBar) {
+                    AIQuotaBadge()
                 }
 
                 // Right side controls

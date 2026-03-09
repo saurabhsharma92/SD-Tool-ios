@@ -9,6 +9,7 @@ import FirebaseAuth
 // MARK: - Root Settings
 
 struct SettingsView: View {
+    @AppStorage(AppSettings.Key.geminiModel)     private var geminiModel   = AppSettings.Default.geminiModel
     @AppStorage(AppSettings.Key.colorScheme)   private var colorScheme   = AppSettings.Default.colorScheme
     @AppStorage(AppSettings.Key.faceIDEnabled) private var faceIDEnabled = AppSettings.Default.faceIDEnabled
     @AppStorage(AppSettings.Key.appFont)       private var appFont       = AppSettings.Default.appFont
@@ -118,11 +119,43 @@ struct SettingsView: View {
                     }
                 }
 
+                // ── AI ─────────────────────────────────────────────
+                Section("AI Model") {
+                    Picker("Gemini Model", selection: $geminiModel) {
+                        ForEach(AppSettings.GeminiModel.allCases, id: \.rawValue) { m in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(m.label)
+                                Text(m.enablementNote)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .tag(m.rawValue)
+                        }
+                    }
+                    .pickerStyle(.navigationLink)
+
+                    // Model description card
+                    if let selected = AppSettings.GeminiModel(rawValue: geminiModel) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "sparkles")
+                                .foregroundStyle(.indigo)
+                                .font(.callout)
+                            Text(selected.description)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 2)
+                    }
+
+                    AIQuotaBadge(expanded: true)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                }
+
                 // ── About ──────────────────────────────────────────
                 Section("About") {
                     LabeledContent("Version", value: appVersion)
                     LabeledContent("Build",   value: buildNumber)
-                    LabeledContent("Model",   value: "Gemini 2.5 Flash Lite")
+                    LabeledContent("Model",   value: AppSettings.GeminiModel(rawValue: geminiModel)?.label ?? geminiModel)
                 }
             }
             .navigationTitle("Settings")

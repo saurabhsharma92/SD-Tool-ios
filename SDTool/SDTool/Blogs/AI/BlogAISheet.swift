@@ -73,19 +73,10 @@ struct BlogAISheet: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                     } else if let err = error {
-                        VStack(spacing: 16) {
-                            Image(systemName: err.systemImage)
-                                .font(.system(size: 40))
-                                .foregroundStyle(.secondary)
-                            Text(err.localizedDescription ?? "Something went wrong.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 32)
-                            Button("Try Again") { Task { await generate() } }
-                                .buttonStyle(.bordered)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        AIErrorView(
+                            error: err,
+                            onRetry: err.isRetryable ? { Task { await generate() } } : nil
+                        )
 
                     } else if !result.isEmpty {
                         ScrollView {
@@ -102,6 +93,9 @@ struct BlogAISheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    AIQuotaBadge()
                 }
                 if !isLoading && !result.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {

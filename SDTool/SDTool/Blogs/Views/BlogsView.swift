@@ -25,6 +25,9 @@ struct BlogsView: View {
             .navigationTitle("Blogs")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
+                ToolbarItem(placement: .bottomBar) {
+                    AIQuotaBadge()
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     if blogStore.isSyncing {
                         ProgressView().scaleEffect(0.8)

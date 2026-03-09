@@ -43,8 +43,24 @@ struct ArticleChatView: View {
                                 suggestionsView
                             }
                             ForEach(messages) { msg in
-                                MessageBubble(message: msg)
+                                if let err = msg.error {
+                                    AIErrorBubble(
+                                        error: err,
+                                        onRetry: err.isRetryable ? {
+                                            // Remove error message and resend last user message
+                                            if let lastUser = messages.last(where: { $0.role == .user }) {
+                                                messages.removeAll { $0.error != nil }
+                                                inputText = lastUser.text
+                                                messages.removeLast()   // remove user msg too
+                                                send()
+                                            }
+                                        } : nil
+                                    )
                                     .id(msg.id)
+                                } else {
+                                    MessageBubble(message: msg)
+                                        .id(msg.id)
+                                }
                             }
                             if isResponding {
                                 TypingIndicator()
@@ -76,6 +92,9 @@ struct ArticleChatView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    AIQuotaBadge()
                 }
                 if !messages.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -207,8 +226,7 @@ struct ArticleChatView: View {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isResponding else { return }
 
-        let userMsg = ChatMessage(role: .user, text: text)
-        messages.append(userMsg)
+        messages.append(.user(text))
         inputText   = ""
         isResponding = true
         error        = nil
@@ -220,20 +238,15 @@ struct ArticleChatView: View {
                     newMessage:    text,
                     contextSummary: contextSummary
                 )
-                let aiMsg = ChatMessage(role: .assistant, text: reply)
-                await MainActor.run { messages.append(aiMsg); isResponding = false }
+                await MainActor.run { messages.append(.assistant(reply)); isResponding = false }
             } catch let aiErr as AIError {
                 await MainActor.run {
-                    let errMsg = ChatMessage(role: .assistant,
-                                            text: "⚠️ \(aiErr.localizedDescription ?? "Error")")
-                    messages.append(errMsg)
+                    messages.append(.error(aiErr))
                     isResponding = false
                 }
             } catch {
                 await MainActor.run {
-                    let errMsg = ChatMessage(role: .assistant,
-                                            text: "⚠️ Something went wrong. Please try again.")
-                    messages.append(errMsg)
+                    messages.append(.error(.from(error)))
                     isResponding = false
                 }
             }

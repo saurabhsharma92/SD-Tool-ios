@@ -89,6 +89,11 @@ struct ArticleAISheet: View {
             }
             .onChange(of: mode) { Task { await generate() } }
             .task { await generate() }
+            .toolbar {
+                ToolbarItem(placement: .bottomBar) {
+                    AIQuotaBadge()
+                }
+            }
         }
     }
 
@@ -113,20 +118,10 @@ struct ArticleAISheet: View {
     }
 
     private func errorView(_ err: AIError) -> some View {
-        VStack(spacing: 16) {
-            Image(systemName: err.systemImage)
-                .font(.system(size: 40))
-                .foregroundStyle(.secondary)
-            Text(err.localizedDescription)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-            Button("Try Again") { Task { await generate() } }
-                .buttonStyle(.bordered)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 60)
+        AIErrorView(
+            error: err,
+            onRetry: err.isRetryable ? { Task { await generate() } } : nil
+        )
     }
 
     // MARK: - Generate

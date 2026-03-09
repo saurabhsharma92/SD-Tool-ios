@@ -17,8 +17,10 @@ struct SDToolApp: App {
     @ObservedObject private var authStore: AuthStore
     @ObservedObject private var biometric: BiometricService
 
+    // Controls whether the funny splash plays after sign-in
+    @State private var showSplash: Bool = false
+
     init() {
-        // App Check — debug provider for simulator/dev, DeviceCheck for release
         #if DEBUG
         let providerFactory = AppCheckDebugProviderFactory()
         AppCheck.setAppCheckProviderFactory(providerFactory)
@@ -29,17 +31,15 @@ struct SDToolApp: App {
         biometric = BiometricService.shared
     }
 
-    // Font design (serif/mono/rounded) applied via environment
     private var fontDesign: Font.Design {
         AppSettings.AppFont(rawValue: appFont)?.design ?? .default
     }
 
-    /// Maps fontSize scale to ContentSizeCategory so all relative fonts scale together
     private var fontSizeCategory: ContentSizeCategory {
         switch fontSize {
         case ..<0.85: return .extraSmall
         case ..<0.95: return .small
-        case ..<1.05: return .medium          // default
+        case ..<1.05: return .medium
         case ..<1.15: return .large
         case ..<1.25: return .extraLarge
         case ..<1.35: return .extraExtraLarge
@@ -51,21 +51,40 @@ struct SDToolApp: App {
         WindowGroup {
             Group {
                 if authStore.isLoading {
-                    splashView
+                    // Firebase checking persisted session — plain spinner
+                    firebaseLoadingView
+
                 } else if !authStore.isSignedIn {
+                    // Not signed in — show login
                     LoginView()
+                        .transition(.opacity)
+
+                } else if showSplash {
+                    // Funny animation plays once after each sign-in
+                    SplashView {
+                        showSplash = false
+                    }
+                    .transition(.opacity)
+
                 } else if needsBiometric {
                     LockScreenView()
+                        .transition(.opacity)
+
                 } else {
                     ContentView()
+                        .transition(.opacity)
                 }
             }
-            .animation(.easeInOut(duration: 0.3), value: authStore.isSignedIn)
-            .animation(.easeInOut(duration: 0.3), value: biometric.isUnlocked)
+            .animation(.easeInOut(duration: 0.35), value: authStore.isSignedIn)
+            .animation(.easeInOut(duration: 0.35), value: showSplash)
+            .animation(.easeInOut(duration: 0.35), value: biometric.isUnlocked)
             .preferredColorScheme(AppSettings.preferredColorScheme(for: colorScheme))
             .environment(\.font, .system(size: 17 * fontSize, design: fontDesign))
-            // Also propagate size to all relative fonts via environment
             .environment(\.sizeCategory, fontSizeCategory)
+            .onChange(of: authStore.isSignedIn) { _, signedIn in
+                // Trigger the funny splash the moment the user signs in
+                if signedIn { showSplash = true }
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -81,7 +100,6 @@ struct SDToolApp: App {
         }
     }
 
-    // Biometric gate — skipped for debug bypass
     private var needsBiometric: Bool {
         #if DEBUG
         if authStore.debugBypass { return false }
@@ -89,7 +107,7 @@ struct SDToolApp: App {
         return !biometric.isUnlocked
     }
 
-    private var splashView: some View {
+    private var firebaseLoadingView: some View {
         ZStack {
             Color(red: 0.06, green: 0.06, blue: 0.14).ignoresSafeArea()
             ProgressView().tint(.white).scaleEffect(1.3)
