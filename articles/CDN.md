@@ -3,6 +3,18 @@
 Modern applications face the challenge of serving a globally distributed user base. High latency in content delivery directly impacts application performance and user adoption. To mitigate this, Content Delivery Networks (CDNs) utilize distributed caching to serve content based on the requester's geographical proximity.
 By leveraging a network of edge servers, CDNs minimize the distance between the user and the data. While primarily optimized for large-scale static assets, CDNs are also increasingly used to accelerate dynamic content, such as API responses. When a request occurs, the CDN routes the user to the nearest edge server; if the content is not already cached (cache miss), it is fetched from the origin, stored at the edge, and delivered to the user. This architecture ensures high-speed, reliable delivery across diverse global sectors.
 
+```mermaid
+graph TD
+    A[User Request] --> B{DNS Routing}
+    B --> C[Nearest CDN Edge Server]
+    C --> D{Cache Hit?}
+    D -- Yes --> E[Deliver Content to User]
+    D -- No --> F[Fetch from Origin Server]
+    F --> G[Store in Edge Cache]
+    G --> E
+
+```
+
 ## How does CDN work?
 A CDN relies on three primary architectural components to minimize latency and optimize content delivery based on geographical proximity:
 Edge Servers / PoPs (Point of Presence): Distributed servers that cache and serve content directly to users within a specific geographic region.
@@ -31,6 +43,23 @@ Key Advantages:
 Automated Management: Content is automatically cached based on demand.
 Cost-Efficient Storage: Only "hot" (frequently requested) data occupies edge storage, while rarely accessed files remain on the origin.
 
+```mermaid
+sequenceDiagram
+    participant User
+    participant Edge as CDN Edge Server
+    participant Origin as Origin Server
+
+    User->>Edge: 1. Request Content (GET /image.png)
+    Note over Edge: Cache Miss
+    Edge->>Origin: 2. Fetch from Origin
+    Origin-->>Edge: 3. Return Content
+    Note over Edge: Store in Cache
+    Edge-->>User: 4. Deliver Content
+    
+    Note over User, Edge: Future requests served from Cache (Step 1 & 4 only)
+
+```
+
 2. Push CDN (Content Pre-fetching)
 In a Push model, the application actively uploads content to the CDN before a user ever requests it. The CDN acts more like a distributed storage bucket.
 Best For: Time-sensitive or critical content delivery where even the very first request must have zero latency.
@@ -39,3 +68,28 @@ Software Updates: Distributing a new app version or patch.
 Marketing Campaigns: Launching high-traffic landing pages where a "first-request miss" is unacceptable.
 Key Advantage: Guarantees a 100% Cache Hit ratio for the pushed assets from the moment they are deployed.
 
+```mermaid
+sequenceDiagram
+    participant App as Application/CI-CD
+    participant Edge as CDN Edge Server
+    participant User
+
+    App->>Edge: 1. Push New Content (Upload /v2.0-patch.zip)
+    Note over Edge: Content Pre-loaded
+    
+    User->>Edge: 2. Request Content (GET /v2.0-patch.zip)
+    Note over Edge: Guaranteed Cache Hit
+    Edge-->>User: 3. Deliver Content Immediately
+
+```
+
+#### Comparison: Pull vs. Push Ingestion
+
+| Feature | Pull CDN (Origin Fetch) | Push CDN (Content Pre-fetching) |
+|---|---|---|
+| Workflow | Reactive (On-Demand) | Proactive (Manual/Automated upload) |
+| Setup Complexity | Low: Point CDN to Origin URL | High: Integration with CI/CD App logic |
+| Storage Efficiency | High: Only “Hot” content is cached | Lower: Content sits on Edge regardless of demand |
+| First-Request Latency | Higher (Initial Cache Miss) | Zero (Guaranteed Cache Hit) |
+| Maintainance | Self-managing (TTL-based) | Manual (Requires manual upload/delete) |
+| Best Use Case | Large Libraries, higher traffic sites | Software updates, critical patches, one-time launches |
