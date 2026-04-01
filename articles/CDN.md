@@ -97,15 +97,15 @@ sequenceDiagram
 
 ## Benefits of CDN Implementation
 1. Enhanced Performance & User Experience
-**Reduced Latency**: By serving content from the nearest Point of Presence (**PoP**), the physical distance data must travel is minimized, resulting in significantly faster page load times.
-**Global Reach**: Organizations can provide a consistent high-speed experience to a worldwide audience without deploying full application stacks in every region.
+   **Reduced Latency**: By serving content from the nearest Point of Presence (**PoP**), the physical distance data must travel is minimized,     resulting in significantly faster page load times.
+   **Global Reach**: Organizations can provide a consistent high-speed experience to a worldwide audience without deploying full application stacks in every region.
 2. Infrastructure Reliability & Scalability
-**High Availability**: The distributed nature of CDNs eliminates Single Points of Failure (**SPOF**). If one edge server or region fails, traffic is automatically rerouted to the next healthy node.
-**Origin Shielding**: Since the majority of requests are handled at the edge, the load on the Origin Server is drastically reduced. This prevents origin **choke points** and lowers compute/bandwidth costs.
-**Traffic Burst Management**: CDNs are designed to absorb massive traffic spikes (e.g., flash sales or breaking news) that would typically overwhelm a standard origin infrastructure.
+   **High Availability**: The distributed nature of CDNs eliminates Single Points of Failure (**SPOF**). If one edge server or region fails, traffic is automatically rerouted to the next healthy node.
+   **Origin Shielding**: Since the majority of requests are handled at the edge, the load on the Origin Server is drastically reduced. This prevents origin **choke points** and lowers compute/bandwidth costs.
+   **Traffic Burst Management**: CDNs are designed to absorb massive traffic spikes (e.g., flash sales or breaking news) that would typically overwhelm a standard origin infrastructure.
 3. Advanced Security
-**DDoS Mitigation**: CDNs act as a massive buffer that can absorb and disperse Distributed Denial of Service (**DDoS**) attacks before they ever reach your core infrastructure.
-**Edge Security (WAF)**: Most modern CDNs integrate Web Application Firewalls (**WAF**) and SSL/TLS termination at the edge, inspecting and filtering malicious traffic closer to the source.
+   **DDoS Mitigation**: CDNs act as a massive buffer that can absorb and disperse Distributed Denial of Service (**DDoS**) attacks before they ever reach your core infrastructure.
+   **Edge Security (WAF)**: Most modern CDNs integrate Web Application Firewalls (**WAF**) and SSL/TLS termination at the edge, inspecting and filtering malicious traffic closer to the source.
 
 
 
