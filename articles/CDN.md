@@ -111,15 +111,15 @@ sequenceDiagram
 
 ## Cache Invalidation Strategies
 Managing **stale** content is critical to ensuring users see the most recent data. When content changes at the origin before the TTL expires, you must use one of the following invalidation methods:
-1. Purge by Path (Manual Invalidation)
+1. Purge by Path (Manual Invalidation): 
 This involves sending a request to the CDN API to delete a specific file (e.g., /images/logo.png) or a directory (/images/*) from all edge caches.
 **Pros**: Precise control over specific assets.
 **Cons**: Can be slow and computationally expensive for the CDN provider to propagate globally. Some providers limit the number of free purges per month.
-2. Cache Busting (Versioning)
+2. Cache Busting (Versioning): 
 Instead of clearing the old file, you change the file name or append a version string (e.g., style.v2.css or script.js?v=1.1).
 **How it works?**: The CDN treats the new filename as a "miss," fetches it, and caches it immediately. The old version simply sits in the cache unused until its TTL naturally expires.
 **Status**: This is the preferred architectural pattern for static assets (JS, CSS) as it is instantaneous and cost-effective.
-3. Invalidation by Tags (Surrogate Keys)
+3. Invalidation by Tags (Surrogate Keys): 
 You assign metadata "tags" to related files at the time of caching (e.g., all product images for "Summer Collection" get the tag summer_26).
 **How it works**: You can issue a single "Purge by Tag" command to expire thousands of related items simultaneously.
 **Best For**: E-commerce or dynamic sites where one update (like a price change) affects many different pages/images.
@@ -136,15 +136,15 @@ A CDN does not just accelerate content; it serves as a critical security layer b
 - **Geo-Fencing**: CDNs can enforce Geographic Restrictions, blocking or allowing traffic from specific countries to comply with local legal regulations, licensing agreements, or "digital sovereignty" requirements.
 
 ## Advanced CDN Architectures & Operations
-1. Multi-CDN Strategy
+1. Multi-CDN Strategy: 
 For mission-critical applications, relying on a single provider can create a vendor-level Single Point of Failure (SPOF).
 Resiliency: Implementing a Multi-CDN strategy (e.g., combining Cloudflare and Akamai) ensures that if one provider experiences a global outage, traffic can be instantly rerouted.
 Performance Optimization: Different CDNs have varying "Last Mile" performance in specific regions (e.g., one may be faster in China while another excels in Europe). A Multi-CDN approach allows for dynamic routing based on real-time latency metrics.
-2. Edge Computing (Serverless at the Edge)
+2. Edge Computing (Serverless at the Edge): 
 Modern CDNs have evolved into powerful computational engines (e.g., AWS Lambda@Edge, CloudFront Functions, or Cloudflare Workers), allowing logic to execute closer to the user.
 Request/Response Manipulation: Developers can write code to modify headers, rewrite URLs, or perform A/B testing redirects at the edge before the request ever reaches the origin.
 Edge Authentication: Moving security checks (like JWT validation or cryptographic signature verification) to the edge allows the CDN to reject unauthorized requests immediately, saving backend resources and reducing origin load.
-3. Cost & Efficiency Dimensions
+3. Cost & Efficiency Dimensions: 
 The financial and technical health of a CDN is measured by two key metrics:
 Cache Hit Ratio (CHR): A low CHR indicates that most requests are still hitting the origin (Cache Misses), making the CDN inefficient. Monitoring CHR is essential for optimizing TTL and cache-key configurations.
 Data Transfer Costs (Egress): CDNs often charge for data leaving their network. However, most cloud providers offer reduced "Origin-to-CDN" transfer rates. Keeping tabs on these Egress costs is vital to ensuring the CDN remains a cost-saving measure rather than a financial burden.
