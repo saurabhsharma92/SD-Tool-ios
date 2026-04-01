@@ -97,15 +97,15 @@ sequenceDiagram
 
 ## Benefits of CDN Implementation
 1. Enhanced Performance & User Experience
-   **Reduced Latency**: By serving content from the nearest Point of Presence (**PoP**), the physical distance data must travel is minimized,     resulting in significantly faster page load times.
-   **Global Reach**: Organizations can provide a consistent high-speed experience to a worldwide audience without deploying full application stacks in every region.
+- **Reduced Latency**: By serving content from the nearest Point of Presence (**PoP**), the physical distance data must travel is minimized,     resulting in significantly faster page load times.
+- **Global Reach**: Organizations can provide a consistent high-speed experience to a worldwide audience without deploying full application stacks in every region.
 2. Infrastructure Reliability & Scalability
-   **High Availability**: The distributed nature of CDNs eliminates Single Points of Failure (**SPOF**). If one edge server or region fails, traffic is automatically rerouted to the next healthy node.
-   **Origin Shielding**: Since the majority of requests are handled at the edge, the load on the Origin Server is drastically reduced. This prevents origin **choke points** and lowers compute/bandwidth costs.
-   **Traffic Burst Management**: CDNs are designed to absorb massive traffic spikes (e.g., flash sales or breaking news) that would typically overwhelm a standard origin infrastructure.
+- **High Availability**: The distributed nature of CDNs eliminates Single Points of Failure (**SPOF**). If one edge server or region fails, traffic is automatically rerouted to the next healthy node.
+- **Origin Shielding**: Since the majority of requests are handled at the edge, the load on the Origin Server is drastically reduced. This prevents origin **choke points** and lowers compute/bandwidth costs.
+- **Traffic Burst Management**: CDNs are designed to absorb massive traffic spikes (e.g., flash sales or breaking news) that would typically overwhelm a standard origin infrastructure.
 3. Advanced Security
-   **DDoS Mitigation**: CDNs act as a massive buffer that can absorb and disperse Distributed Denial of Service (**DDoS**) attacks before they ever reach your core infrastructure.
-   **Edge Security (WAF)**: Most modern CDNs integrate Web Application Firewalls (**WAF**) and SSL/TLS termination at the edge, inspecting and filtering malicious traffic closer to the source.
+- **DDoS Mitigation**: CDNs act as a massive buffer that can absorb and disperse Distributed Denial of Service (**DDoS**) attacks before they ever reach your core infrastructure.
+- **Edge Security (WAF)**: Most modern CDNs integrate Web Application Firewalls (**WAF**) and SSL/TLS termination at the edge, inspecting and filtering malicious traffic closer to the source.
 
 
 
@@ -127,13 +127,13 @@ You assign metadata "tags" to related files at the time of caching (e.g., all pr
 ## CDN Security and Privacy Architecture
 A CDN does not just accelerate content; it serves as a critical security layer between the open internet and your origin infrastructure.
 1. Infrastructure Protection
-**DDoS Mitigation**: CDNs act as a global buffer, absorbing and dispersing Distributed Denial of Service (DDoS)attacks at the edge before they can saturate your origin's bandwidth.
-**Edge Security (WAF)**: Modern CDNs integrate Web Application Firewalls (WAF) to inspect incoming traffic for common vulnerabilities (SQL injection, XSS) and filter malicious actors closer to their source.
-**SSL/TLS Termination**: By handling encryption at the edge, CDNs reduce the computational overhead on the origin while ensuring data is encrypted in transit.
+- **DDoS Mitigation**: CDNs act as a global buffer, absorbing and dispersing Distributed Denial of Service (DDoS)attacks at the edge before they can saturate your origin's bandwidth.
+- **Edge Security (WAF)**: Modern CDNs integrate Web Application Firewalls (WAF) to inspect incoming traffic for common vulnerabilities (SQL injection, XSS) and filter malicious actors closer to their source.
+- **SSL/TLS Termination**: By handling encryption at the edge, CDNs reduce the computational overhead on the origin while ensuring data is encrypted in transit.
 2. Data Privacy & Access Control
-**Signed URLs and Cookies**: For sensitive or premium content, the CDN is configured to reject any request that lacks a valid cryptographic signature. This ensures only authenticated users can access specific assets.
-**Origin Access Control (OAC/OAI)**: To prevent users from bypassing the CDN, the Origin (e.g., AWS S3) is locked down to only accept requests from the CDN’s specific service principals or IP ranges. This ensures the CDN remains the sole, protected entry point.
-**Geo-Fencing**: CDNs can enforce Geographic Restrictions, blocking or allowing traffic from specific countries to comply with local legal regulations, licensing agreements, or "digital sovereignty" requirements.
+- **Signed URLs and Cookies**: For sensitive or premium content, the CDN is configured to reject any request that lacks a valid cryptographic signature. This ensures only authenticated users can access specific assets.
+- **Origin Access Control (OAC/OAI)**: To prevent users from bypassing the CDN, the Origin (e.g., AWS S3) is locked down to only accept requests from the CDN’s specific service principals or IP ranges. This ensures the CDN remains the sole, protected entry point.
+- **Geo-Fencing**: CDNs can enforce Geographic Restrictions, blocking or allowing traffic from specific countries to comply with local legal regulations, licensing agreements, or "digital sovereignty" requirements.
 
 ## Advanced CDN Architectures & Operations
 1. Multi-CDN Strategy
