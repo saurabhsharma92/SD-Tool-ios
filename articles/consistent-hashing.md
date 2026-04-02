@@ -53,3 +53,55 @@ sequenceDiagram
     Nodes-->>Client: Return Data / Success
 ```
 
+## Why Consistent Hashing?
+#### The Core Problem
+As described above, Consistent hashing solves the "rehash" problem. When a cluster changes size, only K/n keys need to be remapped (where K is the total keys and n is the number of nodes), preventing a system-wide "cache storm."
+
+#### The Hash Ring (Logical Topology)
+Imagine all possible hash values arranged in a fixed circle. For a 32-bit hash, the Hash Space ranges from 0 to 2<sup>32</sup>−1.
+- **Placing Nodes**: Each server is hashed (by ID or IP) and placed at a specific coordinate on this ring.
+- **Placing Keys**: Each data key is hashed using the same function and mapped onto the same ring.
+- **The Lookup**: To find which server owns a key, you move clockwise from the key's position until you hit the first available server.
+
+#### Handling Cluster Changes
+Because mapping depends on relative positions, the impact of a change is localized:
+- **Adding a Node**: A new node only "captures" keys located between itself and its immediate counter-clockwise neighbor. All other nodes remain unaffected.
+```mermaid
+flowchart TD
+    Start([Scale Up: Add New Node D]) --> HashV["Generate V-Nodes for Node D"]
+    HashV --> Inject["Inject V-Nodes into gaps on the Ring"]
+    
+    subgraph Impact ["Data Movement"]
+        Direction[Clockwise Ownership Change]
+        Direction --> Stay["80% of Keys: Previous owners stay the same"]
+        Direction --> Move["20% of Keys: Re-mapped to New Node D"]
+    end
+
+    Inject --> Impact
+    Impact --> End([Cluster Rebalanced with Minimal Churn])
+
+    style Stay fill:#d4edda,stroke:#28a745
+    style Move fill:#fff3cd,stroke:#856404
+```
+- **Removing a Node**: If a node fails, its keys simply "slide" clockwise to the next available neighbor. Only the keys from the failed node are remapped.
+```mermaid
+flowchart TD
+    Start([Scale Down: Remove Node D]) --> Identify["Identify V-Nodes for Node D"]
+    Identify --> Remove["Remove V-Nodes from the Ring"]
+    
+    subgraph Impact ["Data Movement"]
+        Direction[Clockwise Handover]
+        Direction --> Stay["75% of Keys: Owners (A, B, C) remain unchanged"]
+        Direction --> Move["25% of Keys: Handed over from D to A, B, or C"]
+    end
+
+    Remove --> Impact
+    Impact --> End([Cluster Rebalanced: Only Node D's data moved])
+
+    style Stay fill:#d4edda,stroke:#28a745
+    style Move fill:#f8d7da,stroke:#dc3545
+```
+
+#### Skewness (The problem of Hotspot)
+In basic implementation, the nodes might not be distributed uniformly around the ring. This can lead to non-uniform distribution of keys where one server needs to handle 70% of traffic while others sit idle.
+**Virtual Nodes**: To fix this issue, Virtual nodes are used. Instead of hashing one server once, we hash it multiple times. This places one server at multiple points on the ring which makes distribution more granular and balanced.
