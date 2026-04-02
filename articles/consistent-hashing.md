@@ -28,7 +28,14 @@ graph BT
     K2 --> V2
     K3 --> V3
 
-    V1 & V3 --> Server1```mermaid
+    V1 & V3 --> Server1
+    V2 & V4 --> Server2
+
+    classDef blue fill:#e1f5fe,stroke:#01579b
+    classDef red fill:#ffebee,stroke:#b71c1c
+```
+
+```mermaid
 sequenceDiagram
     participant Client
     participant HashFunc as Hash Function (MD5/Murmur)
@@ -43,12 +50,6 @@ sequenceDiagram
     
     Ring->>Nodes: Route Request to Node B (Virtual #7)
     Nodes-->>Client: Return Data / Success
-```
 
-```mermain
-    V2 & V4 --> Server2
-
-    classDef blue fill:#e1f5fe,stroke:#01579b
-    classDef red fill:#ffebee,stroke:#b71c1c
 ```
 
