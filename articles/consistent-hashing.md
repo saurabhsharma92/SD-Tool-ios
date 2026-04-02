@@ -35,7 +35,7 @@ graph BT
     classDef red fill:#ffebee,stroke:#b71c1c
 ```
 
-Sequence diagram: Requect Routing lifecycle in a Consistent Hashing system
+Sequence diagram: Request Routing lifecycle in a Consistent Hashing system
 ```mermaid
 sequenceDiagram
     participant Client
@@ -105,3 +105,58 @@ flowchart TD
 #### Skewness (The problem of Hotspot)
 In basic implementation, the nodes might not be distributed uniformly around the ring. This can lead to non-uniform distribution of keys where one server needs to handle 70% of traffic while others sit idle.
 **Virtual Nodes**: To fix this issue, Virtual nodes are used. Instead of hashing one server once, we hash it multiple times. This places one server at multiple points on the ring which makes distribution more granular and balanced.
+
+## Visualize Consisten Hashing in work
+Apply below Kuberentes manifest in Kubernetes cluster.  
+Change name, namespace as per need.
+**Note**: More virtualnode, more uniforml distribution of key on servers.
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hashing-ui
+  namespace: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hashing-ui
+  template:
+    metadata:
+      labels:
+        app: hashing-ui
+    spec:
+      containers:
+      - name: visualizer
+        image: sunnysaurabh/hashing-visualizer:v4
+        ports:
+        - containerPort: 8501
+        resources:
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hashing-ui-service
+  namespace: redis
+spec:
+  type: ClusterIP
+  selector:
+    app: hashing-ui
+  ports:
+  - port: 8501
+    targetPort: 8501
+```
+Access UI:  
+To access UI, please port-forward the server from above(after deployment)
+```
+kubectl port-forward -n redis svc/hashing-ui-service 8501:8501
+```
+
+## Where Consistent Hashing?
+- Designing Distributed Cache (The "Memcached" Scenario): This is the most frequent use case. In a large-scale system like Facebook or Twitter, you have thousands of cache servers.
+- Designing Distributed Storage & NoSQL (The "Dynamo/Cassandra" Scenario): 
+- Stateful Load Balancing (The "Sticky Sessions" Scenario) (if scale of target and LB node is big): Imagine an online multiplayer game or a real-time chat app (like Discord). Users need to stay connected to the same server to maintain their session/socket.
+- Content Delivery Networks (CDNs): CDNs use this to decide which "Edge Server" should store a specific video file.
