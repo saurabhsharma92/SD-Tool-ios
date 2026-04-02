@@ -35,6 +35,7 @@ graph BT
     classDef red fill:#ffebee,stroke:#b71c1c
 ```
 
+Sequence diagram: Requect Routing lifecycle in a Consistent Hashing system
 ```mermaid
 sequenceDiagram
     participant Client
@@ -50,6 +51,5 @@ sequenceDiagram
     
     Ring->>Nodes: Route Request to Node B (Virtual #7)
     Nodes-->>Client: Return Data / Success
-
 ```
 
