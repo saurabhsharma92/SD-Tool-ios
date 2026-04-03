@@ -7,10 +7,10 @@
 Meta Engineering|https://engineering.fb.com/feed/|https://engineering.fb.com|👾|facebook.com|Social & Messaging|rss
 Slack Engineering|https://slack.engineering/rss/|https://slack.engineering|💬|slack.com|Social & Messaging|rss
 Discord Blog|https://discord.com/blog/rss.xml|https://discord.com/blog|🎮|discord.com|Social & Messaging|rss
-LinkedIn Engineering|browserOnly|https://www.linkedin.com/blog/engineering|💼|linkedin.com|Social & Messaging|website
+LinkedIn Engineering|browserOnly|https://engineering.linkedin.com|💼|linkedin.com|Social & Messaging|website
 
 # Infrastructure & Platforms
-Uber Engineering|https://www.uber.com/blog/engineering/rss/|https://eng.uber.com|🚗|uber.com|Infrastructure & Platforms|rss
+Uber Engineering|browserOnly|https://www.uber.com/en-US/blog/engineering/|🚗|uber.com|Infrastructure & Platforms|website
 Airbnb Tech|https://medium.com/feed/airbnb-engineering|https://medium.com/airbnb-engineering|🏠|airbnb.com|Infrastructure & Platforms|rss
 Cloudflare Blog|https://blog.cloudflare.com/rss/|https://blog.cloudflare.com|☁️|cloudflare.com|Infrastructure & Platforms|rss
 Lyft Engineering|https://eng.lyft.com/feed|https://eng.lyft.com|🚕|lyft.com|Infrastructure & Platforms|rss
