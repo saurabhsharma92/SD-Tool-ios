@@ -34,9 +34,16 @@ struct ArticleAISheet: View {
     let rawMarkdown: String
     @Binding var mode: ArticleAIMode
 
-    @State private var result:    String  = ""
+    @State private var result:    String   = ""
     @State private var isLoading: Bool    = false
     @State private var error:     AIError? = nil
+    @State private var cache:     [ArticleAIMode: CacheEntry] = [:]
+
+    private struct CacheEntry {
+        let result: String
+        let date:   Date
+        var isValid: Bool { Date().timeIntervalSince(date) < 1800 } // 30 min
+    }
 
     @Environment(\.dismiss) private var dismiss
 
@@ -129,6 +136,14 @@ struct ArticleAISheet: View {
     @MainActor
     private func generate() async {
         guard !rawMarkdown.isEmpty else { return }
+
+        // Return cached result if still valid (30 min window)
+        if let cached = cache[mode], cached.isValid {
+            result    = cached.result
+            error     = nil
+            return
+        }
+
         isLoading = true
         error     = nil
         result    = ""
@@ -141,6 +156,7 @@ struct ArticleAISheet: View {
             case .eli5:
                 text = try await GeminiService.shared.explainSimply(rawMarkdown, topic: doc.name)
             }
+            cache[mode] = CacheEntry(result: text, date: Date())
             result    = text
             isLoading = false
         } catch let aiErr as AIError {

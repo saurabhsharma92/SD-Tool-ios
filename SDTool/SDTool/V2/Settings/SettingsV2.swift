@@ -42,10 +42,10 @@ struct SettingsV2: View {
                 // ── Blogs ─────────────────────────────────────────
                 Section {
                     NavigationLink(destination: BlogManagementView()) {
-                        Label("Company blogs", systemImage: "newspaper.fill")
+                        Label("Blogs", systemImage: "newspaper.fill")
                     }
                     NavigationLink(destination: CustomFeedsManagementView()) {
-                        Label("Custom RSS feeds", systemImage: "dot.radiowaves.left.and.right")
+                        Label("Custom RSS Feed", systemImage: "dot.radiowaves.left.and.right")
                     }
                 } header: {
                     Text("Content")
@@ -56,7 +56,7 @@ struct SettingsV2: View {
                 // ── Flash Cards ───────────────────────────────────
                 Section("Study") {
                     NavigationLink(destination: FlashCardSettingsView()) {
-                        Label("Flash cards", systemImage: "rectangle.stack.fill")
+                        Label("Flash Cards", systemImage: "rectangle.stack.fill")
                     }
                 }
 
@@ -107,7 +107,7 @@ struct SettingsV2: View {
 
                     NavigationLink(destination: AIQuotaDetailView()) {
                         HStack {
-                            Label("Usage today", systemImage: "chart.bar.fill")
+                            Label("Usage Today", systemImage: "chart.bar.fill")
                             Spacer()
                             let model  = AppSettings.GeminiModel(rawValue: geminiModel) ?? .flashLite
                             let used   = quotaStore.usedToday
@@ -124,14 +124,14 @@ struct SettingsV2: View {
                     Button {
                         showPrivacy = true
                     } label: {
-                        Label("Privacy policy", systemImage: "hand.raised.fill")
+                        Label("Privacy Policy", systemImage: "hand.raised.fill")
                             .foregroundStyle(.primary)
                     }
 
                     Button {
                         AIQuotaStore.shared.reset()
                     } label: {
-                        Label("Reset AI usage data", systemImage: "arrow.counterclockwise")
+                        Label("Reset AI Usage Data", systemImage: "arrow.counterclockwise")
                             .foregroundStyle(.primary)
                     }
 
@@ -139,7 +139,7 @@ struct SettingsV2: View {
                         Button(role: .destructive) {
                             showDeleteAlert = true
                         } label: {
-                            Label("Delete account", systemImage: "person.fill.xmark")
+                            Label("Delete Account", systemImage: "person.fill.xmark")
                         }
                     }
                 }

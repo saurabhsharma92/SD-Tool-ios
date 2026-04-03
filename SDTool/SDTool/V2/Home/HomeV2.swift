@@ -14,6 +14,7 @@ enum HomeTab: Hashable {
     case favorites
     case articles
     case company(BlogCompany)
+    case companyGroup(CompanyGroup)
     case customFeed(CustomRSSFeed)
     case addFeed
 }
@@ -29,7 +30,11 @@ struct HomeV2: View {
     @State private var selectedTab: HomeTab  = .favorites
     @State private var showAddFeed: Bool     = false
     @State private var showSyncAlert: Bool   = false
+
     @State private var browserOnlyURL: IdentifiableURL? = nil
+    @State private var groupingCompany: BlogCompany?    = nil
+    @State private var newGroupName: String             = ""
+    @State private var showNewGroupAlert: Bool          = false
 
     // Tabs derived from store state
     private var companyTabs: [BlogCompany] {
@@ -37,8 +42,19 @@ struct HomeV2: View {
     }
 
     private var allTabs: [HomeTab] {
+        let companies = companyTabs
+        let pinnedCompanies   = companies.filter {  visibility.isPinned($0.name) }.map { HomeTab.company($0) }
+        let unpinnedCompanies = companies.filter { !visibility.isPinned($0.name) }.map { HomeTab.company($0) }
+
+        let groups = visibility.sortedGroups()
+        let pinnedGroups   = groups.filter {  visibility.isGroupPinned($0.id) }.map { HomeTab.companyGroup($0) }
+        let unpinnedGroups = groups.filter { !visibility.isGroupPinned($0.id) }.map { HomeTab.companyGroup($0) }
+
         var tabs: [HomeTab] = [.favorites, .articles]
-        tabs += companyTabs.map { .company($0) }
+        tabs += pinnedCompanies
+        tabs += pinnedGroups
+        tabs += unpinnedCompanies
+        tabs += unpinnedGroups
         tabs += visibility.customFeeds.map { .customFeed($0) }
         tabs.append(.addFeed)
         return tabs
@@ -46,87 +62,86 @@ struct HomeV2: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Navigation bar
-            ZStack {
-                Text("System Design Refresher")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                    .frame(maxWidth: .infinity)
-
-                HStack {
-                    Spacer()
-                    if blogStore.isSyncing {
-                        ProgressView().scaleEffect(0.75)
-                    } else {
-                        Button { blogStore.sync() } label: {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 16))
-                        }
-                        .foregroundStyle(.primary)
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 6)
-
+            navBar
             Divider()
-
-            // Tab strip
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 0) {
-                        ForEach(allTabs, id: \.self) { tab in
-                            TabStripItem(
-                                tab:        tab,
-                                isSelected: selectedTab == tab,
-                                isPinned:   isPinned(tab)
-                            ) {
-                                // Browser-only companies open in-app browser directly
-                                if case .company(let c) = tab,
-                                   c.browserOnly {
-                                    browserOnlyURL = IdentifiableURL(url: c.websiteURL)
-                                } else {
-                                    withAnimation(.easeInOut(duration: 0.15)) {
-                                        selectedTab = tab
-                                    }
-                                    if tab == .addFeed {
-                                        showAddFeed = true
-                                        selectedTab = .favorites
-                                    }
-                                }
-                            } onLongPress: {
-                                handleLongPress(tab)
-                            }
-                            .id(tab)
-                        }
-                    }
-                    .padding(.horizontal, 4)
-                }
-                .frame(height: 42)
-                .background(Color(.systemBackground))
-                .onChange(of: selectedTab) { _, tab in
-                    withAnimation { proxy.scrollTo(tab, anchor: .center) }
-                }
-            }
-
+            tabStrip
             Divider()
-
-            // Content
-            tabContent
-                .inAppBrowser()
+            tabContent.inAppBrowser()
         }
         .background(Color(.systemBackground))
-        .sheet(isPresented: $showAddFeed) {
-            RSSFeedSheet()
-        }
-        .sheet(item: $browserOnlyURL) { item in
-            SafariView(url: item.url).ignoresSafeArea()
+        .sheet(isPresented: $showAddFeed) { RSSFeedSheet() }
+        .sheet(item: $browserOnlyURL) { SafariView(url: $0.url).ignoresSafeArea() }
+.alert("New Group", isPresented: $showNewGroupAlert) {
+            TextField("Group name", text: $newGroupName)
+            Button("Create") { createGroup() }
+            Button("Cancel", role: .cancel) { groupingCompany = nil; newGroupName = "" }
+        } message: {
+            Text("Enter a name for the new group.")
         }
         .onChange(of: router.homeTabTrigger) { _, _ in
-            withAnimation(.easeInOut(duration: 0.15)) {
-                selectedTab = .favorites
+            withAnimation(.easeInOut(duration: 0.15)) { selectedTab = .favorites }
+        }
+        .task {
+            // Always sync on first appear to pick up remote index changes
+            blogStore.sync()
+        }
+    }
+
+    private var navBar: some View {
+        ZStack {
+            Text("System Design Refresher")
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity)
+            HStack {
+                Spacer()
+                if blogStore.isSyncing {
+                    ProgressView().scaleEffect(0.75)
+                } else {
+                    Button { blogStore.sync() } label: {
+                        Image(systemName: "arrow.clockwise").font(.system(size: 16))
+                    }
+                    .foregroundStyle(.primary)
+                }
             }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+    }
+
+    private var tabStrip: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    ForEach(allTabs, id: \.self) { tab in
+                        TabStripItem(
+                            tab:        tab,
+                            isSelected: selectedTab == tab,
+                            isPinned:   isPinned(tab),
+                            onTap:      { handleTabTap(tab) },
+                            onLongPress: { handleLongPress(tab) },
+                            onGroup:    { c in groupingCompany = c; showNewGroupAlert = true }
+                        )
+                        .id(tab)
+                    }
+                }
+                .padding(.horizontal, 4)
+            }
+            .frame(height: 42)
+            .background(Color(.systemBackground))
+            .onChange(of: selectedTab) { _, tab in
+                withAnimation { proxy.scrollTo(tab, anchor: .center) }
+            }
+        }
+    }
+
+    private func handleTabTap(_ tab: HomeTab) {
+        if case .company(let c) = tab, c.browserOnly {
+            browserOnlyURL = IdentifiableURL(url: c.websiteURL)
+        } else {
+            withAnimation(.easeInOut(duration: 0.15)) { selectedTab = tab }
+            if tab == .addFeed { showAddFeed = true; selectedTab = .favorites }
         }
     }
 
@@ -145,6 +160,10 @@ struct HomeV2: View {
             CompanyTabV2(company: company)
                 .id(company.id)   // force re-create when company changes
 
+        case .companyGroup(let group):
+            CompanyGroupTabV2(group: group)
+                .id(group.id)
+
         case .customFeed(let feed):
             CustomFeedTabV2(feed: feed)
                 .id(feed.id)
@@ -157,7 +176,8 @@ struct HomeV2: View {
     // MARK: - Helpers
 
     private func isPinned(_ tab: HomeTab) -> Bool {
-        if case .company(let c) = tab { return visibility.isPinned(c.name) }
+        if case .company(let c)      = tab { return visibility.isPinned(c.name) }
+        if case .companyGroup(let g) = tab { return visibility.isGroupPinned(g.id) }
         return false
     }
 
@@ -166,6 +186,17 @@ struct HomeV2: View {
             visibility.togglePin(c.name)
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         }
+    }
+
+    private func createGroup() {
+        let trimmed = newGroupName.trimmingCharacters(in: .whitespaces)
+        guard let c = groupingCompany, !trimmed.isEmpty else {
+            groupingCompany = nil; newGroupName = ""; return
+        }
+        visibility.addGroup(CompanyGroup(name: trimmed, companyNames: [c.name]))
+        groupingCompany   = nil
+        newGroupName      = ""
+        showNewGroupAlert = false
     }
 }
 
@@ -177,10 +208,12 @@ private struct TabStripItem: View {
     let isPinned:    Bool
     let onTap:       () -> Void
     let onLongPress: () -> Void
+    let onGroup:     ((BlogCompany) -> Void)?
+    @ObservedObject private var visibility = CompanyVisibilityStore.shared
 
     var body: some View {
         switch tab {
-        case .favorites, .articles, .company:
+        case .favorites, .articles, .company, .companyGroup:
             pillBody
         default:
             standardTabBody
@@ -235,9 +268,55 @@ private struct TabStripItem: View {
             .padding(.horizontal, 6)
             .contentShape(Rectangle())
             .onTapGesture { onTap() }
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.5).onEnded { _ in onLongPress() }
-            )
+            .contextMenu {
+                if case .company(let c) = tab {
+                    Button {
+                        visibility.togglePin(c.name)
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    } label: {
+                        Label(isPinned ? "Unpin" : "Pin", systemImage: isPinned ? "pin.slash" : "pin")
+                    }
+
+                    // Group menu
+                    Menu {
+                        Button {
+                            onGroup?(c)
+                        } label: {
+                            Label("New Group…", systemImage: "folder.badge.plus")
+                        }
+                        ForEach(visibility.companyGroups) { group in
+                            Button {
+                                visibility.addToGroup(companyName: c.name, groupID: group.id)
+                            } label: {
+                                Label("Add to \(group.name)", systemImage: "folder")
+                            }
+                        }
+                    } label: {
+                        Label("Group", systemImage: "folder")
+                    }
+
+                    Divider()
+
+                    Button(role: .destructive) {
+                        visibility.setEnabled(c.name, enabled: false)
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    } label: {
+                        Label("Hide", systemImage: "eye.slash")
+                    }
+                } else if case .companyGroup(let group) = tab {
+                    Button {
+                        visibility.toggleGroupPin(group.id)
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    } label: {
+                        Label(isPinned ? "Unpin" : "Pin", systemImage: isPinned ? "pin.slash" : "pin")
+                    }
+                    Button(role: .destructive) {
+                        visibility.removeGroup(id: group.id)
+                    } label: {
+                        Label("Delete Group", systemImage: "folder.badge.minus")
+                    }
+                }
+            }
     }
 
     @ViewBuilder
@@ -251,6 +330,10 @@ private struct TabStripItem: View {
             ArticlesIcon(size: 20, color: isSelected ? .indigo : Color(.tertiaryLabel))
         case .company(let c):
             FaviconView(domain: c.faviconDomain, fallback: c.emoji, size: 22)
+        case .companyGroup:
+            Image(systemName: "folder.fill")
+                .font(.system(size: 16))
+                .foregroundStyle(isSelected ? .indigo : Color(.tertiaryLabel))
         default:
             EmptyView()
         }

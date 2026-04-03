@@ -27,14 +27,30 @@ struct CustomRSSFeed: Identifiable, Codable, Hashable {
     }
 }
 
+// MARK: - Company group model
+
+struct CompanyGroup: Identifiable, Codable, Hashable {
+    var id:           String
+    var name:         String
+    var companyNames: [String]
+
+    init(name: String, companyNames: [String] = []) {
+        self.id           = UUID().uuidString
+        self.name         = name
+        self.companyNames = companyNames
+    }
+}
+
 // MARK: - Company visibility + pinning store
 
 final class CompanyVisibilityStore: ObservableObject {
     static let shared = CompanyVisibilityStore()
 
-    @Published private(set) var disabledCompanies: Set<String> = []
-    @Published private(set) var pinnedCompanies:   [String]    = []   // ordered
+    @Published private(set) var disabledCompanies: Set<String>    = []
+    @Published private(set) var pinnedCompanies:   [String]       = []
+    @Published private(set) var pinnedGroupIDs:    [String]       = []
     @Published private(set) var customFeeds:       [CustomRSSFeed] = []
+    @Published private(set) var companyGroups:     [CompanyGroup]  = []
 
     private let ud = UserDefaults.standard
 
@@ -79,6 +95,60 @@ final class CompanyVisibilityStore: ObservableObject {
         return pinned + rest
     }
 
+    // MARK: - Group pinning
+
+    func isGroupPinned(_ groupID: String) -> Bool {
+        pinnedGroupIDs.contains(groupID)
+    }
+
+    func toggleGroupPin(_ groupID: String) {
+        if let idx = pinnedGroupIDs.firstIndex(of: groupID) {
+            pinnedGroupIDs.remove(at: idx)
+        } else {
+            pinnedGroupIDs.append(groupID)
+        }
+        savePinnedGroups()
+    }
+
+    /// Returns groups sorted: pinned first (in pin order), then rest alphabetically
+    func sortedGroups() -> [CompanyGroup] {
+        let pinned = pinnedGroupIDs.compactMap { id in companyGroups.first { $0.id == id } }
+        let rest   = companyGroups.filter { !pinnedGroupIDs.contains($0.id) }
+                                  .sorted { $0.name < $1.name }
+        return pinned + rest
+    }
+
+    // MARK: - Company groups
+
+    func addGroup(_ group: CompanyGroup) {
+        companyGroups.append(group)
+        saveGroups()
+    }
+
+    func removeGroup(id: String) {
+        companyGroups.removeAll { $0.id == id }
+        saveGroups()
+    }
+
+    func addToGroup(companyName: String, groupID: String) {
+        guard let i = companyGroups.firstIndex(where: { $0.id == groupID }) else { return }
+        if !companyGroups[i].companyNames.contains(companyName) {
+            companyGroups[i].companyNames.append(companyName)
+            saveGroups()
+        }
+    }
+
+    func removeFromGroup(companyName: String, groupID: String) {
+        guard let i = companyGroups.firstIndex(where: { $0.id == groupID }) else { return }
+        companyGroups[i].companyNames.removeAll { $0 == companyName }
+        if companyGroups[i].companyNames.isEmpty { removeGroup(id: groupID) }
+        else { saveGroups() }
+    }
+
+    func groupContaining(_ companyName: String) -> CompanyGroup? {
+        companyGroups.first { $0.companyNames.contains(companyName) }
+    }
+
     // MARK: - Custom RSS feeds
 
     func addFeed(_ feed: CustomRSSFeed) {
@@ -106,6 +176,14 @@ final class CompanyVisibilityStore: ObservableObject {
            let arr  = try? JSONDecoder().decode([CustomRSSFeed].self, from: data) {
             customFeeds = arr
         }
+        if let data = ud.data(forKey: AppSettings.V2Key.companyGroups),
+           let arr  = try? JSONDecoder().decode([CompanyGroup].self, from: data) {
+            companyGroups = arr
+        }
+        if let data = ud.data(forKey: AppSettings.V2Key.pinnedGroupIDs),
+           let arr  = try? JSONDecoder().decode([String].self, from: data) {
+            pinnedGroupIDs = arr
+        }
     }
 
     private func saveDisabled() {
@@ -123,6 +201,18 @@ final class CompanyVisibilityStore: ObservableObject {
     private func saveFeeds() {
         if let data = try? JSONEncoder().encode(customFeeds) {
             ud.set(data, forKey: AppSettings.V2Key.customRSSFeeds)
+        }
+    }
+
+    private func saveGroups() {
+        if let data = try? JSONEncoder().encode(companyGroups) {
+            ud.set(data, forKey: AppSettings.V2Key.companyGroups)
+        }
+    }
+
+    private func savePinnedGroups() {
+        if let data = try? JSONEncoder().encode(pinnedGroupIDs) {
+            ud.set(data, forKey: AppSettings.V2Key.pinnedGroupIDs)
         }
     }
 }

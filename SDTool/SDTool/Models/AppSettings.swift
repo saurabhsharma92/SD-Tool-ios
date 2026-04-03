@@ -88,6 +88,8 @@ enum AppSettings {
         static let disabledCompanies   = "v2_disabledCompanies"
         static let pinnedCompanies     = "v2_pinnedCompanies"
         static let customRSSFeeds      = "v2_customRSSFeeds"
+        static let companyGroups       = "v2_companyGroups"
+        static let pinnedGroupIDs      = "v2_pinnedGroupIDs"
     }
 
     enum V2Default {

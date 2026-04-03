@@ -115,20 +115,32 @@ actor BlogFeedService {
 
     func clearCache(for company: BlogCompany) {
         cache.removeValue(forKey: company.id)
-        UserDefaults.standard.removeObject(forKey: keyPrefix + company.id.uuidString)
+        try? FileManager.default.removeItem(at: cacheFileURL(for: company.id))
     }
 
-    // MARK: - Disk helpers (call free functions — no Codable inside actor)
+    // MARK: - Disk helpers (filesystem — avoids UserDefaults 4MB limit)
+
+    private func cacheDirectory() -> URL {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let dir  = base.appendingPathComponent("rss_cache", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func cacheFileURL(for id: UUID) -> URL {
+        cacheDirectory().appendingPathComponent(id.uuidString + ".json")
+    }
 
     private func writeDiskCache(posts: [BlogPost], fetchedAt: Date, for id: UUID) {
         let entry = makeDiskEntry(posts: posts, fetchedAt: fetchedAt)
         guard let data = encodeDiskEntry(entry) else { return }
-        UserDefaults.standard.set(data, forKey: keyPrefix + id.uuidString)
+        try? data.write(to: cacheFileURL(for: id), options: .atomic)
     }
 
     private func loadDiskCache(for id: UUID, cacheHours: Double) -> [BlogPost]? {
+        let url = cacheFileURL(for: id)
         guard
-            let data  = UserDefaults.standard.data(forKey: keyPrefix + id.uuidString),
+            let data  = try? Data(contentsOf: url),
             let entry = decodeDiskEntry(data),
             !checkStale(fetchedAt: entry.fetchedAt, hours: cacheHours)
         else { return nil }

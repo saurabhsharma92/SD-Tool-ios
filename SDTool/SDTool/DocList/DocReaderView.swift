@@ -281,6 +281,9 @@ struct DocReaderView: View {
     let doc: Doc
     @State private var segments:        [MDSegment]   = []
     @State private var isLoading:       Bool          = true
+    @State private var notDownloaded:   Bool          = false
+    @State private var isDownloading:   Bool          = false
+    @State private var downloadError:   String?       = nil
     @State private var rawMarkdown:     String        = ""
     @State private var showChat:        Bool          = false
     @State private var showAISheet:     Bool          = false
@@ -321,9 +324,13 @@ struct DocReaderView: View {
     }
 
     var body: some View {
-        GeometryReader { viewportGeo in
-            ScrollView(.vertical, showsIndicators: true) {
-                LazyVStack(alignment: .leading, spacing: 0) {
+        Group {
+            if notDownloaded {
+                notDownloadedView
+            } else {
+                GeometryReader { _ in
+                ScrollView(.vertical, showsIndicators: true) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
                     if isLoading {
                         ProgressView("Loading…")
                             .frame(maxWidth: .infinity)
@@ -365,11 +372,13 @@ struct DocReaderView: View {
                         }
                     }
                 }
-                .padding(.vertical, 12)
-            }
-        }
+                    .padding(.vertical, 12)
+                }
+                } // GeometryReader
+            } // else
+        } // Group
         .overlay(alignment: .bottomTrailing) {
-            if !isLoading {
+            if !isLoading && !notDownloaded {
                 Button { showChat = true } label: {
                     Image(systemName: "bubble.left.and.bubble.right.fill")
                         .font(.title2)
@@ -392,7 +401,7 @@ struct DocReaderView: View {
                 } label: {
                     Label("Summary", systemImage: "text.quote")
                 }
-                .disabled(isLoading)
+                .disabled(isLoading || notDownloaded)
 
                 Button {
                     aiMode      = .eli5
@@ -400,7 +409,7 @@ struct DocReaderView: View {
                 } label: {
                     Label("ELI5", systemImage: "face.smiling")
                 }
-                .disabled(isLoading)
+                .disabled(isLoading || notDownloaded)
             }
         }
         .sheet(isPresented: $showAISheet) {
@@ -414,12 +423,62 @@ struct DocReaderView: View {
         .onAppear { loadContent() }
     }
 
+    @ViewBuilder
+    private var notDownloadedView: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: 56))
+                .foregroundStyle(.indigo)
+            Text("Not Downloaded")
+                .font(.title2.bold())
+            Text("Download this article to read it.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            if let err = downloadError {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+            }
+            Button {
+                Task { await downloadArticle() }
+            } label: {
+                if isDownloading {
+                    ProgressView().progressViewStyle(.circular)
+                        .frame(width: 100)
+                } else {
+                    Label("Download", systemImage: "arrow.down.circle.fill")
+                        .frame(minWidth: 120)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.indigo)
+            .disabled(isDownloading)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func downloadArticle() async {
+        isDownloading = true
+        downloadError = nil
+        do {
+            _ = try await DocSyncService.shared.download(filename: doc.filename)
+            notDownloaded = false
+            loadContent()
+        } catch {
+            downloadError = error.localizedDescription
+        }
+        isDownloading = false
+    }
+
     private func loadContent() {
         let localURL = DocSyncService.shared.localURL(for: doc.filename)
         guard FileManager.default.fileExists(atPath: localURL.path) else {
-            let msg = "**This article has not been downloaded yet.**\n\nGo to the Articles tab and tap the download button."
-            segments  = splitSegments(msg)
-            isLoading = false
+            notDownloaded = true
+            isLoading     = false
             return
         }
         let raw = (try? String(contentsOf: localURL, encoding: .utf8))
