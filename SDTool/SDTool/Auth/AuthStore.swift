@@ -4,9 +4,8 @@
 //
 
 import SwiftUI
-import FirebaseAuth
 import Combine
-
+import FirebaseAuth
 
 final class AuthStore: ObservableObject {
     static let shared: AuthStore = AuthStore()
@@ -74,6 +73,9 @@ final class AuthStore: ObservableObject {
         user?.isAnonymous ?? false
     }
 
+    /// True when the user is signed in as a guest (anonymous Firebase auth)
+    var isGuest: Bool { isAnonymous }
+
     var initials: String {
         let name = displayName
         let parts = name.split(separator: " ")
@@ -120,7 +122,7 @@ final class AuthStore: ObservableObject {
 
     // MARK: - Anonymous (debug only)
 
-    #if DEBUG
+    // Guest sign-in — available in all builds for v2 guest mode
     @MainActor func signInAnonymously() async {
         isLoading    = true
         errorMessage = nil
@@ -129,12 +131,10 @@ final class AuthStore: ObservableObject {
             user      = result.user
             isLoading = false
         } catch {
-            // Firebase anonymous failed (e.g. not enabled) — use local bypass
-            debugBypass = true
-            isLoading   = false
+            errorMessage = "Could not sign in as guest. Please try again."
+            isLoading    = false
         }
     }
-    #endif
 
     // MARK: - Sign Out
 
@@ -145,5 +145,13 @@ final class AuthStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    // MARK: - Delete Account
+
+    @MainActor func deleteAccount() async throws {
+        guard let currentUser = user else { return }
+        try await currentUser.delete()
+        user = nil
     }
 }

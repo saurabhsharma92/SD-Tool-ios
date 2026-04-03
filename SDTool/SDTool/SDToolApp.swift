@@ -28,6 +28,12 @@ struct SDToolApp: App {
     // Controls whether the funny splash plays after sign-in
     @State private var showSplash: Bool = false
 
+    // v2: privacy consent gate — shown once on first ever launch
+    @State private var showPrivacy: Bool = {
+        guard FeatureFlags.useNewUI else { return false }
+        return !UserDefaults.standard.bool(forKey: AppSettings.V2Key.hasAcceptedPrivacy)
+    }()
+
     init() {
         // App Check provider selection:
         // - DEBUG (simulator + direct Xcode runs): debug token
@@ -62,7 +68,14 @@ struct SDToolApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if authStore.isLoading {
+                if showPrivacy {
+                    // First launch — show privacy consent before anything else
+                    PrivacyConsentView {
+                        showPrivacy = false
+                    }
+                    .transition(.opacity)
+
+                } else if authStore.isLoading {
                     // Firebase checking persisted session — plain spinner
                     firebaseLoadingView
 

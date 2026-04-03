@@ -10,9 +10,10 @@ struct FlashCardsHomeView: View {
     @ObservedObject private var store    = FlashCardStore.shared
     @ObservedObject private var progress = FlashCardProgress.shared
 
-    @State private var isSyncing   = false
-    @State private var syncMessage: String? = nil
-    @State private var showSyncAlert = false
+    @State private var isSyncing      = false
+    @State private var syncMessage:   String? = nil
+    @State private var showSyncAlert  = false
+    @State private var showContribute = false
 
     private let columns = [
         GridItem(.flexible(), spacing: 14),
@@ -31,9 +32,22 @@ struct FlashCardsHomeView: View {
             .navigationTitle("Flash Cards")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showContribute = true } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "plus.circle")
+                                .font(.system(size: 13))
+                            Text("Contribute")
+                                .font(.system(size: 13))
+                        }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     syncButton
                 }
+            }
+            .sheet(isPresented: $showContribute) {
+                NavigationStack { HowToView() }
             }
             .alert("Sync Complete", isPresented: $showSyncAlert) {
                 Button("OK", role: .cancel) {}

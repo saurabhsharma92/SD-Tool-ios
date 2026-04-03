@@ -26,6 +26,7 @@ private struct HowToStep: Identifiable {
 // MARK: - Main View
 
 struct HowToView: View {
+    @Environment(\.dismiss) private var dismiss
     @State private var expandedSection: UUID? = nil
 
     private let sections: [HowToSection] = [
@@ -149,15 +150,17 @@ struct HowToView: View {
 
                 // GitHub link
                 Link(destination: URL(string: "https://github.com/saurabhsharma92/SD-Tool-ios")!) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "arrow.up.right.square.fill")
-                        Text("Open Repository on GitHub")
+                    HStack(spacing: 8) {
+                        FaviconView(domain: "github.com", fallback: "🐙", size: 20)
+                        Text("GitHub")
                             .fontWeight(.semibold)
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.system(size: 16, weight: .semibold))
                     }
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
                     .frame(height: 50)
-                    .background(Color.indigo)
+                    .background(Color(white: 0.1))
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
                 .padding(.horizontal)
@@ -167,6 +170,11 @@ struct HowToView: View {
         }
         .navigationTitle("How To Contribute")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Done") { dismiss() }
+            }
+        }
     }
 
     // MARK: - Section Card

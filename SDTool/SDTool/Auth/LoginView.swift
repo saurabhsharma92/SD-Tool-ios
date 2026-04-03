@@ -130,6 +130,22 @@ struct LoginView: View {
                             .background(Color.white)
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                         }
+
+                        // Guest / Continue without account
+                        if FeatureFlags.useNewUI {
+                            Button {
+                                Task { await authStore.signInAnonymously() }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "person.fill")
+                                        .font(.system(size: 14))
+                                    Text("Continue as guest")
+                                        .font(.system(size: 14, weight: .medium))
+                                }
+                                .foregroundStyle(.white.opacity(0.65))
+                            }
+                            .padding(.top, 4)
+                        }
                     }
 
                     if let error = authStore.errorMessage {

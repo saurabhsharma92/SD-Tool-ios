@@ -20,7 +20,7 @@ struct CompanyBlogView: View {
     @State private var error:     String?    = nil
 
     @AppStorage(AppSettings.Key.feedCacheHours) private var feedCacheHours = AppSettings.Default.feedCacheHours
-    @Environment(\.openURL) private var openURL
+    @Environment(\.openInAppBrowser) private var openInAppBrowser
 
     // AI sheet state
     @State private var aiSheet: AISheetItem? = nil
@@ -38,6 +38,7 @@ struct CompanyBlogView: View {
                 postList
             }
         }
+        .inAppBrowser()
         .navigationTitle(company.name)
         .navigationBarTitleDisplayMode(.large)
         .task(id: company.id) {
@@ -47,7 +48,7 @@ struct CompanyBlogView: View {
                     companyName: company.name,
                     postTitle:   company.name
                 )
-                openURL(company.websiteURL)
+                openInAppBrowser(company.websiteURL)
                 return
             }
             await resetAndLoad()
@@ -74,7 +75,7 @@ struct CompanyBlogView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
             Button("Open \(company.name)") {
-                openURL(company.websiteURL)
+                openInAppBrowser(company.websiteURL)
             }
             .buttonStyle(.borderedProminent)
             Spacer()
@@ -111,7 +112,7 @@ struct CompanyBlogView: View {
             .buttonStyle(.bordered)
 
             Button("Open in Browser") {
-                openURL(company.websiteURL)
+                openInAppBrowser(company.websiteURL)
             }
             .font(.subheadline)
             .foregroundStyle(.secondary)
@@ -128,7 +129,7 @@ struct CompanyBlogView: View {
                         companyName: company.name,
                         postTitle:   post.title
                     )
-                    openURL(post.url)
+                    openInAppBrowser(post.url)
                 } label: {
                     BlogPostRow(post: post, company: company)
                 }

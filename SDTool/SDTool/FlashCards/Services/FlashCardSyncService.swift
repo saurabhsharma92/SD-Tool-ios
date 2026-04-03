@@ -44,9 +44,6 @@ enum SyncError: LocalizedError {
 actor FlashCardSyncService {
     static let shared = FlashCardSyncService()
 
-    private let store    = FlashCardStore.shared
-    private let progress = FlashCardProgress.shared
-
     // MARK: - Public
 
     /// Checks GitHub for new or updated .md files and downloads them.
@@ -74,8 +71,8 @@ actor FlashCardSyncService {
 
         // 2. For each file, check SHA and download if changed
         for file in mdFiles {
-            let isNew     = store.deck(for: file.name) == nil
-            let hasChanged = store.needsUpdate(filename: file.name, remoteSHA: file.sha)
+            let isNew      = await MainActor.run { FlashCardStore.shared.deck(for: file.name) == nil }
+            let hasChanged = await MainActor.run { FlashCardStore.shared.needsUpdate(filename: file.name, remoteSHA: file.sha) }
 
             guard isNew || hasChanged else { continue }
 
@@ -97,8 +94,9 @@ actor FlashCardSyncService {
                 )
 
                 // If we already have this deck (update, not new), copy its UUID
-                // so progress keys stay valid
-                if let existing = store.deck(for: file.name) {
+                // so progress keys stay valid — all store access must be on MainActor
+                let existingDeck = await MainActor.run { FlashCardStore.shared.deck(for: file.name) }
+                if let existing = existingDeck {
                     deck.id = existing.id
                     updatedCount += 1
                 } else {
@@ -106,8 +104,8 @@ actor FlashCardSyncService {
                 }
 
                 await MainActor.run {
-                    store.upsert(deck: deck)
-                    store.updateSHA(file.sha, for: file.name)
+                    FlashCardStore.shared.upsert(deck: deck)
+                    FlashCardStore.shared.updateSHA(file.sha, for: file.name)
                 }
 
             } catch {

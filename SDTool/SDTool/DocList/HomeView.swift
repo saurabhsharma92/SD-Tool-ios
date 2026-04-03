@@ -14,7 +14,7 @@ struct HomeView: View {
     @StateObject   private var docStore       = DocStore()
     @ObservedObject private var router        = NavigationRouter.shared
 
-    @Environment(\.openURL) private var openURL
+    @Environment(\.openInAppBrowser) private var openInAppBrowser
 
     var body: some View {
         NavigationStack {
@@ -74,6 +74,7 @@ struct HomeView: View {
             .navigationDestination(for: Doc.self) { doc in
                 DocReaderView(doc: doc)
             }
+            .inAppBrowser()
             .onAppear {
                 dailyPick.refreshArticle(docs: docStore.docs)
                 loadBlogPickIfNeeded()
@@ -207,7 +208,7 @@ struct HomeView: View {
                         router.blogDestination = company
                         router.selectedTab = 2
                     } else if let url = liked.url {
-                        openURL(url)
+                        openInAppBrowser(url)
                     }
                 } label: {
                     LikedBlogRow(liked: liked)
@@ -397,7 +398,7 @@ struct DailyArticlePickCard: View {
 
 struct DailyBlogPickCard: View {
     let pick: DailyBlogPick
-    @Environment(\.openURL) private var openURL
+    @Environment(\.openInAppBrowser) private var openInAppBrowser
 
     var body: some View {
         Button {
@@ -406,7 +407,7 @@ struct DailyBlogPickCard: View {
                 companyName: pick.companyName,
                 postTitle:   pick.postTitle
             )
-            if let url = pick.postURL { openURL(url) }
+            if let url = pick.postURL { openInAppBrowser(url) }
         } label: {
             pickCard(
                 emoji:    pick.companyEmoji,

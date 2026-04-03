@@ -81,6 +81,19 @@ enum AppSettings {
         }
     }
 
+    // MARK: - V2 Keys
+
+    enum V2Key {
+        static let hasAcceptedPrivacy  = "v2_hasAcceptedPrivacy"
+        static let disabledCompanies   = "v2_disabledCompanies"
+        static let pinnedCompanies     = "v2_pinnedCompanies"
+        static let customRSSFeeds      = "v2_customRSSFeeds"
+    }
+
+    enum V2Default {
+        static let hasAcceptedPrivacy: Bool = false
+    }
+
     // MARK: - Gemini Model
 
     enum GeminiModel: String, CaseIterable {

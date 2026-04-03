@@ -15,6 +15,10 @@ final class NavigationRouter: ObservableObject {
     // Which tab is selected (matches ContentView tab indices)
     @Published var selectedTab: Int = 0
 
+    // Increments every time the Home tab is tapped (including re-taps).
+    // HomeV2 observes this to reset its strip to Favorites.
+    @Published var homeTabTrigger: Int = 0
+
     // Article tab deep link — set to a Doc to push DocReaderView
     @Published var articleDestination: Doc? = nil
 

@@ -9,7 +9,7 @@ import SwiftUI
 
 struct LikedPostsView: View {
     @ObservedObject private var likedStore = LikedPostsStore.shared
-    @Environment(\.openURL) private var openURL
+    @Environment(\.openInAppBrowser) private var openInAppBrowser
 
     var body: some View {
         Group {
@@ -23,7 +23,7 @@ struct LikedPostsView: View {
                 List {
                     ForEach(likedStore.likedPosts) { liked in
                         Button {
-                            if let url = liked.url { openURL(url) }
+                            if let url = liked.url { openInAppBrowser(url) }
                         } label: {
                             likedRow(liked)
                         }
@@ -38,6 +38,7 @@ struct LikedPostsView: View {
                 .listStyle(.insetGrouped)
             }
         }
+        .inAppBrowser()
         .navigationTitle("Liked Posts")
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
