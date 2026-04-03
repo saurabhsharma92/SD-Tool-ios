@@ -11,6 +11,9 @@ import SwiftUI
 struct PrivacyConsentView: View {
     var onAccept: () -> Void
 
+    @State private var showPrivacy = false
+    @State private var showTerms   = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
 
@@ -65,13 +68,13 @@ struct PrivacyConsentView: View {
 
                     // Links row
                     HStack(spacing: 0) {
-                        Button("Privacy Policy") { }
+                        Button("Privacy Policy") { showPrivacy = true }
                             .font(.footnote)
                             .foregroundStyle(.indigo)
                         Text("  ·  ")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
-                        Button("Terms of Service") { }
+                        Button("Terms of Service") { showTerms = true }
                             .font(.footnote)
                             .foregroundStyle(.indigo)
                     }
@@ -110,6 +113,12 @@ struct PrivacyConsentView: View {
             .padding(.vertical, 20)
         }
         .background(Color(.systemBackground))
+        .sheet(isPresented: $showPrivacy) {
+            NavigationStack { PrivacyPolicyView() }
+        }
+        .sheet(isPresented: $showTerms) {
+            NavigationStack { TermsOfServiceView() }
+        }
     }
 }
 

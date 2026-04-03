@@ -24,6 +24,7 @@ struct SettingsV2: View {
     @State private var showAddFeed      = false
     @State private var showDeleteAlert  = false
     @State private var showPrivacy      = false
+    @State private var showTerms        = false
 
     private var appVersion: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—" }
     private var buildNumber: String { Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—" }
@@ -129,6 +130,13 @@ struct SettingsV2: View {
                     }
 
                     Button {
+                        showTerms = true
+                    } label: {
+                        Label("Terms of Service", systemImage: "doc.text.fill")
+                            .foregroundStyle(.primary)
+                    }
+
+                    Button {
                         AIQuotaStore.shared.reset()
                     } label: {
                         Label("Reset AI Usage Data", systemImage: "arrow.counterclockwise")
@@ -153,7 +161,10 @@ struct SettingsV2: View {
             }
             .navigationTitle("Settings")
             .sheet(isPresented: $showPrivacy) {
-                PrivacyConsentView(onAccept: { showPrivacy = false })
+                NavigationStack { PrivacyPolicyView() }
+            }
+            .sheet(isPresented: $showTerms) {
+                NavigationStack { TermsOfServiceView() }
             }
             .alert("Delete account?", isPresented: $showDeleteAlert) {
                 Button("Delete", role: .destructive) {

@@ -9,6 +9,7 @@ import AuthenticationServices
 
 struct LoginView: View {
     @ObservedObject private var authStore = AuthStore.shared
+    @State private var showTerms = false
 
     var body: some View {
         ZStack {
@@ -160,11 +161,19 @@ struct LoginView: View {
                 .padding(.bottom, 8)
 
                 // Footer
-                Text("By continuing you agree to our Terms of Service")
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.3))
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 20)
+                HStack(spacing: 3) {
+                    Text("By continuing you agree to our")
+                    Button("Terms of Service") { showTerms = true }
+                        .foregroundStyle(.white.opacity(0.55))
+                        .underline()
+                }
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.3))
+                .multilineTextAlignment(.center)
+                .padding(.top, 20)
+                .sheet(isPresented: $showTerms) {
+                    NavigationStack { TermsOfServiceView() }
+                }
 
                 Spacer().frame(height: 40)
             }
