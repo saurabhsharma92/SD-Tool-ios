@@ -7,7 +7,7 @@
 Meta Engineering|https://engineering.fb.com/feed/|https://engineering.fb.com|👾|facebook.com|Social & Messaging|rss
 Slack Engineering|https://slack.engineering/rss/|https://slack.engineering|💬|slack.com|Social & Messaging|rss
 Discord Blog|https://discord.com/blog/rss.xml|https://discord.com/blog|🎮|discord.com|Social & Messaging|rss
-LinkedIn Engineering|browserOnly|https://engineering.linkedin.com|💼|linkedin.com|Social & Messaging|website
+LinkedIn Engineering|browserOnly|https://www.linkedin.com/blog/engineering|💼|linkedin.com|Social & Messaging|website
 
 # Infrastructure & Platforms
 Uber Engineering|browserOnly|https://www.uber.com/en-US/blog/engineering/|🚗|uber.com|Infrastructure & Platforms|website
