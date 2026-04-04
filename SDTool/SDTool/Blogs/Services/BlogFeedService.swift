@@ -72,6 +72,14 @@ actor BlogFeedService {
     private var cache: [UUID: (fetchedAt: Date, posts: [BlogPost])] = [:]
     private let keyPrefix = "rss_cache_"
 
+    private init() {
+        // One-time cleanup: remove old rss_cache_* keys left in UserDefaults
+        // from before disk-cache migration (those blobs cause the 4 MB overflow).
+        let ud = UserDefaults.standard
+        let stale = ud.dictionaryRepresentation().keys.filter { $0.hasPrefix("rss_cache_") }
+        stale.forEach { ud.removeObject(forKey: $0) }
+    }
+
     // MARK: - Public API
 
     func fetchPosts(for company: BlogCompany, cacheHours: Double) async throws -> [BlogPost] {
