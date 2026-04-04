@@ -78,6 +78,10 @@ All app content lives in this same repo and is fetched at runtime via GitHub's r
 
 SHA-based change detection prevents unnecessary re-downloads. Bundled fallback content is in `SDTool/SDTool/Resources/SourceDocs.bundle/` and `SDTool/SDTool/FlashCards/Bundled/`.
 
+## Git Workflow
+
+- **Never commit or push changes unless the user explicitly asks.** Make code edits freely, but do not run `git commit` or `git push` until instructed.
+
 ## Patterns to Follow
 
 - **New services** must be Swift `actor` types
