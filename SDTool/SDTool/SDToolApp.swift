@@ -35,6 +35,11 @@ struct SDToolApp: App {
     }()
 
     init() {
+        // Purge stale UserDefaults blobs from old disk-cache migration.
+        // Must run before any store initialises and attempts a UserDefaults write,
+        // otherwise the leftover rss_cache_* / flashDecks keys push total size > 4 MB.
+        SDToolApp.purgeStaleUserDefaultsKeys()
+
         // App Check provider selection:
         // - DEBUG (simulator + direct Xcode runs): debug token
         // - RELEASE (TestFlight + App Store): App Attest (registered in Firebase Console)
@@ -47,6 +52,17 @@ struct SDToolApp: App {
         FirebaseApp.configure()
         authStore = AuthStore.shared
         biometric = BiometricService.shared
+    }
+
+    /// One-time cleanup of UserDefaults keys that were superseded by filesystem caches.
+    private static func purgeStaleUserDefaultsKeys() {
+        let ud = UserDefaults.standard
+        // rss_cache_* — RSS feed posts, now stored in ~/Library/Caches/rss_cache/
+        // flashDecks   — Flash card decks, now stored in Application Support/flashDecks.json
+        let staleKeys = ud.dictionaryRepresentation().keys.filter {
+            $0.hasPrefix("rss_cache_") || $0 == "flashDecks"
+        }
+        staleKeys.forEach { ud.removeObject(forKey: $0) }
     }
 
     private var fontDesign: Font.Design {
