@@ -99,24 +99,36 @@ class FlashCardStore: ObservableObject {
         }
     }
 
-    // MARK: - Persistence
+    // MARK: - Persistence (filesystem — avoids UserDefaults 4 MB limit)
+
+    private var decksFileURL: URL {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        return support.appendingPathComponent("flashDecks.json")
+    }
 
     private func save() {
         guard let data = try? JSONEncoder().encode(decks) else { return }
-        UserDefaults.standard.set(data, forKey: saveKey)
+        try? data.write(to: decksFileURL, options: .atomic)
     }
 
     private func load() {
-        if let data   = UserDefaults.standard.data(forKey: saveKey),
-           let saved  = try? JSONDecoder().decode([FlashDeck].self, from: data) {
+        // Migrate from UserDefaults on first run after this update
+        if let old = UserDefaults.standard.data(forKey: saveKey),
+           let saved = try? JSONDecoder().decode([FlashDeck].self, from: old) {
+            decks = saved
+            save()                                                  // write to disk
+            UserDefaults.standard.removeObject(forKey: saveKey)    // free the space
+        } else if let data  = try? Data(contentsOf: decksFileURL),
+                  let saved = try? JSONDecoder().decode([FlashDeck].self, from: data) {
             decks = saved
         }
-        // Always seed bundled decks — adds any missing ones even after updates
         seedBundledDecksIfNeeded()
     }
 
     /// Call from Settings to wipe cached deck data and force reseed (debug helper)
     func resetAndReseed() {
+        try? FileManager.default.removeItem(at: decksFileURL)
         UserDefaults.standard.removeObject(forKey: saveKey)
         decks = []
         seedBundledDecksIfNeeded()
