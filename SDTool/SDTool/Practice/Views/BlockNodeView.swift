@@ -20,6 +20,13 @@ struct BlockNodeView: View {
 
     private let size: CGFloat = 64
 
+    private var blockHeight: CGFloat {
+        switch node.type {
+        case .apiGateway, .reverseProxy: return 90
+        default: return size
+        }
+    }
+
     var body: some View {
         ZStack {
             switch node.scalingMode {
@@ -41,7 +48,7 @@ struct BlockNodeView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 12)
                     .fill(blockColor.opacity(0.14))
-                    .frame(width: size, height: size)
+                    .frame(width: size, height: blockHeight)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12)
                             .stroke(
