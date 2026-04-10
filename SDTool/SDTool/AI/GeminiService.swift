@@ -178,6 +178,34 @@ actor GeminiService {
         return result
     }
 
+    // MARK: - System Design Practice evaluation
+
+    func evaluateSystemDesign(graph: DesignGraph, level: SDLevel, score: Float) async throws -> String {
+        let prompt = """
+        You are a system design mentor. Evaluate this student's design.
+
+        Problem level: "\(level.title)"
+        Constraints given to student: \(level.constraints)
+        Context: \(level.aiContextHint)
+
+        Student's design:
+        - Components used: \(graph.components.joined(separator: ", "))
+        - Connections: \(graph.connections.map { $0.joined(separator: "→") }.joined(separator: ", "))
+
+        Algorithmic match score: \(Int(score * 100))%
+
+        Provide exactly:
+        1. Two things the student did well (be specific about their choices)
+        2. Two specific improvements needed to fully solve this level
+        3. One pro insight about this type of system constraint
+
+        Be concise, encouraging, and educational. Max 150 words total.
+        """
+        let result = try await generate(prompt)
+        await chargeQuota(.chat)
+        return result
+    }
+
     // MARK: - Private helpers
 
     @MainActor

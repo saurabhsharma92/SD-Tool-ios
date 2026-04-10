@@ -1,0 +1,9 @@
+{
+  "name": "sd-tool-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Admin scripts for SD Tool content management",
+  "dependencies": {
+    "firebase-admin": "^12.0.0"
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "id": "design-rate-limiter",
+  "title": "Design a Rate Limiter",
+  "overview": "Build a rate limiter that restricts how many requests a client can make in a time window, protecting backend services from abuse and overload.",
+  "difficulty": "medium",
+  "tags": ["api", "throttling", "distributed"],
+  "levelCount": 3,
+  "levels": [
+    {
+      "levelNumber": 1,
+      "title": "Single Server Limiter",
+      "constraints": "Limit each user to 100 requests per minute. Single server, single region. Blocking excess requests with a 429 response is acceptable.",
+      "requiredComponents": ["Input", "Server", "RDBMS"],
+      "requiredConnections": [
+        ["Input", "Server"],
+        ["Server", "RDBMS"]
+      ],
+      "feedbackHint": "A DB counter works at low scale but adds a DB round-trip to every request. At high QPS, that's expensive. Can you eliminate the DB lookup?",
+      "aiContextHint": "Level 1 is a simple in-process or DB-backed counter. The server checks a request count per user per time window stored in the DB. Accept any design with server + storage."
+    },
+    {
+      "levelNumber": 2,
+      "title": "High-Throughput Limiting",
+      "constraints": "100K requests/second across all users. DB-backed counters can't keep up — each request requires a round-trip that adds 20ms+ of latency.",
+      "requiredComponents": ["Input", "API Gateway", "Server", "Cache", "RDBMS"],
+      "requiredConnections": [
+        ["Input", "API Gateway"],
+        ["API Gateway", "Server"],
+        ["Server", "Cache"],
+        ["Server", "RDBMS"]
+      ],
+      "feedbackHint": "Moving counters to an in-memory cache (Redis atomic INCR + TTL) cuts latency to microseconds. The API Gateway can enforce limits before requests reach any service.",
+      "aiContextHint": "Level 2 moves rate limit counters to a cache (Redis). Redis atomic operations (INCR, EXPIRE) allow sub-millisecond counter updates. The API Gateway enforces limits centrally before routing to backend services."
+    },
+    {
+      "levelNumber": 3,
+      "title": "Distributed Rate Limiting",
+      "constraints": "The service runs across 10 server nodes behind a load balancer. Each node has its own cache — users can make 10x the allowed requests by hitting different nodes.",
+      "requiredComponents": ["Input", "API Gateway", "Reverse Proxy", "Server", "Cache", "RDBMS"],
+      "requiredConnections": [
+        ["Input", "API Gateway"],
+        ["API Gateway", "Reverse Proxy"],
+        ["Reverse Proxy", "Server"],
+        ["Server", "Cache"],
+        ["Server", "RDBMS"]
+      ],
+      "feedbackHint": "A shared central cache (Redis cluster) ensures all nodes read/write the same counter — no matter which server handles the request. The Reverse Proxy routes consistently. Well done!",
+      "aiContextHint": "Level 3 uses a shared Redis cluster visible to all server nodes. The Reverse Proxy (load balancer) distributes traffic. All nodes increment the same counter key, ensuring global rate limit enforcement regardless of which server handles the request."
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "id": "design-url-shortener",
+  "title": "Design a URL Shortener",
+  "overview": "Build a service like bit.ly that takes a long URL and returns a short alias. Users visit the short URL and get redirected to the original.",
+  "difficulty": "easy",
+  "tags": ["hashing", "redirect", "storage"],
+  "levelCount": 3,
+  "levels": [
+    {
+      "levelNumber": 1,
+      "title": "Basic Shortener",
+      "constraints": "10K URLs created per day. Single region. Reads and writes are roughly equal. Design the core shorten + redirect flow.",
+      "requiredComponents": ["Input", "Server", "RDBMS"],
+      "requiredConnections": [
+        ["Input", "Server"],
+        ["Server", "RDBMS"]
+      ],
+      "feedbackHint": "Solid start! At high read volume, every redirect hitting the DB will become a bottleneck.",
+      "aiContextHint": "Level 1 is a basic monolithic design. A client posts a URL, the server hashes it, stores the mapping in a relational DB, and returns the short code. Accept any design with a server + database."
+    },
+    {
+      "levelNumber": 2,
+      "title": "High Read Traffic",
+      "constraints": "100M redirects per day, but only 1M new URLs created. Read:write = 100:1. DB reads are timing out under load.",
+      "requiredComponents": ["Input", "API Gateway", "Server", "Cache", "RDBMS"],
+      "requiredConnections": [
+        ["Input", "API Gateway"],
+        ["API Gateway", "Server"],
+        ["Server", "Cache"],
+        ["Server", "RDBMS"]
+      ],
+      "feedbackHint": "Caching short-code lookups dramatically reduces DB load. Next: how do you serve users globally with low latency?",
+      "aiContextHint": "Level 2 requires a cache (Redis/Memcached) to serve redirects without hitting the DB on every request. The API Gateway handles rate limiting and routing."
+    },
+    {
+      "levelNumber": 3,
+      "title": "Global Scale",
+      "constraints": "Users worldwide. Redirects must complete in < 50ms. The server is in one region — latency to other continents is 200ms+.",
+      "requiredComponents": ["Input", "CDN", "API Gateway", "Server", "Cache", "RDBMS"],
+      "requiredConnections": [
+        ["Input", "CDN"],
+        ["CDN", "API Gateway"],
+        ["API Gateway", "Server"],
+        ["Server", "Cache"],
+        ["Server", "RDBMS"]
+      ],
+      "feedbackHint": "Excellent! A CDN caches redirect responses at edge nodes globally, eliminating origin round trips for popular URLs.",
+      "aiContextHint": "Level 3 adds a CDN to cache redirect responses at edge locations. Popular short URLs never hit the origin server — the CDN handles the redirect directly."
+    }
+  ]
+}

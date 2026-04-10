@@ -40,6 +40,10 @@ struct ContentView: View {
                 .tabItem { Label("Flash Cards", systemImage: "rectangle.stack.fill") }
                 .tag(3)
 
+            PracticeTabView()
+                .tabItem { Label("Practice", systemImage: "square.and.pencil") }
+                .tag(5)
+
             SettingsV2()
                 .tabItem { Label("Settings", systemImage: "gear") }
                 .tag(4)

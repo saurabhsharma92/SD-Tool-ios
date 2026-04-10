@@ -1,0 +1,84 @@
+{
+  "id": "design-twitter",
+  "title": "Design Twitter",
+  "overview": "Build Twitter's backend from scratch — posting tweets, following users, and generating home feeds. The architecture will evolve significantly as scale grows.",
+  "difficulty": "medium",
+  "tags": ["social", "feed", "fan-out", "scale"],
+  "levelCount": 5,
+  "levels": [
+    {
+      "levelNumber": 1,
+      "title": "Basic Twitter",
+      "constraints": "10K DAU. Users post tweets and follow others. Home feed shows tweets from people they follow. No real-time requirement.",
+      "requiredComponents": ["Input", "Server", "RDBMS"],
+      "requiredConnections": [
+        ["Input", "Server"],
+        ["Server", "RDBMS"]
+      ],
+      "feedbackHint": "Solid foundation! At 1M+ users, querying the DB for every feed load will grind to a halt.",
+      "aiContextHint": "Level 1 is a simple monolithic design. A server stores tweets and follows in a relational DB. Home feed is a JOIN query. Accept any design with server + database."
+    },
+    {
+      "levelNumber": 2,
+      "title": "High Read Volume",
+      "constraints": "10M DAU. Read:write ratio is 100:1. Home feed queries across millions of follows are timing out under load.",
+      "requiredComponents": ["Input", "API Gateway", "Server", "Cache", "RDBMS"],
+      "requiredConnections": [
+        ["Input", "API Gateway"],
+        ["API Gateway", "Server"],
+        ["Server", "Cache"],
+        ["Server", "RDBMS"]
+      ],
+      "feedbackHint": "Caching pre-computed feeds per user massively cuts DB load. Next challenge: celebrities with millions of followers.",
+      "aiContextHint": "Level 2 adds a cache to store pre-computed home feeds per user. When someone posts, fan-out writes the tweet into each follower's cache feed. API Gateway handles auth and rate limiting."
+    },
+    {
+      "levelNumber": 3,
+      "title": "Fan-out Problem",
+      "constraints": "A celebrity with 10M followers posts a tweet. Your naive fan-out tries to write 10M cache entries synchronously — it times out. Users see the tweet hours late.",
+      "requiredComponents": ["Input", "API Gateway", "Server", "Cache", "RDBMS", "NoSQL"],
+      "requiredConnections": [
+        ["Input", "API Gateway"],
+        ["API Gateway", "Server"],
+        ["Server", "Cache"],
+        ["Server", "RDBMS"],
+        ["Server", "NoSQL"]
+      ],
+      "feedbackHint": "Async fan-out via a message queue (NoSQL as queue) decouples posting from delivery. Workers drain the queue gradually. Good thinking!",
+      "aiContextHint": "Level 3 uses an async fan-out pattern. The tweet is written to a queue (NoSQL). Workers asynchronously push to follower caches. This prevents write timeouts for high-follower accounts."
+    },
+    {
+      "levelNumber": 4,
+      "title": "Hybrid Fan-out",
+      "constraints": "Async fan-out is slow for celebrities — followers still wait minutes for new tweets. Regular users get instant delivery but celebrities are a second-class experience.",
+      "requiredComponents": ["Input", "CDN", "API Gateway", "Server", "Cache", "RDBMS", "NoSQL"],
+      "requiredConnections": [
+        ["Input", "CDN"],
+        ["CDN", "API Gateway"],
+        ["API Gateway", "Server"],
+        ["Server", "Cache"],
+        ["Server", "RDBMS"],
+        ["Server", "NoSQL"]
+      ],
+      "feedbackHint": "The hybrid approach — push for regular users, pull for celebrities — is how Twitter actually works. Adding CDN for media makes it production-grade. One more challenge remains.",
+      "aiContextHint": "Level 4 uses a hybrid fan-out: push (write to follower caches) for regular users, pull (merge celebrity tweets at read time) for celebrities. CDN serves media and static assets."
+    },
+    {
+      "levelNumber": 5,
+      "title": "Content Moderation",
+      "constraints": "Harmful and restricted content reaches followers before it's detected. Moderation must happen before fan-out, but can't block the post response. It must be async.",
+      "requiredComponents": ["Input", "CDN", "API Gateway", "Server", "Cache", "RDBMS", "NoSQL", "Reverse Proxy"],
+      "requiredConnections": [
+        ["Input", "CDN"],
+        ["CDN", "API Gateway"],
+        ["API Gateway", "Reverse Proxy"],
+        ["Reverse Proxy", "Server"],
+        ["Server", "Cache"],
+        ["Server", "RDBMS"],
+        ["Server", "NoSQL"]
+      ],
+      "feedbackHint": "You've designed a production-grade Twitter! The Reverse Proxy intercepts content before fan-out, routing it to a moderation pipeline. Tweets enter a 'pending' state until cleared.",
+      "aiContextHint": "Level 5 adds a content moderation pipeline. A Reverse Proxy (or internal gateway) routes new tweets through a moderation service (ML + rules engine) before fan-out. Cleared tweets are then delivered normally."
+    }
+  ]
+}

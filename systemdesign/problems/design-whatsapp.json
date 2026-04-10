@@ -1,0 +1,84 @@
+{
+  "id": "design-whatsapp",
+  "title": "Design WhatsApp",
+  "overview": "Build a messaging platform supporting 1-on-1 chats, group messaging, message delivery guarantees, and media sharing — all at global scale.",
+  "difficulty": "hard",
+  "tags": ["messaging", "websocket", "delivery", "media", "scale"],
+  "levelCount": 5,
+  "levels": [
+    {
+      "levelNumber": 1,
+      "title": "Basic Messaging",
+      "constraints": "10K users. Send text messages between two users. Messages must be stored so offline users receive them when they reconnect. No real-time requirement.",
+      "requiredComponents": ["Input", "Server", "RDBMS"],
+      "requiredConnections": [
+        ["Input", "Server"],
+        ["Server", "RDBMS"]
+      ],
+      "feedbackHint": "Good foundation! Polling the DB for new messages on every client refresh is very inefficient. How do you push messages instantly to online users?",
+      "aiContextHint": "Level 1 is a basic store-and-forward design. Messages are stored in a DB. Recipients poll for new messages. Accept any server + database design."
+    },
+    {
+      "levelNumber": 2,
+      "title": "Real-time Delivery",
+      "constraints": "1M users. Polling causes massive DB load and 10–30s message delays. Users expect instant delivery when both parties are online.",
+      "requiredComponents": ["Input", "API Gateway", "Server", "Cache", "RDBMS"],
+      "requiredConnections": [
+        ["Input", "API Gateway"],
+        ["API Gateway", "Server"],
+        ["Server", "Cache"],
+        ["Server", "RDBMS"]
+      ],
+      "feedbackHint": "WebSocket connections (maintained via server + cache for session state) enable instant push delivery. The cache stores active connection metadata. Messages still go to DB for offline users.",
+      "aiContextHint": "Level 2 adds persistent WebSocket connections between clients and servers. The cache stores which server holds each user's connection. When a message arrives, the server looks up the recipient's connection and pushes immediately. Offline users get messages from DB on reconnect."
+    },
+    {
+      "levelNumber": 3,
+      "title": "Media Messages",
+      "constraints": "Users send photos, videos, and voice notes. Uploading 50MB videos directly through the chat server causes timeouts and saturates server bandwidth.",
+      "requiredComponents": ["Input", "CDN", "API Gateway", "Server", "Cache", "RDBMS"],
+      "requiredConnections": [
+        ["Input", "CDN"],
+        ["CDN", "API Gateway"],
+        ["API Gateway", "Server"],
+        ["Server", "Cache"],
+        ["Server", "RDBMS"]
+      ],
+      "feedbackHint": "Direct-to-CDN uploads bypass the chat server entirely. The server only stores the media URL and sends it as a message. Recipients download media from the CDN edge node near them.",
+      "aiContextHint": "Level 3 uses pre-signed CDN upload URLs. Clients upload media directly to CDN/object storage without going through the chat server. The server receives only the media URL and routes it as a message. CDN serves media to recipients from the nearest edge node."
+    },
+    {
+      "levelNumber": 4,
+      "title": "Group Messaging",
+      "constraints": "Groups can have up to 1,000 members. Sending a message to a 1,000-member group requires 1,000 WebSocket pushes — the server blocks on fan-out for seconds.",
+      "requiredComponents": ["Input", "CDN", "API Gateway", "Server", "Cache", "RDBMS", "NoSQL"],
+      "requiredConnections": [
+        ["Input", "CDN"],
+        ["CDN", "API Gateway"],
+        ["API Gateway", "Server"],
+        ["Server", "Cache"],
+        ["Server", "RDBMS"],
+        ["Server", "NoSQL"]
+      ],
+      "feedbackHint": "Async fan-out via a message queue (NoSQL) decouples the sender response from delivery to all members. Workers drain the queue and push to each member's WebSocket connection.",
+      "aiContextHint": "Level 4 uses an async fan-out queue (NoSQL) for group messages. The server enqueues a delivery job and immediately returns a 'sent' acknowledgement. Worker services dequeue jobs and fan out to each group member's connection server."
+    },
+    {
+      "levelNumber": 5,
+      "title": "End-to-End Delivery Guarantees",
+      "constraints": "Messages are sometimes lost when servers restart or a recipient reconnects to a different server. Users need 'delivered' and 'read' receipts with guaranteed exactly-once delivery.",
+      "requiredComponents": ["Input", "CDN", "API Gateway", "Reverse Proxy", "Server", "Cache", "RDBMS", "NoSQL"],
+      "requiredConnections": [
+        ["Input", "CDN"],
+        ["CDN", "API Gateway"],
+        ["API Gateway", "Reverse Proxy"],
+        ["Reverse Proxy", "Server"],
+        ["Server", "Cache"],
+        ["Server", "RDBMS"],
+        ["Server", "NoSQL"]
+      ],
+      "feedbackHint": "You've designed a production-grade messaging system! Message sequence numbers in the DB, client-side ACKs, and a durable queue ensure exactly-once delivery. The Reverse Proxy handles sticky WebSocket routing to the correct server node.",
+      "aiContextHint": "Level 5 adds delivery guarantees: monotonic message sequence numbers per conversation (RDBMS), client ACK protocol, and a durable queue (NoSQL) that retains messages until ACK'd. The Reverse Proxy routes WebSocket reconnections to the server holding the existing session (sticky sessions)."
+    }
+  ]
+}

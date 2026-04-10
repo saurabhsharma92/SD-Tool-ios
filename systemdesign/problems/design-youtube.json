@@ -1,0 +1,67 @@
+{
+  "id": "design-youtube",
+  "title": "Design YouTube",
+  "overview": "Build YouTube's video platform — upload, store, transcode, and serve video at scale to billions of users worldwide.",
+  "difficulty": "medium",
+  "tags": ["video", "streaming", "cdn", "async"],
+  "levelCount": 4,
+  "levels": [
+    {
+      "levelNumber": 1,
+      "title": "Basic Video Platform",
+      "constraints": "1K video uploads per day. Users upload a video and others can watch it. No transcoding — serve the original file.",
+      "requiredComponents": ["Input", "Server", "RDBMS"],
+      "requiredConnections": [
+        ["Input", "Server"],
+        ["Server", "RDBMS"]
+      ],
+      "feedbackHint": "Good start! Serving raw video files from a single server won't scale, and different devices need different resolutions.",
+      "aiContextHint": "Level 1 is a basic upload-and-serve design. The server stores video metadata in a DB and serves the raw video file. Accept any server + database design."
+    },
+    {
+      "levelNumber": 2,
+      "title": "Global Video Delivery",
+      "constraints": "10M daily active viewers worldwide. Video playback buffers constantly for users far from the server. Bandwidth costs are skyrocketing.",
+      "requiredComponents": ["Input", "API Gateway", "Server", "CDN", "RDBMS"],
+      "requiredConnections": [
+        ["Input", "CDN"],
+        ["CDN", "API Gateway"],
+        ["API Gateway", "Server"],
+        ["Server", "RDBMS"]
+      ],
+      "feedbackHint": "CDN edge nodes cache and serve video segments globally — this is how YouTube delivers low-latency playback. Next: what about video transcoding?",
+      "aiContextHint": "Level 2 adds a CDN to cache and serve video segments from edge nodes near the viewer. The API Gateway handles routing. The origin server stores the master copy."
+    },
+    {
+      "levelNumber": 3,
+      "title": "Async Video Transcoding",
+      "constraints": "Uploaded videos must be converted to multiple resolutions (360p, 720p, 1080p, 4K) and formats. Transcoding blocks the upload response for minutes — unacceptable.",
+      "requiredComponents": ["Input", "CDN", "API Gateway", "Server", "NoSQL", "RDBMS"],
+      "requiredConnections": [
+        ["Input", "CDN"],
+        ["CDN", "API Gateway"],
+        ["API Gateway", "Server"],
+        ["Server", "NoSQL"],
+        ["Server", "RDBMS"]
+      ],
+      "feedbackHint": "Async transcoding via a job queue decouples upload from processing. Workers pick up jobs and produce multiple renditions. The video is 'processing' until complete.",
+      "aiContextHint": "Level 3 uses an async transcoding pipeline. After upload, the server enqueues a transcoding job (NoSQL queue). Worker services consume jobs, produce multiple video formats, and write results back. Metadata (status, rendition URLs) is stored in the DB."
+    },
+    {
+      "levelNumber": 4,
+      "title": "Scale to Billions",
+      "constraints": "500 hours of video uploaded per minute. Metadata queries (search, recommendations, comments) are slow. A single relational DB can't handle the mixed workload.",
+      "requiredComponents": ["Input", "CDN", "API Gateway", "Server", "Cache", "RDBMS", "NoSQL"],
+      "requiredConnections": [
+        ["Input", "CDN"],
+        ["CDN", "API Gateway"],
+        ["API Gateway", "Server"],
+        ["Server", "Cache"],
+        ["Server", "RDBMS"],
+        ["Server", "NoSQL"]
+      ],
+      "feedbackHint": "You've designed a YouTube-scale system! Separating relational (structured metadata) from NoSQL (comments, view counts) and adding a cache for hot data is the key to handling this mixed workload.",
+      "aiContextHint": "Level 4 uses polyglot persistence: RDBMS for structured metadata (videos, channels), NoSQL for high-write data (view counts, comments, watch history), and a cache for hot queries. CDN continues to serve video segments."
+    }
+  ]
+}

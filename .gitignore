@@ -5,6 +5,9 @@
 # ─── Firebase & Google ────────────────────────────────────────────
 GoogleService-Info.plist
 google-services.json
+scripts/serviceAccountKey.json
+scripts/node_modules/
+scripts/package-lock.json
 
 # ─── API Keys & Secrets ──────────────────────────────────────────
 *.env

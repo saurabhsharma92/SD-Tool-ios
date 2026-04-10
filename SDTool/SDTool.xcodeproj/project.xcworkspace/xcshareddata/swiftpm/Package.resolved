@@ -1,5 +1,5 @@
 {
-  "originHash" : "d1b254f1eb7a1e540723cd4b98b315f51d6f14ef99d560f7bed6db74b2d9f2a9",
+  "originHash" : "ee9100e05dfa9f8850c477b0f44aade164c4aa1543a604f5c4da3cf0beb41ea5",
   "pins" : [
     {
       "identity" : "abseil-cpp-binary",
@@ -173,6 +173,15 @@
       }
     },
     {
+      "identity" : "swift-algorithms",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-algorithms.git",
+      "state" : {
+        "revision" : "87e50f483c54e6efd60e885f7f5aa946cee68023",
+        "version" : "1.2.1"
+      }
+    },
+    {
       "identity" : "swift-cmark",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swiftlang/swift-cmark",
@@ -188,6 +197,15 @@
       "state" : {
         "revision" : "5f613358148239d0292c0cef674a3c2314737f9e",
         "version" : "2.4.1"
+      }
+    },
+    {
+      "identity" : "swift-numerics",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-numerics.git",
+      "state" : {
+        "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+        "version" : "1.1.1"
       }
     }
   ],
