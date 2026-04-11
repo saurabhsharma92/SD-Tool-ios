@@ -56,7 +56,11 @@ async function sync() {
     if (problem.levels) {
       problem.levels = problem.levels.map(level => ({
         ...level,
-        requiredConnections: (level.requiredConnections || []).map(pair => pair.join('→'))
+        requiredConnections: (level.requiredConnections || []).map(pair => pair.join('→')),
+        alternativeSolutions: (level.alternativeSolutions || []).map(alt => ({
+          ...alt,
+          connections: (alt.connections || []).map(pair => pair.join('→'))
+        }))
       }));
     }
 
