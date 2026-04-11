@@ -1,0 +1,162 @@
+{
+  "id": "instagram",
+  "title": "Design Photo Sharing Service",
+  "overview": "Design a scalable photo sharing service similar to Instagram or Flickr, where users can upload, view, and interact with photos. You will progressively enhance the system to handle growing traffic, image processing capabilities like thumbnails, and eventually a globally distributed, fault-tolerant architecture with organizational features.",
+  "difficulty": "medium",
+  "tags": [
+    "sharing",
+    "photo"
+  ],
+  "levelCount": 3,
+  "levels": [
+    {
+      "levelNumber": 1,
+      "title": "Basic Design",
+      "constraints": "Design a photo sharing service handling up to 100 concurrent users, where photos up to 10MB can be uploaded and the user receives a success or failure acknowledgment within 3 seconds.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "NoSQL",
+        "File Storage"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "File Storage"
+        ],
+        [
+          "File Storage",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "File Storage",
+          "NoSQL"
+        ],
+        [
+          "Input",
+          "File Storage"
+        ]
+      ],
+      "feedbackHint": "Great work laying the foundation! Think about what happens when thousands of users try to upload photos simultaneously \u2014 your next challenge will push the system to handle real scale.",
+      "aiContextHint": "This level tests whether the student understands the basic request-response flow for a simple upload pipeline. Accept any design that includes a client/input layer, a server to coordinate logic, a database (NoSQL or similar) for metadata, and a file/blob storage component for the actual photo. The key requirement is that the server acknowledges the upload back to the user. Connections should reflect that the server writes to both storage and DB, storage may confirm back to server, and server responds to input. Do not require load balancers, CDNs, queues, or redundancy at this level."
+    },
+    {
+      "levelNumber": 2,
+      "title": "Scale Up",
+      "constraints": "Your service now handles 10x the original traffic (assume ~1 million uploads/day) and must automatically generate thumbnails for every uploaded image. Design a system that scales to this load and processes images efficiently.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "NoSQL",
+        "File Storage",
+        "Server",
+        "File Storage"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "File Storage"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "File Storage",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "File Storage",
+          "Server"
+        ],
+        [
+          "Server",
+          "File Storage"
+        ]
+      ],
+      "feedbackHint": "Great work handling scale and image processing! Next, think about what happens when your system needs to handle global users and keep everything highly available even when servers go down.",
+      "aiContextHint": "This level tests whether the student understands horizontal scaling (multiple servers), asynchronous image processing for thumbnail generation (e.g., a separate processing server or worker), and appropriate use of a message queue or secondary file storage for processed thumbnails. Accept solutions that include: multiple servers or a load balancer, a mechanism for thumbnail creation (dedicated processing server, worker, or queue-based approach), and separate or dual file storage for original and thumbnail images. The NoSQL database should track metadata including thumbnail references. Do not require a specific queue technology but reward its presence. Penalize solutions that have only a single server with no scaling strategy or no clear thumbnail generation step."
+    },
+    {
+      "levelNumber": 3,
+      "title": "Global / Resilient",
+      "constraints": "Your service must handle 10M+ daily active users across at least 2 geographic regions, maintain 99.99% uptime with automatic failover, and support organized photo storage with folder/album management.",
+      "requiredComponents": [
+        "CDN",
+        "Input",
+        "Server",
+        "Server",
+        "NoSQL",
+        "RDBMS"
+      ],
+      "requiredConnections": [
+        [
+          "CDN",
+          "Input"
+        ],
+        [
+          "Input",
+          "CDN"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "RDBMS",
+          "Server"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ]
+      ],
+      "feedbackHint": "Excellent work building a globally resilient photo sharing platform with folder support! Next, consider how you'd handle real-time notifications and social features like comments and likes at massive scale.",
+      "aiContextHint": "This level tests multi-region architecture awareness, fault tolerance patterns, and data organization features. Accept solutions that demonstrate: CDN for global content delivery, multiple servers suggesting load balancing or regional redundancy, NoSQL for scalable unstructured photo metadata and folder/album hierarchy, RDBMS for structured relational data (user accounts, permissions, folder relationships), and bidirectional connections showing proper request/response flows. The two Server nodes should imply redundancy or regional separation. Accept reasonable variations that show understanding of why both NoSQL and RDBMS are used together. Do not require explicit load balancers or DNS if the student explains the multi-region intent through their component choices."
+    }
+  ]
+}

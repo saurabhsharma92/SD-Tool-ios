@@ -1,0 +1,97 @@
+{
+  "id": "uber",
+  "title": "Design a ride sharing app like uber or lyft",
+  "overview": "Design a scalable ride-sharing platform where riders can discover nearby drivers and request rides, handling 10 million daily trips with real-time location tracking and efficient driver-rider matching.",
+  "difficulty": "hard",
+  "tags": [
+    "ride sharing",
+    "location service"
+  ],
+  "levelCount": 1,
+  "levels": [
+    {
+      "levelNumber": 1,
+      "title": "Basic Design",
+      "constraints": "Support 10M daily rides with real-time driver location updates every 3-5 seconds and match riders to nearby drivers within 5 seconds.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "Cache",
+        "NoSQL",
+        "RDBMS",
+        "Server",
+        "Server",
+        "NoSQL",
+        "Server"
+      ],
+      "requiredConnections": [
+        [
+          "Cache",
+          "Input"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "Server"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "Server"
+        ]
+      ],
+      "feedbackHint": "Great job nailing the core architecture! Now think about how your system handles massive scale \u2014 what happens when millions of users are requesting rides simultaneously?",
+      "aiContextHint": "This level tests whether the student understands the basic components of a ride-sharing app: a way for drivers to send location updates, a matching service to connect riders with nearby drivers, persistent storage for ride/user data, and a basic caching layer for frequently accessed location data. Accept any reasonable architecture that includes real-time location ingestion, a matching/dispatch component, some form of database for rides and users, and a cache. Do not require perfect component names \u2014 focus on whether the functional roles are covered."
+    }
+  ]
+}
