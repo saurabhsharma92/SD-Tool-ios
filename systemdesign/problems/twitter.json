@@ -1,0 +1,365 @@
+{
+  "id": "twitter",
+  "title": "Design Twitter",
+  "overview": "Design a scalable social media platform like Twitter where users can post tweets, follow other users, and view their personalized feed, starting with a basic implementation and progressively scaling to handle millions of users and posts. You'll tackle core challenges like read-heavy traffic optimization, follower distribution, celebrity user handling, and content moderation as you advance through each level.",
+  "difficulty": "easy",
+  "tags": [
+    "feed",
+    "social-media"
+  ],
+  "levelCount": 5,
+  "levels": [
+    {
+      "levelNumber": 1,
+      "title": "Basic Design",
+      "constraints": "Design a Twitter-like system handling up to 1,000 tweets/day and 10,000 reads/day with a single region deployment. Keep it simple \u2014 no caching, queuing, or distribution needed at this scale.",
+      "requiredComponents": [
+        "Input",
+        "Input",
+        "Server",
+        "Server",
+        "RDBMS"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "RDBMS",
+          "Server"
+        ]
+      ],
+      "feedbackHint": "Great job nailing the basics! As Twitter grows, think about what happens when millions of users hit your single server simultaneously \u2014 can it hold up?",
+      "aiContextHint": "This level tests whether the student understands a minimal viable architecture: client(s) sending requests to a server, which reads/writes from a relational database. Accept solutions with 1-2 clients (web/mobile/input), 1-2 servers (can be combined app server), and a single RDBMS. Do not require caching, load balancers, CDN, or message queues. Accept minor variations in naming (e.g., 'App Server', 'Backend'). The key pattern to validate is: Client -> Server -> Database, with bidirectional data flow (reads and writes). Reject solutions missing a persistent storage layer or with no clear client-server separation."
+    },
+    {
+      "levelNumber": 2,
+      "title": "High Read Volume",
+      "constraints": "Your system must handle 100,000 read requests per second (10x the baseline), while write traffic remains at 10,000 requests per second. Read latency must stay under 100ms at p99.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "RDBMS",
+        "Read Replicas"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "RDBMS",
+          "Read Replicas"
+        ],
+        [
+          "Read Replicas",
+          "Server"
+        ]
+      ],
+      "feedbackHint": "Great job scaling reads with replicas! But what happens when the same tweets and timelines are requested thousands of times per second \u2014 are you doing redundant database work?",
+      "aiContextHint": "This level tests whether the student understands read scaling via database read replicas. Accept solutions that add one or more read replicas receiving replicated data from the primary RDBMS, with the server routing reads to replicas and writes to the primary. The student should demonstrate awareness that read replicas offload the primary DB. Do not require caching yet \u2014 that is the next level. Accept reasonable variations in naming (e.g., 'Replica DB', 'Secondary DB'). The key connection pattern is RDBMS replicating to Read Replicas and the Server reading from Read Replicas."
+    },
+    {
+      "levelNumber": 3,
+      "title": "Fan Out",
+      "constraints": "Your follower service must handle up to 500M follow relationships and support fan-out for users with up to 1M followers, keeping feed delivery under 200ms for 95% of users.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "NoSQL",
+        "Cache",
+        "Server",
+        "NoSQL",
+        "NoSQL",
+        "Server",
+        "Server"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ]
+      ],
+      "feedbackHint": "Great job distributing follower load evenly! Next, think about how you'd handle celebrity users with tens of millions of followers \u2014 not all fan-out strategies are equal.",
+      "aiContextHint": "This level tests whether the student understands fan-out architecture for a follower service. Accept solutions that show write-time or read-time fan-out using message queues, worker servers, or cache layers. Key components to look for: an ingestion server, a follower/following store (NoSQL), a fan-out worker or service, and a timeline/feed cache or store. The even distribution aspect means the student should address sharding or partitioning of follower data. Accept reasonable variations that demonstrate awareness of distributing follower relationships across multiple NoSQL nodes and using intermediate servers or queues to spread fan-out work."
+    },
+    {
+      "levelNumber": 4,
+      "title": "Celebrity Issue",
+      "constraints": "A single celebrity account has 10M+ followers. When they post a tweet, your system must fan-out or fetch that tweet efficiently without crashing servers or causing write amplification to millions of records.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "NoSQL",
+        "Cache",
+        "Server",
+        "NoSQL",
+        "Server",
+        "Input",
+        "Server",
+        "Input",
+        "NoSQL",
+        "NoSQL",
+        "NoSQL",
+        "NoSQL"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "NoSQL",
+          "Cache"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "Server",
+          "Cache"
+        ],
+        [
+          "Cache",
+          "Server"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Cache"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ]
+      ],
+      "feedbackHint": "Great work handling the celebrity bottleneck! Next, think about what happens when your system needs to scale globally across multiple regions with millions of concurrent users.",
+      "aiContextHint": "This level tests whether the student understands the celebrity/hot-key problem in social graphs. Accept solutions that address fan-out on read (pull model) vs fan-out on write (push model) tradeoffs, use of cache layers to serve celebrity tweets without repeated DB hits, or hybrid approaches where celebrity tweets are handled differently from normal users. Look for cache usage to absorb read load, avoidance of writing to millions of follower inboxes on post, and some mechanism (NoSQL, cache, separate server logic) to efficiently deliver celebrity content. Do not require a perfect architecture \u2014 reward clear thinking about the asymmetry between celebrities and normal users."
+    },
+    {
+      "levelNumber": 5,
+      "title": "Harmful Content",
+      "constraints": "Your system must handle harmful content filtering with <500ms added latency per tweet, catching at least 95% of policy-violating content before it reaches other users.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "NoSQL",
+        "Cache",
+        "Server",
+        "Input",
+        "Server",
+        "Input",
+        "Server",
+        "NoSQL",
+        "NoSQL",
+        "NoSQL",
+        "NoSQL",
+        "NoSQL",
+        "Server",
+        "Server",
+        "Server"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Server"
+        ],
+        [
+          "Server",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "Cache"
+        ],
+        [
+          "Cache",
+          "Server"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Cache"
+        ],
+        [
+          "Cache",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ]
+      ],
+      "feedbackHint": "Great job designing a content moderation pipeline! Now think about how your system will handle massive scale \u2014 what happens when millions of users are posting and reading tweets simultaneously?",
+      "aiContextHint": "This level tests whether the student incorporates content moderation into their Twitter design. Accept solutions that include a filtering/moderation step (e.g., a dedicated server or service for ML-based or rule-based content scanning) applied to incoming tweets before storage or distribution. Look for: a moderation service/server in the tweet ingestion path, use of a database or cache to store flagged content or moderation rules, and async or sync filtering that doesn't catastrophically block the pipeline. Do not require a specific ML model name, but the architecture should clearly show that content is checked before or shortly after being written to the main data store. Bonus credit for appeal queues or human review components."
+    }
+  ]
+}

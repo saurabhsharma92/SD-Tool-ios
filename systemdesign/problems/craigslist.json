@@ -1,0 +1,465 @@
+{
+  "id": "craigslist",
+  "title": "Design Craigslist",
+  "overview": "Design a simplified version of Craigslist, a text-based online classifieds platform where users can post and browse listings across categories like jobs, housing, goods, and services. You will progressively scale the system from handling small local traffic to a globally distributed platform, tackling real-world challenges like read/write imbalances, full-text search, and hotspot categories.",
+  "difficulty": "medium",
+  "tags": [
+    "online-platform",
+    "e-commerce"
+  ],
+  "levelCount": 7,
+  "levels": [
+    {
+      "levelNumber": 1,
+      "title": "Basic Design",
+      "constraints": "Design a Craigslist-like system handling 1,000 posts and 10,000 views per day at small scale. Your design should cover the core flow: users posting listings, users browsing/viewing listings, and basic data storage.",
+      "requiredComponents": [
+        "Input",
+        "Input",
+        "Input",
+        "Server",
+        "Server",
+        "Server",
+        "RDBMS"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ]
+      ],
+      "feedbackHint": "Great work nailing the basics! Next, think about what happens when traffic grows 100x \u2014 how would you handle more users reading listings than writing them?",
+      "aiContextHint": "This level tests whether the student understands the fundamental request-response cycle for a simple CRUD web app. Accept any design that includes: at least one client/input component representing users (posters and viewers can be separate or combined), at least one server or application layer handling requests, and at least one database (RDBMS or equivalent) for storing listings. The connections should show clients talking to servers and servers talking to the database. Do not require caching, CDNs, load balancers, or separation of read/write paths at this level. The scale is intentionally tiny so focus is on correctness of basic architecture, not optimization."
+    },
+    {
+      "levelNumber": 2,
+      "title": "Scale Up",
+      "constraints": "Your Craigslist clone now handles 10x the original traffic (~100K daily active users, ~1,000 concurrent users at peak). Identify the single biggest bottleneck from your Level 1 design and resolve it.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "RDBMS",
+        "Server",
+        "File Storage",
+        "Reverse Proxy"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "RDBMS",
+          "Server"
+        ],
+        [
+          "Server",
+          "File Storage"
+        ],
+        [
+          "File Storage",
+          "Reverse Proxy"
+        ],
+        [
+          "Reverse Proxy",
+          "Input"
+        ]
+      ],
+      "feedbackHint": "Great job scaling up! Now think about what happens when your system needs to handle 100x traffic \u2014 you'll need to rethink how requests are distributed across multiple servers.",
+      "aiContextHint": "This level asks the student to identify and fix the bottleneck from Level 1 (a single server handling everything). There are two valid approaches: Approach 1 adds a Reverse Proxy (load balancer) in front of multiple servers, with flow: Input\u2192Server\u2192RDBMS and static files served via File Storage\u2192Reverse Proxy\u2192Input. Approach 2 separates static file serving so that Input can fetch files directly from File Storage (CDN-like), while two Servers share the RDBMS load. Accept any design that (1) adds a second Server to distribute load, and/or (2) offloads static file serving to File Storage so the primary server is no longer the bottleneck, and/or (3) introduces a Reverse Proxy or load balancer to route traffic. The core requirement is that the student has identified the single-server bottleneck and added at least one meaningful scaling mechanism such as a second server, a reverse proxy/load balancer, or direct static file offloading. Do not require all components from both approaches \u2014 either approach alone is sufficient to pass.",
+      "alternativeSolutions": [
+        {
+          "components": [
+            "Input",
+            "Server",
+            "RDBMS",
+            "Server",
+            "File Storage"
+          ],
+          "connections": [
+            [
+              "Input",
+              "Server"
+            ],
+            [
+              "Server",
+              "Input"
+            ],
+            [
+              "Input",
+              "Server"
+            ],
+            [
+              "Server",
+              "Input"
+            ],
+            [
+              "Server",
+              "RDBMS"
+            ],
+            [
+              "Server",
+              "RDBMS"
+            ],
+            [
+              "RDBMS",
+              "Server"
+            ],
+            [
+              "Server",
+              "File Storage"
+            ],
+            [
+              "Input",
+              "File Storage"
+            ],
+            [
+              "File Storage",
+              "Input"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "levelNumber": 3,
+      "title": "Global / Resilient",
+      "constraints": "Your system must handle 10M+ active listings across multiple geographic regions with 99.99% uptime, supporting at least 50,000 concurrent users with sub-200ms response times globally.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "RDBMS",
+        "Server",
+        "CDN",
+        "File Storage"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "RDBMS",
+          "Server"
+        ],
+        [
+          "Server",
+          "CDN"
+        ],
+        [
+          "CDN",
+          "File Storage"
+        ],
+        [
+          "CDN",
+          "Input"
+        ]
+      ],
+      "feedbackHint": "Excellent work building a resilient, globally distributed Craigslist! Now consider how you'd handle real-time fraud detection and abuse prevention at scale across all those regions.",
+      "aiContextHint": "This level tests whether the student understands multi-region resilience and global performance optimization. Accept solutions that include CDN for static asset delivery, file storage for images/media, redundant servers, and a database layer. Key concepts to validate: CDN reducing latency for global users, file storage decoupled from compute, multiple server instances suggesting load balancing or redundancy, and bidirectional server-client communication. The duplicate Input\u2192Server and Server\u2192Input connections may indicate multiple region endpoints or load balancer awareness. Accept reasonable interpretations of fault tolerance even if not perfectly articulated \u2014 look for CDN + File Storage + multiple servers as the core signal of a globally resilient design."
+    },
+    {
+      "levelNumber": 4,
+      "title": "High Write Volume",
+      "constraints": "Your Craigslist handles 500,000 new listings per day but only 5,000 daily readers \u2014 writes outnumber reads 100 to 1. Design a system that can absorb this massive write volume without degrading performance.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "NoSQL",
+        "Read Replicas",
+        "Server",
+        "File Storage"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "NoSQL",
+          "Read Replicas"
+        ],
+        [
+          "NoSQL",
+          "Read Replicas"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "Read Replicas"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "Server",
+          "File Storage"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "File Storage"
+        ]
+      ],
+      "feedbackHint": "Great job handling the write surge! Now think about what happens when a popular listing goes viral \u2014 can your system handle sudden read spikes just as well?",
+      "aiContextHint": "This level tests whether the student understands write-heavy architecture patterns. Accept solutions that include a primary NoSQL database optimized for writes, a mechanism to offload reads (read replicas, caching layer, or separate read servers), and file storage for listing images/attachments. The key insight is separating write path from read path. Accept reasonable variations: write buffers, message queues before DB, CDN for files, or sharding strategies all count. Penalize solutions that use only a single database node with no read/write separation, or solutions that rely solely on SQL without justification for high write throughput."
+    },
+    {
+      "levelNumber": 5,
+      "title": "High Read Volume",
+      "constraints": "Your Craigslist system must handle 100x more reads than writes \u2014 expect ~10,000 listing views per second versus ~100 new postings per second. Design your architecture to serve this massive read volume without overloading your primary database.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "RDBMS",
+        "Read Replicas",
+        "Reverse Proxy",
+        "File Storage",
+        "Server"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "RDBMS",
+          "RDBMS"
+        ],
+        [
+          "RDBMS",
+          "Read Replicas"
+        ],
+        [
+          "Input",
+          "Reverse Proxy"
+        ],
+        [
+          "Reverse Proxy",
+          "Read Replicas"
+        ],
+        [
+          "RDBMS",
+          "Server"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Reverse Proxy"
+        ],
+        [
+          "Reverse Proxy",
+          "File Storage"
+        ]
+      ],
+      "feedbackHint": "Great work scaling your reads! Your system can now handle the browse-heavy traffic Craigslist is known for \u2014 next, think about what happens when your single server becomes the bottleneck under peak load.",
+      "aiContextHint": "This level tests whether the student understands read-heavy system design. Accept solutions that include read replicas or caching layers (e.g., Redis, CDN) to offload the primary database. A reverse proxy or load balancer routing reads separately from writes is a strong signal. The student should demonstrate awareness that the primary RDBMS should handle writes while replicas or caches serve reads. Accept reasonable variations: CDN for static assets, Redis/Memcached for query caching, or multiple read replicas. Reject solutions that route all traffic through a single database with no read scaling strategy."
+    },
+    {
+      "levelNumber": 6,
+      "title": "Text Search",
+      "constraints": "Your search feature must handle at least 10,000 concurrent search queries per second with results returned in under 200ms, supporting keyword search across millions of listings.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "RDBMS",
+        "NoSQL",
+        "File Storage"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "RDBMS",
+          "NoSQL"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "RDBMS",
+          "Server"
+        ],
+        [
+          "Server",
+          "File Storage"
+        ],
+        [
+          "File Storage",
+          "Input"
+        ]
+      ],
+      "feedbackHint": "Great work building out text search! Now think about how you'd keep millions of listings fresh and accurate as users post, edit, and delete content in real time.",
+      "aiContextHint": "This level tests whether the student understands how to support full-text or keyword search at scale. Accept solutions that use a search-optimized store (NoSQL, or an implied search index like Elasticsearch/Solr) fed from the primary RDBMS, with a server intermediating queries and returning results to the client. Key concepts: separation of read/search path from write path, use of a secondary index or document store for fast text lookup, and file storage for listing images surfaced in results. Accept reasonable variations such as caching layers or CDN for assets, but flag solutions missing any search-optimized component or that route search directly through only the RDBMS without acknowledging scale limitations."
+    },
+    {
+      "levelNumber": 7,
+      "title": "Hot partition",
+      "constraints": "One category (e.g., 'Free Stuff') receives 1,000x more read traffic than any other category, generating 50,000 requests/second at peak. Your system must handle this hot partition without degrading performance for the remaining 200+ categories.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "RDBMS",
+        "NoSQL",
+        "File Storage"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "RDBMS",
+          "NoSQL"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "RDBMS",
+          "Server"
+        ],
+        [
+          "Server",
+          "File Storage"
+        ],
+        [
+          "File Storage",
+          "Input"
+        ]
+      ],
+      "feedbackHint": "Excellent work taming the hot partition! Now think about what happens when your system needs to scale globally and users across different continents expect low-latency responses.",
+      "aiContextHint": "This level tests the student's ability to handle hot partition problems in a distributed system. Accept solutions that address: (1) caching strategies for the hot category (e.g., Redis/Memcached layer, CDN caching), (2) read replicas or sharding specifically for the hot category, (3) category-aware load balancing or routing, (4) separating hot category storage/serving from cold categories, (5) rate limiting or request coalescing. The NoSQL component should be used as a caching or denormalized read layer. The solution should demonstrate awareness that the hot partition requires different treatment than regular categories. Do not require a perfect solution \u2014 accept any reasonable combination that isolates or distributes the hot category load."
+    }
+  ]
+}

@@ -1,0 +1,328 @@
+{
+  "id": "DropBox",
+  "title": "Design File Upload and Hosting Service like Dropbox",
+  "overview": "Design a scalable file storage and sharing service similar to Dropbox, where users can upload, retrieve, and share files with others. You will progressively evolve the system from handling modest traffic to a globally distributed, fault-tolerant architecture capable of supporting millions of operations per day.",
+  "difficulty": "medium",
+  "tags": [
+    "file-upload",
+    "distributed-storage"
+  ],
+  "levelCount": 4,
+  "levels": [
+    {
+      "levelNumber": 1,
+      "title": "Basic Design",
+      "constraints": "Design a basic file upload and hosting service handling 1,000 writes/day and 10,000 reads/day with a single region and no redundancy requirements.",
+      "requiredComponents": [
+        "Input",
+        "Input",
+        "Server",
+        "NoSQL",
+        "Server",
+        "File Storage",
+        "Server"
+      ],
+      "requiredConnections": [
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "Server",
+          "File Storage"
+        ],
+        [
+          "File Storage",
+          "Server"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Input",
+          "Server"
+        ]
+      ],
+      "feedbackHint": "Great job nailing the fundamentals! Now think about what happens when your service needs to handle 100x the traffic and users expect their files to always be available.",
+      "aiContextHint": "This level tests whether the student understands the basic building blocks of a file hosting service: a client/input layer, an application server to handle requests, a metadata store (NoSQL or SQL) to track file info, and a blob/file storage system. Accept any design that includes a way to receive uploads, a server to process them, some form of database for metadata, and a file storage component. Redundancy, CDN, load balancers, and caching are not required at this level. The connections should show a reasonable request-response flow between components."
+    },
+    {
+      "levelNumber": 2,
+      "title": "Scale Up",
+      "constraints": "Your service now handles 10x the original traffic \u2014 roughly 10,000 concurrent users uploading and downloading files. A single server is buckling under the load; identify the bottleneck and redesign to handle it.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "RDBMS",
+        "File Storage",
+        "Server",
+        "Input"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "RDBMS",
+          "Server"
+        ],
+        [
+          "Server",
+          "File Storage"
+        ],
+        [
+          "File Storage",
+          "Server"
+        ],
+        [
+          "File Storage",
+          "Server"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "RDBMS",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "File Storage",
+          "Input"
+        ]
+      ],
+      "feedbackHint": "Great work distributing the load! Your system can now handle traffic spikes, but think about what happens when users are geographically spread out \u2014 latency might be your next enemy.",
+      "aiContextHint": "This level tests whether the student recognizes that a single server becomes a bottleneck at 10x traffic and introduces horizontal scaling solutions. Accept designs that add a load balancer distributing requests across multiple application servers, and optionally a caching layer (e.g., Redis/Memcached) to reduce database pressure. The student should demonstrate awareness that the RDBMS and File Storage can remain as shared backend services at this scale, though read replicas or CDN hints are a bonus. Reject designs that only upgrade to a single larger server without addressing distribution."
+    },
+    {
+      "levelNumber": 3,
+      "title": "Global / Resilient",
+      "constraints": "Your service must handle 50 million active users across at least 3 geographic regions, achieving 99.99% uptime with file access latency under 100ms for 95% of users globally.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "RDBMS",
+        "File Storage",
+        "CDN"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Server"
+        ],
+        [
+          "Server",
+          "RDBMS"
+        ],
+        [
+          "Server",
+          "File Storage"
+        ],
+        [
+          "RDBMS",
+          "Server"
+        ],
+        [
+          "File Storage",
+          "Server"
+        ],
+        [
+          "Server",
+          "CDN"
+        ],
+        [
+          "CDN",
+          "Input"
+        ]
+      ],
+      "feedbackHint": "Excellent work architecting a globally resilient system! As your platform scales, think about how you'd handle metadata consistency and efficient file deduplication across hundreds of millions of files.",
+      "aiContextHint": "This level tests whether the student understands multi-region architecture with CDN for low-latency global file delivery, fault tolerance via redundant servers, and separation of metadata (RDBMS) from binary storage (File Storage). Accept solutions that demonstrate: CDN serving files close to users, multiple server instances for redundancy, RDBMS for file metadata and user data, and dedicated file storage (e.g., S3-like). Look for the Server-to-Server connection indicating load balancing or replication awareness. Award credit if the student can articulate region-based routing, failover strategies, or cache invalidation even if not all components are perfectly labeled."
+    },
+    {
+      "levelNumber": 4,
+      "title": "Automated Sync",
+      "constraints": "Your sync service now faces 10x the original traffic (100,000 concurrent users). Identify the bottleneck from Level 1 and redesign the architecture to handle this scale without degrading sync performance.",
+      "requiredComponents": [
+        "Input",
+        "Server",
+        "Server",
+        "Server",
+        "Server",
+        "NoSQL",
+        "File Storage",
+        "Input",
+        "Input"
+      ],
+      "requiredConnections": [
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Server",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "File Storage"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "NoSQL",
+          "Server"
+        ],
+        [
+          "File Storage",
+          "Server"
+        ],
+        [
+          "File Storage",
+          "Server"
+        ],
+        [
+          "Server",
+          "NoSQL"
+        ],
+        [
+          "Server",
+          "Input"
+        ],
+        [
+          "Input",
+          "Server"
+        ],
+        [
+          "Server",
+          "Server"
+        ],
+        [
+          "Server",
+          "Input"
+        ]
+      ],
+      "feedbackHint": "Excellent work scaling the sync engine! Next up, you'll need to think about how users collaborate and share files with each other in real time.",
+      "aiContextHint": "This level asks students to identify and fix the bottleneck from Level 1 under 10x traffic load. Two valid approaches exist. Approach 1 uses NoSQL as the metadata store with multiple servers (load balancer, sync coordinator, metadata service, file chunking service) connected to NoSQL and File Storage, with bidirectional flows supporting multi-device sync. Approach 2 uses RDBMS as the metadata store with a similar multi-server setup (e.g., load balancer, sync service, metadata service) connected to RDBMS and File Storage, with bidirectional flows. Accept any architecture that: (1) introduces multiple servers to distribute load (at least 3-4 server nodes), (2) uses either NoSQL or RDBMS for metadata, (3) uses File Storage for file data, (4) supports bidirectional sync flows between multiple Input (device) nodes and the backend, and (5) shows awareness of scaling the Level 1 bottleneck (typically the single server or database). Minor variations in server count or topology are acceptable as long as the core scaling intent is demonstrated.",
+      "alternativeSolutions": [
+        {
+          "components": [
+            "Input",
+            "Server",
+            "Server",
+            "Server",
+            "RDBMS",
+            "File Storage",
+            "Input",
+            "Input"
+          ],
+          "connections": [
+            [
+              "Input",
+              "Server"
+            ],
+            [
+              "Server",
+              "Input"
+            ],
+            [
+              "Server",
+              "RDBMS"
+            ],
+            [
+              "RDBMS",
+              "Server"
+            ],
+            [
+              "Server",
+              "File Storage"
+            ],
+            [
+              "File Storage",
+              "Server"
+            ],
+            [
+              "Server",
+              "Server"
+            ],
+            [
+              "RDBMS",
+              "Server"
+            ],
+            [
+              "Server",
+              "Input"
+            ],
+            [
+              "Input",
+              "Server"
+            ],
+            [
+              "Server",
+              "RDBMS"
+            ],
+            [
+              "RDBMS",
+              "Server"
+            ],
+            [
+              "Server",
+              "File Storage"
+            ],
+            [
+              "File Storage",
+              "Server"
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}
