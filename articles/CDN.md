@@ -148,3 +148,37 @@ Edge Authentication: Moving security checks (like JWT validation or cryptographi
 The financial and technical health of a CDN is measured by two key metrics:
 Cache Hit Ratio (CHR): A low CHR indicates that most requests are still hitting the origin (Cache Misses), making the CDN inefficient. Monitoring CHR is essential for optimizing TTL and cache-key configurations.
 Data Transfer Costs (Egress): CDNs often charge for data leaving their network. However, most cloud providers offer reduced "Origin-to-CDN" transfer rates. Keeping tabs on these Egress costs is vital to ensuring the CDN remains a cost-saving measure rather than a financial burden.
+
+## CDN for Dynamic Content
+
+CDNs are not limited to static assets. Modern CDNs accelerate dynamic content through several techniques:
+
+### API Acceleration
+CDNs maintain persistent, optimized TCP connections between edge servers and the origin (connection pooling). Even though the response cannot be cached, the reduced connection setup time and optimized routing cut latency significantly.
+
+### Edge-Side Includes (ESI)
+Pages with mixed static and dynamic content can be split into fragments. The CDN caches the static shell and fetches only the dynamic fragments from the origin, assembling the final page at the edge.
+
+### Dynamic Site Acceleration (DSA)
+CDN providers offer route optimization between edge and origin using techniques like:
+- **TCP optimization** — tuned congestion windows, connection reuse
+- **Intelligent routing** — real-time network path selection avoiding congested links
+- **Prefetching** — predicting and pre-loading assets based on HTML parsing at the edge
+
+> [!TIP]
+> **Interview tip:** When discussing CDNs, mention that they accelerate both static AND dynamic content. Static through caching, dynamic through route optimization and connection pooling. This shows depth beyond the basic "CDN = cache" understanding.
+
+---
+
+## Interview Cheat Sheet
+
+| Question | Key Points |
+|----------|-----------|
+| What is a CDN? | Distributed network of edge servers that cache content geographically close to users, reducing latency. |
+| Push vs Pull CDN? | Pull: on-demand caching on first request (best for large libraries). Push: pre-upload content before requests (best for critical launches). |
+| How does cache invalidation work? | Purge by path (API call), cache busting (versioned filenames), or tag-based purge (surrogate keys). |
+| How does a CDN improve security? | DDoS absorption, WAF at the edge, SSL termination, signed URLs for access control, geo-fencing. |
+| What is a Multi-CDN strategy? | Using multiple CDN providers for redundancy and optimized regional performance. |
+| What is edge computing? | Running serverless functions at CDN edge nodes (Lambda@Edge, Cloudflare Workers) for request manipulation, auth, A/B testing. |
+| What metrics matter? | Cache Hit Ratio (CHR) — target >95%. Data transfer/egress costs. P50/P99 latency. |
+| When would you NOT use a CDN? | Internal-only apps with no global users, or content that changes on every request with no cacheability. |

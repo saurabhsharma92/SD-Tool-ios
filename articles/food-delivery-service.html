@@ -1,0 +1,1303 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Design Interview: Food Delivery Service</title>
+</head>
+<body>
+
+<h1>System Design Interview: Food Delivery Service</h1>
+<h3>DoorDash / Uber Eats Scale</h3>
+<div class="note">
+
+<p><strong>Staff Engineer Interview Preparation Guide</strong> — High Level Design Round</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-problem-clarification--requirements">Problem Clarification &amp; Requirements</a></li>
+<li><a href="#2-capacity-estimation--scale">Capacity Estimation &amp; Scale</a></li>
+<li><a href="#3-high-level-architecture">High-Level Architecture</a></li>
+<li><a href="#4-core-components-deep-dive">Core Components Deep Dive</a></li>
+<li><a href="#5-restaurant-discovery">Restaurant Discovery</a></li>
+<li><a href="#6-menu--pricing-service">Menu &amp; Pricing Service</a></li>
+<li><a href="#7-order-management">Order Management</a></li>
+<li><a href="#8-delivery-driver-matching">Delivery Driver Matching</a></li>
+<li><a href="#9-real-time-tracking">Real-Time Tracking</a></li>
+<li><a href="#10-payment--settlement">Payment &amp; Settlement</a></li>
+<li><a href="#11-rating-system">Rating System</a></li>
+<li><a href="#12-data-models--storage">Data Models &amp; Storage</a></li>
+<li><a href="#13-scalability-strategies">Scalability Strategies</a></li>
+<li><a href="#14-design-trade-offs--justifications">Design Trade-offs &amp; Justifications</a></li>
+<li><a href="#15-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. Problem Clarification &amp; Requirements</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Food delivery is a three-sided marketplace: customers, restaurants, and drivers. The core system design challenge is real-time coordination between these three parties under tight time constraints. Unlike e-commerce where delivery takes days, food delivery has a 30-45 minute window from order to doorstep. Frame your answer around this real-time coordination challenge.</p>
+</div>
+
+
+<h3>Questions to Ask the Interviewer</h3>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Question</th>
+<th>Why It Matters</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Scale</strong></td>
+<td>How many orders per day? How many cities?</td>
+<td>Infrastructure sizing, geo-distribution</td>
+</tr>
+<tr>
+<td><strong>Delivery model</strong></td>
+<td>Own drivers or marketplace (Uber model) or both?</td>
+<td>Driver management complexity</td>
+</tr>
+<tr>
+<td><strong>Restaurant types</strong></td>
+<td>Restaurants only, or also grocery/convenience stores?</td>
+<td>Menu complexity, item size variability</td>
+</tr>
+<tr>
+<td><strong>Batching</strong></td>
+<td>Can one driver carry orders from multiple restaurants?</td>
+<td>Matching algorithm complexity</td>
+</tr>
+<tr>
+<td><strong>Payment</strong></td>
+<td>Who pays the driver — platform or customer tip?</td>
+<td>Settlement flow</td>
+</tr>
+<tr>
+<td><strong>ETA</strong></td>
+<td>How accurate does ETA need to be?</td>
+<td>ML model requirements</td>
+</tr>
+<tr>
+<td><strong>Scheduling</strong></td>
+<td>Immediate delivery only, or scheduled orders too?</td>
+<td>Order queue management</td>
+</tr>
+<tr>
+<td><strong>Geography</strong></td>
+<td>Single country or international?</td>
+<td>Regulatory, currency, map provider</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>Functional Requirements (Agreed Upon)</h3>
+<ul>
+<li>Customers can browse restaurants near their location, filtered by cuisine, rating, delivery time, and price range</li>
+<li>Customers can view a restaurant&#39;s menu with item availability and pricing</li>
+<li>Customers can place an order with one or more items from a single restaurant</li>
+<li>Restaurant receives the order and can accept or reject it</li>
+<li>System assigns a nearby available delivery driver to the order</li>
+<li>Customer can track the driver&#39;s location in real-time from pickup to delivery</li>
+<li>Customer pays for food + delivery fee + optional tip through the app</li>
+<li>Two-way rating: customer rates restaurant and driver; driver rates customer</li>
+<li>Customer can view order history and reorder previous meals</li>
+</ul>
+<h3>Non-Functional Requirements</h3>
+<ul>
+<li><strong>Latency:</strong> Order placement must complete in &lt; 2 seconds</li>
+<li><strong>Real-time:</strong> Driver location updates every 3-5 seconds during active delivery</li>
+<li><strong>Availability:</strong> 99.99% uptime during peak dinner hours (6-9 PM)</li>
+<li><strong>Scale:</strong> 50 million orders/month, 500K restaurants, 2 million registered drivers</li>
+<li><strong>Geo-awareness:</strong> Restaurant and driver search scoped to customer&#39;s delivery radius (typically 5-10 km)</li>
+<li><strong>Freshness:</strong> Menu availability must reflect current restaurant status (open/closed, item available/sold out)</li>
+<li><strong>Consistency:</strong> An order must be assigned to exactly one driver (no duplicate assignment)</li>
+</ul>
+<hr>
+<h2>2. Capacity Estimation &amp; Scale</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Food delivery has extreme peak-to-trough variation within a single day. Dinner hours (6-9 PM) see 5-10x the traffic of mid-afternoon. Your system must handle the dinner rush without over-provisioning for the entire day. This is a classic auto-scaling use case.</p>
+</div>
+
+
+<h3>Traffic Estimation</h3>
+<pre><code>Orders per month        = 50 Million
+Orders per day          = 50M / 30 = ~1.7 Million
+Active restaurants      = 500,000
+Active drivers (peak)   = 200,000 (online during dinner hours)
+
+Order QPS:
+  1.7M / 86,400 = ~20 orders/sec (daily average)
+  Peak dinner hours (3 hours = 10,800 sec, 60% of daily orders):
+  1.7M * 0.6 / 10,800 = ~94 orders/sec
+  Burst peak: ~300 orders/sec
+
+Restaurant discovery (search/browse):
+  Average 10 browse sessions per order
+  Peak: 940 search queries/sec
+
+Driver location updates:
+  200K active drivers * 1 update every 4 seconds
+  = 50,000 location updates/sec (during peak)
+  This is the dominant write workload.
+
+Menu views:
+  Average 3 menu views per order
+  Peak: ~280 menu reads/sec
+</code></pre>
+<h3>Storage Estimation</h3>
+<pre><code>Restaurant data:
+  - Restaurant profile    = ~2 KB
+  - 500K restaurants      = 1 GB
+
+Menu data:
+  - Average 50 items per restaurant = ~5 KB per restaurant
+  - 500K * 5 KB = 2.5 GB
+
+Orders:
+  - Order record + items  = ~2 KB
+  - 1.7M/day = 3.4 GB/day = ~1.2 TB/year
+
+Driver location (hot data):
+  - Latest location per driver = 50 bytes
+  - 200K drivers = 10 MB (fits entirely in Redis)
+
+Driver location (historical, for ETA model):
+  - Each delivery: ~100 location points * 50 bytes = 5 KB
+  - 1.7M deliveries/day * 5 KB = 8.5 GB/day
+  - Stored in time-series DB, aged out after 90 days
+</code></pre>
+<hr>
+<h2>3. High-Level Architecture</h2>
+<pre class="mermaid">
+graph TB
+    subgraph Clients
+        CUST[Customer App]
+        REST[Restaurant App/Tablet]
+        DRV[Driver App]
+    end
+
+    subgraph Edge
+        CDN[CDN]
+        LB[Load Balancer]
+    end
+
+    subgraph API Layer
+        GW[API Gateway]
+        DS[Discovery Service]
+        MS[Menu Service]
+        OS[Order Service]
+        DMS[Driver Matching Service]
+        TS[Tracking Service]
+        PS[Payment Service]
+        RS[Rating Service]
+        NS[Notification Service]
+    end
+
+    subgraph Data Layer
+        PG[(PostgreSQL - Orders & Restaurants)]
+        RD[(Redis - Driver Locations & Cache)]
+        ES[(Elasticsearch - Restaurant Search)]
+        KFK[Kafka - Event Bus]
+        TSDB[(TimescaleDB - Location History)]
+    end
+
+    subgraph External
+        MAPS[Maps API - Google/Mapbox]
+        PAY[Payment Gateway]
+        PUSH_SVC[Push Notification Service]
+    end
+
+    CUST --> CDN
+    CUST --> LB
+    REST --> LB
+    DRV --> LB
+    LB --> GW
+    GW --> DS
+    GW --> MS
+    GW --> OS
+    GW --> DMS
+    GW --> TS
+    GW --> PS
+    GW --> RS
+    DS --> ES
+    DS --> RD
+    MS --> PG
+    MS --> RD
+    OS --> PG
+    OS --> KFK
+    DMS --> RD
+    DMS --> PG
+    TS --> RD
+    TS --> TSDB
+    PS --> PAY
+    RS --> PG
+    KFK --> NS
+    KFK --> DMS
+    NS --> PUSH_SVC
+    DMS --> MAPS
+    TS --> MAPS
+</pre>
+<h3>Three-App Architecture</h3>
+<p>Unlike most systems with a single client, food delivery has three distinct clients:</p>
+<table>
+<thead>
+<tr>
+<th>App</th>
+<th>Users</th>
+<th>Key Features</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Customer App</strong></td>
+<td>End consumers</td>
+<td>Browse, order, track, pay, rate</td>
+</tr>
+<tr>
+<td><strong>Restaurant App</strong></td>
+<td>Restaurant staff</td>
+<td>Receive orders, accept/reject, mark ready</td>
+</tr>
+<tr>
+<td><strong>Driver App</strong></td>
+<td>Delivery drivers</td>
+<td>Go online, accept delivery, navigate, confirm delivery</td>
+</tr>
+</tbody></table>
+<p>Each app has different latency requirements, different push notification patterns, and different interaction frequencies.</p>
+<hr>
+<h2>4. Core Components Deep Dive</h2>
+<h3>Order Lifecycle Overview</h3>
+<p>Before diving into individual components, here is the complete lifecycle of an order through the system:</p>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> Placed: Customer submits order
+    Placed --> RestaurantReceived: Order sent to restaurant
+    RestaurantReceived --> Accepted: Restaurant accepts
+    RestaurantReceived --> Rejected: Restaurant rejects
+    Rejected --> Refunded: Full refund to customer
+    Refunded --> [*]
+
+    Accepted --> Preparing: Restaurant starts cooking
+    Preparing --> ReadyForPickup: Food is ready
+    ReadyForPickup --> DriverAssigned: Driver matched
+    DriverAssigned --> DriverAtRestaurant: Driver arrives at restaurant
+    DriverAtRestaurant --> PickedUp: Driver picks up food
+    PickedUp --> Delivering: Driver en route to customer
+    Delivering --> Delivered: Driver confirms delivery
+    Delivered --> [*]
+
+    Note right of Placed: Timeout: 5 min
+    Note right of Accepted: Timeout: estimated prep time + 10 min
+    Note right of DriverAssigned: Timeout: 15 min to arrive at restaurant
+</pre>
+<h3>Timeout Handling at Each Stage</h3>
+<div class="warning">
+
+<p>Every stage in the order lifecycle must have a timeout. Without timeouts, an order can get stuck indefinitely (e.g., restaurant never responds, driver never picks up). Each timeout triggers a compensating action.</p>
+</div>
+
+
+<table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>Timeout</th>
+<th>Action on Timeout</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Restaurant received</strong></td>
+<td>5 minutes</td>
+<td>Auto-reject, refund customer, mark restaurant as unresponsive</td>
+</tr>
+<tr>
+<td><strong>Preparing</strong></td>
+<td>Estimated prep time + 10 min</td>
+<td>Alert restaurant, notify customer of delay</td>
+</tr>
+<tr>
+<td><strong>Ready for pickup</strong></td>
+<td>15 minutes (no driver assigned)</td>
+<td>Expand driver search radius, increase driver incentive</td>
+</tr>
+<tr>
+<td><strong>Driver assigned</strong></td>
+<td>15 minutes (driver not at restaurant)</td>
+<td>Reassign to different driver, penalize original driver</td>
+</tr>
+<tr>
+<td><strong>Delivering</strong></td>
+<td>Estimated delivery time + 20 min</td>
+<td>Contact driver, alert support team</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>5. Restaurant Discovery</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Restaurant discovery is a geospatial search problem. You need to find restaurants within a delivery radius of the customer, ranked by relevance. This is where geohashing and Elasticsearch shine. Be prepared to explain how geohash-based proximity search works.</p>
+</div>
+
+
+<h3>Geospatial Search with Geohash</h3>
+<pre><code>Geohash Concept:
+  - Divide the Earth&#39;s surface into a grid
+  - Each cell gets a base-32 encoded string
+  - Longer strings = more precise (smaller area)
+  - &quot;9q8y&quot; covers a ~20km x 20km area
+  - &quot;9q8yy&quot; covers a ~5km x 5km area
+  - &quot;9q8yyk&quot; covers a ~1km x 1km area
+
+  Key property: Nearby locations share the same geohash prefix
+  -&gt; Prefix matching gives you approximate proximity search
+
+Restaurant Search:
+  1. Compute customer&#39;s geohash at precision 5 (5km cell)
+  2. Query Elasticsearch for restaurants with matching geohash prefix
+  3. Also query the 8 neighboring geohash cells (edge-of-cell problem)
+  4. Post-filter: compute actual distance, discard restaurants beyond delivery radius
+  5. Rank remaining results
+</code></pre>
+<h3>Elasticsearch Restaurant Index</h3>
+<pre><code>Index: restaurants
+Fields:
+  - name (text, analyzed)
+  - cuisine_types (keyword[])  -- [&quot;Italian&quot;, &quot;Pizza&quot;, &quot;Pasta&quot;]
+  - location (geo_point)       -- { &quot;lat&quot;: 40.7128, &quot;lon&quot;: -74.0060 }
+  - geohash (keyword)          -- &quot;dr5ru&quot;
+  - avg_rating (float)
+  - total_ratings (integer)
+  - avg_delivery_time_min (integer)  -- historical average
+  - price_level (integer)      -- 1-4 ($ to $$$$)
+  - is_open (boolean)
+  - promoted (boolean)         -- paid placement
+  - tags (keyword[])           -- [&quot;Popular&quot;, &quot;New&quot;, &quot;Free Delivery&quot;]
+</code></pre>
+<h3>Ranking Algorithm</h3>
+<pre><code>Restaurant ranking for a given customer location:
+
+Score = w1 * relevance_score          -- text match on search query
+      + w2 * proximity_score          -- closer is better (inverse distance)
+      + w3 * rating_score             -- higher rating, weighted by count
+      + w4 * delivery_time_score      -- faster estimated delivery
+      + w5 * conversion_score         -- historical order rate from search
+      + w6 * promotion_boost          -- paid placement bonus
+      - w7 * price_mismatch_penalty   -- if user prefers $ but restaurant is $$$$
+
+Proximity score:
+  proximity_score = max(0, 1 - (distance_km / max_radius_km))
+
+Delivery time estimation:
+  estimated_delivery = avg_prep_time + driving_time(restaurant, customer)
+  driving_time is computed using precomputed distance matrices (not real-time Maps API)
+</code></pre>
+<h3>Filtering</h3>
+<pre><code>User request: &quot;Show me Italian restaurants within 5km, rating 4+, delivery under 30 min&quot;
+
+Elasticsearch query:
+  - geo_distance filter: 5km from customer location
+  - term filter: cuisine_types = &quot;Italian&quot;
+  - range filter: avg_rating &gt;= 4.0
+  - range filter: avg_delivery_time_min &lt;= 30
+  - sort: by composite score (ranking algorithm above)
+
+Facets returned:
+  - Cuisine: [Italian (42), Pizza (35), Pasta (28)]
+  - Delivery time: [&lt; 20 min (15), 20-30 min (18), 30-45 min (9)]
+  - Price: [$ (12), $$ (20), $$$ (8), $$$$ (2)]
+</code></pre>
+<div class="note">
+
+<p>The <code>is_open</code> field must be updated frequently. Use a background job that checks restaurant operating hours every minute and updates the Elasticsearch index. During menu updates, the restaurant can also toggle their open/closed status in real-time.</p>
+</div>
+
+
+<hr>
+<h2>6. Menu &amp; Pricing Service</h2>
+<h3>Restaurant-Managed Menus</h3>
+<p>Each restaurant manages its own menu through the Restaurant App. The menu is a hierarchical structure:</p>
+<pre><code>Restaurant: &quot;Joe&#39;s Pizza&quot;
+  |
+  |-- Category: &quot;Appetizers&quot;
+  |   |-- Item: &quot;Garlic Knots&quot; ($5.99) [Available]
+  |   |-- Item: &quot;Mozzarella Sticks&quot; ($7.99) [Available]
+  |
+  |-- Category: &quot;Pizzas&quot;
+  |   |-- Item: &quot;Margherita&quot; ($12.99) [Available]
+  |   |   |-- Modifier Group: &quot;Size&quot; (required, pick 1)
+  |   |       |-- &quot;Small&quot; (+$0), &quot;Medium&quot; (+$3), &quot;Large&quot; (+$5)
+  |   |   |-- Modifier Group: &quot;Extra Toppings&quot; (optional, pick up to 5)
+  |   |       |-- &quot;Pepperoni&quot; (+$2), &quot;Mushrooms&quot; (+$1.50), ...
+  |   |-- Item: &quot;Buffalo Chicken&quot; ($15.99) [Sold Out]
+  |
+  |-- Category: &quot;Drinks&quot;
+      |-- Item: &quot;Coke&quot; ($2.99) [Available]
+      |-- Item: &quot;Lemonade&quot; ($3.99) [Available]
+</code></pre>
+<h3>Item Availability</h3>
+<p>Restaurants can mark items as sold out in real-time through their app:</p>
+<pre><code>Availability Update Flow:
+  1. Restaurant marks &quot;Buffalo Chicken&quot; as sold out
+  2. Menu Service updates PostgreSQL
+  3. Event published to Kafka: menu_item.availability_changed
+  4. Redis cache invalidated for this restaurant&#39;s menu
+  5. Customer app shows item as &quot;Sold Out&quot; (grayed out, unselectable)
+
+Staleness tolerance: Up to 30 seconds
+  - If a customer orders an item that just sold out, the restaurant rejects
+    that specific item and the order proceeds without it (partial fulfillment)
+    or the customer is notified and can modify the order
+</code></pre>
+<h3>Dynamic Pricing for Delivery Fees</h3>
+<p>The delivery fee is not fixed. It varies based on:</p>
+<pre><code>Delivery Fee Calculation:
+  base_fee = $2.99
+  distance_fee = max(0, (distance_km - 3) * $0.50)  -- free for first 3km
+  demand_multiplier = current_demand / baseline_demand  -- surge pricing
+  small_order_fee = order_total &lt; $15 ? $3.00 : $0    -- minimum order surcharge
+
+  delivery_fee = (base_fee + distance_fee) * demand_multiplier + small_order_fee
+  delivery_fee = min(delivery_fee, $12.99)  -- cap at max
+
+Demand multiplier:
+  - Computed per delivery zone (geohash region)
+  - Based on: pending orders / available drivers in that zone
+  - Updated every 60 seconds
+  - Typical range: 1.0x (normal) to 2.5x (extreme demand)
+</code></pre>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Mention that surge pricing for delivery is analogous to ride-sharing surge pricing. The signal is the same — demand/supply imbalance in a geographic area. But unlike ride-sharing, the customer is more price-sensitive because they can also just cook at home. So the surge multiplier is typically capped lower.</p>
+</div>
+
+
+<hr>
+<h2>7. Order Management</h2>
+<h3>Order Placement Flow</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Customer App
+    participant OS as Order Service
+    participant MS as Menu Service
+    participant INV as Inventory Check
+    participant PS as Payment Service
+    participant RS as Restaurant App
+    participant DMS as Driver Matching
+    participant KFK as Kafka
+
+    C->>OS: Place order (items, address, payment)
+    OS->>MS: Validate menu items & prices
+    MS-->>OS: Items valid, current prices confirmed
+    OS->>OS: Calculate total (items + fees + tax)
+    OS->>PS: Authorize payment (hold, not charge)
+    PS-->>OS: Authorization hold placed
+    OS->>OS: Create order (status: Placed)
+    OS-->>C: Order placed successfully
+
+    OS->>KFK: order.placed event
+    KFK->>RS: New order notification
+    RS-->>OS: Restaurant accepts (or rejects)
+
+    alt Restaurant Accepts
+        OS->>OS: Update status: Accepted
+        OS->>KFK: order.accepted event
+        Note over DMS: Driver matching begins<br/>(can start before food ready)
+    else Restaurant Rejects
+        OS->>PS: Release payment hold
+        OS->>OS: Update status: Rejected
+        OS-->>C: Order rejected notification
+    end
+</pre>
+<h3>Pre-Dispatch: Matching Driver Before Food Is Ready</h3>
+<div class="important">
+
+<p>A key optimization in food delivery is dispatching a driver before the food is ready. If you wait until the food is ready to find a driver, the food gets cold while the driver travels to the restaurant. Instead, estimate when the food will be ready and dispatch a driver so they arrive at the restaurant just as the food is done.</p>
+</div>
+
+
+<pre><code>Pre-dispatch timing:
+  1. Restaurant accepts order at T=0
+  2. Estimated prep time: 15 minutes (food ready at T=15)
+  3. Nearest available driver is 8 minutes away from restaurant
+  4. Dispatch driver at T=7 (15 - 8 = 7 minutes from now)
+  5. Driver arrives at restaurant at T=15 (just as food is ready)
+
+If prep time estimate is wrong:
+  - Food ready early: driver hasn&#39;t been dispatched yet -&gt; dispatch immediately
+  - Food ready late: driver waits at restaurant (driver is compensated for wait time &gt; 5 min)
+  - Dynamic adjustment: restaurant&#39;s actual prep times are tracked and used to improve estimates
+</code></pre>
+<h3>Restaurant-Side Order Rejection</h3>
+<p>Restaurants may reject orders for various reasons:</p>
+<pre><code>Rejection reasons:
+  - Too busy (kitchen overwhelmed)
+  - Item unavailable (ran out of ingredient)
+  - Restaurant closing soon
+  - Technical issue (printer/tablet malfunction)
+
+System response to rejection:
+  1. Release payment authorization
+  2. Notify customer: &quot;Your order was declined by the restaurant&quot;
+  3. Offer alternatives: &quot;Similar restaurants nearby&quot; or &quot;Reorder from another restaurant&quot;
+  4. Track rejection rate per restaurant
+
+High rejection rate consequences:
+  - Restaurant receives warning
+  - Search ranking penalty (lower visibility)
+  - Temporary suspension if rejection rate &gt; 30% over 24 hours
+</code></pre>
+<hr>
+<h2>8. Delivery Driver Matching</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Driver matching in food delivery is similar to ride-sharing, but with a crucial difference: the driver is going to a fixed pickup point (restaurant) and then to the customer. In ride-sharing, both pickup and dropoff are dynamic. This simplifies the matching problem somewhat but adds the restaurant as an intermediate waypoint.</p>
+</div>
+
+
+<h3>Matching Algorithm</h3>
+<pre class="mermaid">
+graph TD
+    A[Order Ready for Matching] --> B[Find Available Drivers]
+    B --> C[Filter: Within 5km of Restaurant]
+    C --> D[Score Each Candidate]
+    D --> E{Best Score > Threshold?}
+    E -->|Yes| F[Send Offer to Top Driver]
+    E -->|No| G[Expand Radius to 10km]
+    G --> C
+
+    F --> H{Driver Accepts?}
+    H -->|Yes| I[Assign Driver to Order]
+    H -->|No, Timeout 30s| J[Send Offer to Next Driver]
+    J --> H
+
+    I --> K[Notify Customer: Driver Assigned]
+    I --> L[Notify Restaurant: Driver ETA]
+</pre>
+<h3>Driver Scoring</h3>
+<pre><code>For each candidate driver, compute a composite score:
+
+score = w1 * proximity_score
+      + w2 * heading_score
+      + w3 * acceptance_rate_score
+      + w4 * current_load_score
+      + w5 * driver_rating_score
+
+proximity_score:
+  - Straight-line distance from driver to restaurant
+  - Converted to estimated driving time using Maps API
+  - Closer = higher score
+
+heading_score:
+  - Is the driver already heading toward the restaurant?
+  - A driver 3km away but driving toward the restaurant is better than
+    a driver 2km away driving in the opposite direction
+
+acceptance_rate_score:
+  - Drivers who accept most offers get priority
+  - Prevents wasted offer-timeout cycles
+
+current_load_score:
+  - Drivers carrying 0 orders get priority over drivers carrying 1 order
+  - Drivers carrying 2 orders are deprioritized (food quality degrades with long carry time)
+
+driver_rating_score:
+  - Higher-rated drivers get slight priority for better customer experience
+</code></pre>
+<h3>Order Batching</h3>
+<p>A single driver can carry multiple orders simultaneously to improve efficiency:</p>
+<pre><code>Batching rules:
+  1. Orders must be from the same restaurant (or restaurants within 500m of each other)
+  2. Delivery addresses must be within 2km of each other
+  3. The additional delay for the second customer must be &lt; 10 minutes
+  4. Maximum 2 orders per driver per batch (food quality concern)
+
+Batching flow:
+  1. Driver picks up Order A from Restaurant X
+  2. System detects Order B from Restaurant X (or nearby Restaurant Y) with nearby delivery
+  3. Offer batch to driver: &quot;Pick up Order B on your way&quot;
+  4. If accepted: navigate to Restaurant Y (if different), then deliver in optimal order
+  5. Customer B sees slightly longer ETA and gets a small discount
+</code></pre>
+<h3>Driver Location Storage (Redis)</h3>
+<pre><code>Data structure: Redis Geospatial Index (GEOADD)
+
+Key: driver_locations:{city_id}
+Members: driver_id
+Coordinates: (longitude, latitude)
+
+Operations:
+  GEOADD driver_locations:NYC -73.935242 40.730610 driver_456
+  -- Add/update driver location
+
+  GEORADIUS driver_locations:NYC -73.990 40.735 5 km ASC COUNT 20
+  -- Find 20 nearest drivers within 5km of restaurant
+
+  GEODIST driver_locations:NYC driver_456 driver_789 km
+  -- Distance between two drivers
+
+Update frequency: Every 4 seconds from each active driver
+  200K active drivers / 4 seconds = 50K GEOADD/sec
+  Redis handles this comfortably (100K+ ops/sec single instance)
+</code></pre>
+<div class="note">
+
+<p>We use a separate Redis geospatial index per city. This keeps each index small and allows independent scaling. A global index would work but adds unnecessary overhead for queries that are always city-scoped.</p>
+</div>
+
+
+<hr>
+<h2>9. Real-Time Tracking</h2>
+<h3>Driver Location via WebSocket</h3>
+<pre><code>Customer App &lt;-- WebSocket --&gt; Tracking Service &lt;-- Redis Pub/Sub --&gt; Driver App
+
+Flow:
+  1. Customer opens order tracking screen
+  2. Customer App opens WebSocket to Tracking Service
+  3. Tracking Service subscribes to Redis channel: &quot;order:{order_id}:location&quot;
+  4. Driver App sends GPS coordinates every 4 seconds to Tracking Service
+  5. Tracking Service:
+     a. Updates Redis GEOADD (for matching service)
+     b. Publishes to Redis channel &quot;order:{order_id}:location&quot;
+     c. Stores in TimescaleDB (for ETA model training)
+  6. Tracking Service forwards location to Customer App via WebSocket
+  7. Customer App renders driver&#39;s position on the map
+</code></pre>
+<h3>ETA Updates</h3>
+<pre><code>ETA Calculation:
+
+Initial ETA (at order placement):
+  ETA = restaurant_prep_time + driver_to_restaurant_time + restaurant_to_customer_time
+
+Dynamic ETA (during delivery):
+  - Recalculated every 30 seconds using actual driver position
+  - restaurant_to_customer_time = Maps API driving time from current position to customer
+  - Adjusted for:
+    - Current traffic conditions
+    - Historical delivery data for this route
+    - Time of day patterns
+    - Weather conditions (rain slows deliveries)
+
+ETA Model Training:
+  - Every completed delivery is a training sample:
+    Input: (distance, time_of_day, day_of_week, weather, traffic_level, restaurant_category)
+    Output: actual_delivery_time
+  - Model retrained weekly
+  - Per-city models (traffic patterns vary by city)
+</code></pre>
+<h3>Tracking Screen States</h3>
+<pre><code>Order tracking shows different information at each stage:
+
+1. Order Placed:
+   &quot;Your order has been sent to the restaurant&quot;
+   [Map shows restaurant location]
+
+2. Preparing:
+   &quot;Restaurant is preparing your order&quot;
+   [Animated cooking icon, estimated ready time countdown]
+
+3. Driver Assigned:
+   &quot;Your driver Alex is heading to the restaurant&quot;
+   [Map shows driver moving toward restaurant, ETA to restaurant]
+
+4. Picked Up:
+   &quot;Alex picked up your order and is on the way!&quot;
+   [Map shows driver moving toward customer, ETA to customer]
+   [Driver location updates in real-time]
+
+5. Arriving:
+   &quot;Alex is almost there!&quot;
+   [Map zoomed in, driver very close to customer]
+
+6. Delivered:
+   &quot;Your order has been delivered. Enjoy!&quot;
+   [Rate driver and restaurant prompt]
+</code></pre>
+<hr>
+<h2>10. Payment &amp; Settlement</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Food delivery payment is more complex than simple e-commerce because the money is split among multiple parties. The platform takes a commission, the restaurant gets the food cost, the driver gets a delivery payout, and tips go directly to the driver. This multi-party settlement makes accounting and reconciliation challenging.</p>
+</div>
+
+
+<h3>Payment Flow</h3>
+<pre><code>Customer pays: $35.00
+
+Breakdown:
+  Food subtotal:          $25.00
+  Delivery fee:           $4.99
+  Service fee (15%):      $3.75
+  Tax:                    $2.26
+  Tip:                    $5.00
+  ────────────────────────
+  Total charged:          $41.00
+
+Settlement:
+  Restaurant receives:    $25.00 - 20% commission = $20.00
+  Driver receives:        $8.00 base payout + $5.00 tip = $13.00
+  Platform revenue:       $5.00 (commission) + $4.99 (delivery fee) + $3.75 (service fee) = $13.74
+  Tax remitted:           $2.26
+
+  Total out: $20.00 + $13.00 + $13.74 + $2.26 = $49.00
+  Wait, that does not balance. Let me recalculate.
+
+  Customer pays: $41.00
+  Restaurant: $20.00
+  Driver: $13.00 ($8 base + $5 tip)
+  Tax authority: $2.26
+  Platform keeps: $41.00 - $20.00 - $13.00 - $2.26 = $5.74
+  Platform revenue breakdown: $5.00 commission + $0.74 net from fees
+</code></pre>
+<h3>Authorization Hold Pattern</h3>
+<pre><code>Payment timeline:
+  1. Order placed -&gt; Authorization hold for estimated total ($41.00)
+  2. Restaurant may modify order (item unavailable -&gt; removes item)
+  3. New total: $35.50 (less than authorized)
+  4. On delivery confirmation -&gt; Capture actual amount ($35.50)
+  5. If customer adds post-delivery tip -&gt; Separate charge for tip
+
+Why hold instead of charge immediately?
+  - Final total may differ (items removed, weight-based pricing for grocery)
+  - Prevents double-charge scenario if we need to adjust
+  - Hold expires after 7 days if never captured (edge case safety net)
+</code></pre>
+<h3>Settlement Frequency</h3>
+<pre><code>Restaurant settlement:
+  - Daily batch settlement
+  - All completed orders from yesterday
+  - Net amount after commission deduction
+  - Transferred via ACH/bank transfer
+
+Driver settlement:
+  - Instant payout available (with small fee)
+  - Or weekly batch settlement (free)
+  - Tips are settled separately (often instant)
+</code></pre>
+<hr>
+<h2>11. Rating System</h2>
+<h3>Two-Way Rating</h3>
+<p>After every delivery, multiple ratings are collected:</p>
+<pre><code>Customer rates:
+  - Restaurant: 1-5 stars + optional text review
+    (food quality, portion size, accuracy)
+  - Driver: 1-5 stars + optional feedback
+    (speed, communication, food condition on arrival)
+
+Driver rates:
+  - Customer: thumbs up / thumbs down
+    (was the address accurate? was customer responsive? safe location?)
+
+Restaurant rates:
+  - Driver: thumbs up / thumbs down (via tablet)
+    (did driver arrive on time? was driver professional?)
+</code></pre>
+<h3>Rating Impact</h3>
+<table>
+<thead>
+<tr>
+<th>Rating Target</th>
+<th>Impact of Low Ratings</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Restaurant</strong></td>
+<td>Lower search ranking, warning labels, potential suspension below 3.5 stars</td>
+</tr>
+<tr>
+<td><strong>Driver</strong></td>
+<td>Fewer delivery offers, lower priority in matching, deactivation below 4.2 stars</td>
+</tr>
+<tr>
+<td><strong>Customer</strong></td>
+<td>Drivers may decline deliveries (shown customer rating before accepting)</td>
+</tr>
+</tbody></table>
+<h3>Preventing Rating Manipulation</h3>
+<pre><code>Anti-manipulation measures:
+  1. Ratings are anonymous (restaurant cannot see which customer rated them)
+  2. Rating window: 24 hours after delivery (prevents emotional immediate ratings)
+  3. Outlier detection: if a restaurant suddenly gets 50 five-star ratings, investigate
+  4. Review moderation: text reviews checked for spam, fake content, personal attacks
+  5. Rating weight: frequent orderers&#39; ratings weighted higher than one-time users
+</code></pre>
+<div class="note">
+
+<p>The restaurant&#39;s displayed rating is a weighted rolling average of the last 500 ratings, with more recent ratings weighted higher. This prevents very old ratings from defining a restaurant&#39;s current quality and makes the rating responsive to recent changes (new chef, menu overhaul).</p>
+</div>
+
+
+<hr>
+<h2>12. Data Models &amp; Storage</h2>
+<h3>Database Schema</h3>
+<pre><code>Table: restaurants
+  - restaurant_id       UUID PRIMARY KEY
+  - name                VARCHAR(255)
+  - description         TEXT
+  - address             TEXT
+  - latitude            DOUBLE PRECISION
+  - longitude           DOUBLE PRECISION
+  - geohash             VARCHAR(12)
+  - cuisine_types       TEXT[]  -- PostgreSQL array
+  - price_level         SMALLINT  -- 1-4
+  - avg_rating          NUMERIC(3,2)
+  - total_ratings       INTEGER
+  - avg_prep_time_min   INTEGER
+  - is_open             BOOLEAN
+  - operating_hours     JSONB
+  - commission_rate     NUMERIC(4,2)  -- e.g., 0.20 for 20%
+  - status              VARCHAR(20)  -- active, suspended, closed
+  - created_at          TIMESTAMP
+
+Table: menu_categories
+  - category_id         UUID PRIMARY KEY
+  - restaurant_id       UUID REFERENCES restaurants
+  - name                VARCHAR(100)
+  - display_order       INTEGER
+
+Table: menu_items
+  - item_id             UUID PRIMARY KEY
+  - category_id         UUID REFERENCES menu_categories
+  - restaurant_id       UUID REFERENCES restaurants
+  - name                VARCHAR(200)
+  - description         TEXT
+  - base_price_cents    INTEGER
+  - image_url           VARCHAR(500)
+  - is_available        BOOLEAN DEFAULT TRUE
+  - calories            INTEGER
+  - dietary_tags        TEXT[]  -- [&quot;vegetarian&quot;, &quot;gluten-free&quot;]
+  - display_order       INTEGER
+
+Table: modifier_groups
+  - group_id            UUID PRIMARY KEY
+  - item_id             UUID REFERENCES menu_items
+  - name                VARCHAR(100)  -- &quot;Size&quot;, &quot;Extra Toppings&quot;
+  - is_required         BOOLEAN
+  - min_selections      SMALLINT DEFAULT 0
+  - max_selections      SMALLINT DEFAULT 1
+
+Table: modifiers
+  - modifier_id         UUID PRIMARY KEY
+  - group_id            UUID REFERENCES modifier_groups
+  - name                VARCHAR(100)  -- &quot;Large&quot;, &quot;Pepperoni&quot;
+  - price_delta_cents   INTEGER  -- +300 means +$3.00
+
+Table: orders
+  - order_id            UUID PRIMARY KEY
+  - customer_id         UUID REFERENCES users
+  - restaurant_id       UUID REFERENCES restaurants
+  - driver_id           UUID REFERENCES drivers
+  - status              VARCHAR(30)
+  - subtotal_cents       INTEGER
+  - delivery_fee_cents  INTEGER
+  - service_fee_cents   INTEGER
+  - tax_cents           INTEGER
+  - tip_cents           INTEGER
+  - total_cents         INTEGER
+  - delivery_address    TEXT
+  - delivery_lat        DOUBLE PRECISION
+  - delivery_lon        DOUBLE PRECISION
+  - placed_at           TIMESTAMP
+  - accepted_at         TIMESTAMP
+  - ready_at            TIMESTAMP
+  - picked_up_at        TIMESTAMP
+  - delivered_at        TIMESTAMP
+  - cancelled_at        TIMESTAMP
+  - cancellation_reason VARCHAR(200)
+  - estimated_delivery  TIMESTAMP
+  - INDEX (customer_id, placed_at DESC)
+  - INDEX (restaurant_id, status)
+  - INDEX (driver_id, status)
+
+Table: order_items
+  - order_id            UUID REFERENCES orders
+  - item_id             UUID REFERENCES menu_items
+  - quantity            SMALLINT
+  - unit_price_cents    INTEGER
+  - special_instructions TEXT
+  - PRIMARY KEY (order_id, item_id)
+
+Table: order_item_modifiers
+  - order_id            UUID
+  - item_id             UUID
+  - modifier_id         UUID REFERENCES modifiers
+  - price_delta_cents   INTEGER
+  - PRIMARY KEY (order_id, item_id, modifier_id)
+  - FOREIGN KEY (order_id, item_id) REFERENCES order_items
+
+Table: drivers
+  - driver_id           UUID PRIMARY KEY
+  - name                VARCHAR(100)
+  - phone               VARCHAR(20)
+  - vehicle_type        VARCHAR(20)  -- car, bike, scooter
+  - license_plate       VARCHAR(20)
+  - avg_rating          NUMERIC(3,2)
+  - total_deliveries    INTEGER
+  - acceptance_rate     NUMERIC(4,2)
+  - is_online           BOOLEAN DEFAULT FALSE
+  - current_lat         DOUBLE PRECISION
+  - current_lon         DOUBLE PRECISION
+  - status              VARCHAR(20)  -- available, en_route_to_restaurant, delivering
+  - active_order_count  SMALLINT DEFAULT 0
+
+Table: ratings
+  - rating_id           UUID PRIMARY KEY
+  - order_id            UUID REFERENCES orders
+  - rater_type          VARCHAR(20)  -- customer, driver, restaurant
+  - target_type         VARCHAR(20)  -- restaurant, driver, customer
+  - target_id           UUID
+  - score               SMALLINT CHECK (score BETWEEN 1 AND 5)
+  - comment             TEXT
+  - created_at          TIMESTAMP
+  - UNIQUE (order_id, rater_type, target_type)
+</code></pre>
+<h3>Database Choice Justification</h3>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Database</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Orders, Restaurants, Menus</strong></td>
+<td>PostgreSQL</td>
+<td>Relational data with ACID requirements for order state transitions</td>
+</tr>
+<tr>
+<td><strong>Driver Locations (real-time)</strong></td>
+<td>Redis (GEOADD)</td>
+<td>Sub-ms geospatial queries for finding nearby drivers. 50K writes/sec.</td>
+</tr>
+<tr>
+<td><strong>Restaurant Search</strong></td>
+<td>Elasticsearch</td>
+<td>Full-text search with geospatial filtering and faceted results</td>
+</tr>
+<tr>
+<td><strong>Driver Location History</strong></td>
+<td>TimescaleDB</td>
+<td>Time-series optimized for append-heavy location data. Efficient range queries for ETA model training.</td>
+</tr>
+<tr>
+<td><strong>Menu Cache</strong></td>
+<td>Redis</td>
+<td>Fast menu reads for customer app. Invalidated on menu update.</td>
+</tr>
+<tr>
+<td><strong>Event Bus</strong></td>
+<td>Kafka</td>
+<td>Decoupled order lifecycle events. Consumed by matching, notification, analytics services.</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>13. Scalability Strategies</h2>
+<h3>Geographic Sharding</h3>
+<pre><code>Shard by city/region:
+  - Each city has its own set of service instances + databases
+  - NYC orders never touch LAX infrastructure
+  - Orders do not cross city boundaries (customer and restaurant are always in same city)
+
+Benefits:
+  - Zero cross-shard queries during normal operation
+  - Independent scaling per city (NYC needs more capacity than a small city)
+  - Reduced blast radius (NYC outage does not affect LAX)
+  - Data locality (comply with regional data regulations)
+
+Implementation:
+  - API Gateway routes requests based on user&#39;s city (from their profile or GPS)
+  - Each city deployment is a full microservices stack
+  - Shared services: user auth, payment processing (centralized)
+</code></pre>
+<h3>Scaling the Driver Location Pipeline</h3>
+<pre><code>Driver location is the highest-throughput write path:
+  50K GEOADD/sec during peak hours
+
+Scaling approach:
+  1. Partition drivers by city -&gt; separate Redis instances per city
+  2. Each city&#39;s Redis instance handles ~5K updates/sec (manageable)
+  3. For the largest cities (NYC, LA), further partition by zone
+  4. Driver App sends location to a city-specific endpoint
+  5. Load balancer routes based on city header
+
+If even this is not enough:
+  - Buffer location updates in a local queue on the API server
+  - Batch-write to Redis every 1 second (reduces 5K individual writes to ~500 batch writes)
+  - Acceptable trade-off: location data is 1 second stale
+</code></pre>
+<h3>Handling Dinner Rush (Peak Hours)</h3>
+<pre><code>Peak traffic strategy:
+
+1. Pre-scale: Scale up infrastructure at 5:30 PM based on historical patterns
+   - Add 3x API server capacity
+   - Warm up additional Redis read replicas
+   - Pre-compute popular restaurant search results
+
+2. During peak:
+   - Shorter cache TTLs on restaurant availability (freshness matters more)
+   - Increase driver matching radius (fewer available drivers per area)
+   - Enable surge pricing to balance demand/supply
+   - Queue non-critical operations (analytics, ML model updates)
+
+3. Post-peak (10 PM):
+   - Scale down to baseline
+   - Run batch jobs: settlement calculations, ETA model retraining, analytics
+</code></pre>
+<h3>Caching Strategy</h3>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Cache Location</th>
+<th>TTL</th>
+<th>Invalidation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Restaurant list per geohash</td>
+<td>Redis</td>
+<td>60s</td>
+<td>On restaurant open/close</td>
+</tr>
+<tr>
+<td>Restaurant menu</td>
+<td>Redis</td>
+<td>5 min</td>
+<td>On menu update event</td>
+</tr>
+<tr>
+<td>Restaurant images</td>
+<td>CDN</td>
+<td>24 hours</td>
+<td>On image change</td>
+</tr>
+<tr>
+<td>Driver locations</td>
+<td>Redis GEOADD</td>
+<td>Overwritten every 4s</td>
+<td>Implicit</td>
+</tr>
+<tr>
+<td>User&#39;s recent orders</td>
+<td>Redis</td>
+<td>10 min</td>
+<td>On new order</td>
+</tr>
+<tr>
+<td>Popular search results</td>
+<td>Redis</td>
+<td>30s</td>
+<td>Time-based</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>14. Design Trade-offs &amp; Justifications</h2>
+<h3>Trade-off 1: Pre-dispatch vs Wait-for-Ready</h3>
+<table>
+<thead>
+<tr>
+<th>Pre-dispatch (send driver early)</th>
+<th>Wait for food to be ready</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Food stays hot (driver arrives as food finishes)</td>
+<td>No driver waiting time at restaurant</td>
+</tr>
+<tr>
+<td>Requires accurate prep time estimation</td>
+<td>Simpler to implement</td>
+</tr>
+<tr>
+<td>Driver may wait if prep runs long (costly)</td>
+<td>Longer total delivery time</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen:</strong> Pre-dispatch with dynamic adjustment. Track actual vs estimated prep times per restaurant to improve predictions over time. Compensate drivers for waits exceeding 5 minutes.</p>
+<h3>Trade-off 2: Driver Assignment Model</h3>
+<table>
+<thead>
+<tr>
+<th>Offer-based (Uber model)</th>
+<th>Dispatch-based (DoorDash model)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Driver can accept or decline</td>
+<td>Driver is assigned, expected to complete</td>
+</tr>
+<tr>
+<td>Higher driver satisfaction (autonomy)</td>
+<td>More predictable assignment times</td>
+</tr>
+<tr>
+<td>Risk of offer cycling (multiple declines)</td>
+<td>Risk of driver dissatisfaction</td>
+</tr>
+<tr>
+<td>Need incentives for unattractive orders</td>
+<td>Guaranteed assignment</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen:</strong> Hybrid approach. Top-rated drivers get offers (can decline). New or lower-rated drivers receive dispatches. High-urgency orders (food getting cold) are dispatched directly.</p>
+<h3>Trade-off 3: Order Batching</h3>
+<table>
+<thead>
+<tr>
+<th>Single order per driver</th>
+<th>Multi-order batching</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Fastest delivery for each customer</td>
+<td>Lower delivery cost per order</td>
+</tr>
+<tr>
+<td>Simpler routing</td>
+<td>Better driver utilization</td>
+</tr>
+<tr>
+<td>Higher delivery cost (more driver-miles)</td>
+<td>Slightly longer wait for second customer</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen:</strong> Batching enabled with strict constraints: same restaurant (or very nearby), delivery addresses within 2km, second customer delay &lt; 10 minutes. Second customer gets a delivery fee discount.</p>
+<h3>Trade-off 4: Real-time vs Polling for Location Updates</h3>
+<table>
+<thead>
+<tr>
+<th>WebSocket (real-time)</th>
+<th>HTTP Polling (every 5s)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>True real-time updates</td>
+<td>Simpler infrastructure</td>
+</tr>
+<tr>
+<td>Connection management overhead</td>
+<td>Higher total request count</td>
+</tr>
+<tr>
+<td>Requires sticky sessions or pub/sub</td>
+<td>Stateless, easy to scale</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen:</strong> WebSocket for the active tracking screen (customer watching driver). HTTP polling for the driver app sending location (simpler, reconnects naturally). Redis Pub/Sub bridges the two.</p>
+<h3>Trade-off 5: ETA Accuracy vs Computational Cost</h3>
+<table>
+<thead>
+<tr>
+<th>Simple distance-based ETA</th>
+<th>ML-based ETA</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Fast to compute</td>
+<td>More accurate (factors in traffic, time of day, restaurant speed)</td>
+</tr>
+<tr>
+<td>Inaccurate in traffic</td>
+<td>Requires training data, model serving infrastructure</td>
+</tr>
+<tr>
+<td>No historical learning</td>
+<td>Improves over time</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen:</strong> ML-based ETA for customer-facing estimates (worth the investment for user trust). Simple distance-based ETA for internal matching decisions (speed matters more than precision there).</p>
+<hr>
+<h2>15. Interview Cheat Sheet</h2>
+<div class="tip">
+
+<p><strong>Use this as a quick reference before your interview. The key differentiators for a Staff-level answer are: (1) explaining the three-sided marketplace coordination, (2) the pre-dispatch optimization, (3) geospatial driver matching with Redis GEOADD, and (4) the multi-party payment settlement.</strong></p>
+</div>
+
+
+<h3>30-Second Pitch</h3>
+<p>&quot;A food delivery service is a real-time three-sided marketplace coordinating customers, restaurants, and drivers under tight time constraints. The core challenge is matching a delivery driver who arrives at the restaurant just as the food is ready, then delivering to the customer within the ETA promise. I would use Redis geospatial indexes for real-time driver location and proximity search, Elasticsearch for restaurant discovery, PostgreSQL for order management with a state machine tracking the order lifecycle, WebSockets for real-time delivery tracking, and Kafka for event-driven coordination between services.&quot;</p>
+<h3>Key Numbers to Remember</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Orders/month</td>
+<td>50M</td>
+</tr>
+<tr>
+<td>Peak dinner QPS</td>
+<td>~300 orders/sec</td>
+</tr>
+<tr>
+<td>Driver location updates</td>
+<td>50K/sec during peak</td>
+</tr>
+<tr>
+<td>Active drivers (peak)</td>
+<td>200K</td>
+</tr>
+<tr>
+<td>Location update interval</td>
+<td>Every 4 seconds</td>
+</tr>
+<tr>
+<td>Restaurant response timeout</td>
+<td>5 minutes</td>
+</tr>
+<tr>
+<td>Delivery ETA accuracy target</td>
+<td>Within 5 minutes of actual</td>
+</tr>
+<tr>
+<td>Driver search radius (initial)</td>
+<td>5 km</td>
+</tr>
+</tbody></table>
+<h3>Common Follow-Up Questions</h3>
+<p><strong>Q: How do you handle a driver who goes offline mid-delivery?</strong>
+A: Detect via heartbeat timeout (no location update for 2 minutes). Attempt to contact driver. If unreachable for 5 minutes, reassign order to new driver. Notify customer with updated ETA. Last known location helps the new driver find the order if driver left it somewhere.</p>
+<p><strong>Q: What if the restaurant is very slow and the food is not ready when the driver arrives?</strong>
+A: Track driver wait time. If exceeding estimated prep time by more than 10 minutes, notify customer with updated ETA. Compensate driver for wait time. Update restaurant&#39;s average prep time estimate. Chronic slow restaurants get a warning and reduced visibility.</p>
+<p><strong>Q: How do you handle peak hour in a new city with few drivers?</strong>
+A: Increase surge pricing to attract more drivers. Expand delivery radius. Temporarily disable order batching (prioritize speed). Cap new order acceptance if driver availability drops below threshold (waitlist new orders).</p>
+<p><strong>Q: How do you prevent order fraud?</strong>
+A: Track patterns: same address ordering from many accounts, new accounts with high-value orders, disputes filed on every order. Require phone verification. Limit promotions for new accounts. Flag suspicious patterns for manual review.</p>
+<p><strong>Q: How would you add grocery delivery alongside restaurant delivery?</strong>
+A: Grocery delivery uses the same infrastructure but with key differences: longer prep time (picking items), weight-based pricing, item substitution flow (item out of stock, suggest alternative), multi-bag orders requiring vehicle delivery (not bike). Add a new order type that flows through the same order service but with a different fulfillment path.</p>
+<h3>Architecture Summary</h3>
+<pre><code>Customer App -&gt; CDN + LB -&gt; API Gateway
+  -&gt; Discovery Service -&gt; Elasticsearch (restaurants) + Redis (cache)
+  -&gt; Menu Service -&gt; PostgreSQL + Redis cache
+  -&gt; Order Service -&gt; PostgreSQL + Kafka (events)
+  -&gt; Driver Matching Service -&gt; Redis GEOADD (locations) + Maps API
+  -&gt; Tracking Service -&gt; Redis Pub/Sub + WebSocket -&gt; Customer App
+  -&gt; Payment Service -&gt; Payment Gateway -&gt; Settlement Batch Job
+  -&gt; Rating Service -&gt; PostgreSQL
+  -&gt; Notification Service &lt;- Kafka &lt;- all services
+
+Driver App -&gt; Tracking Service -&gt; Redis GEOADD (location updates)
+Restaurant App -&gt; Order Service (accept/reject/ready)
+</code></pre>
+<h3>The Three Coordination Challenges</h3>
+<ol>
+<li><strong>Restaurant coordination:</strong> Accept/reject flow with timeouts, prep time estimation, menu availability sync</li>
+<li><strong>Driver coordination:</strong> Proximity-based matching, pre-dispatch timing, multi-order batching, real-time tracking</li>
+<li><strong>Customer coordination:</strong> Accurate ETA, real-time status updates, payment with dynamic pricing, rating loop</li>
+</ol>
+<hr>
+<div class="note">
+
+<p><strong>Final thought for the interview:</strong> Food delivery is not just a logistics problem — it is a time-sensitive marketplace where a few minutes of delay can ruin the product (cold food). The system design must optimize for the tightest constraint: the window between food being ready and food arriving at the customer&#39;s door. Every architectural decision — pre-dispatch, driver matching, ETA calculation — serves this single goal.</p>
+</div>
+
+
+</body>
+</html>

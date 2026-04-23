@@ -18,6 +18,7 @@ struct ArticlesTabV2: View {
     @State private var showSyncAlert  = false
     @State private var searchText     = ""
     @State private var showContribute = false
+    @State private var selectedDoc:    Doc? = nil
 
     private var filteredDocs: [Doc] {
         let all = docStore.docs
@@ -66,7 +67,7 @@ struct ArticlesTabV2: View {
                                     .contentShape(Rectangle())
                                     .onTapGesture {
                                         ActivityStore.shared.recordArticleRead(filename: doc.filename)
-                                        navPath.append(doc)
+                                        selectedDoc = doc
                                     }
                                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                                     .listRowSeparator(.visible)
@@ -103,6 +104,11 @@ struct ArticlesTabV2: View {
             .sheet(isPresented: $showContribute) {
                 NavigationStack { HowToView() }
             }
+            .sheet(item: $selectedDoc) { doc in
+                NavigationStack {
+                    DocReaderView(doc: doc)
+                }
+            }
             .alert("Sync error", isPresented: $showSyncAlert) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -110,9 +116,6 @@ struct ArticlesTabV2: View {
             }
             .onChange(of: docStore.isSyncing) { _, syncing in
                 if !syncing, docStore.syncError != nil { showSyncAlert = true }
-            }
-            .navigationDestination(for: Doc.self) { doc in
-                DocReaderView(doc: doc)
             }
         }
     }

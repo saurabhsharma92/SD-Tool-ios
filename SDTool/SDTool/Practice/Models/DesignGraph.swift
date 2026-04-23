@@ -59,6 +59,10 @@ struct CanvasNode: Identifiable, Codable {
     var posX: Double    // CGPoint stored as separate doubles for clean Codable
     var posY: Double
     var scalingMode: ScalingMode
+    var label: String?        // user-assigned name; nil = show type rawValue
+    var customHeight: CGFloat? // user-resized height; nil = use default
+
+    var displayName: String { label ?? type.rawValue }
 
     var position: CGPoint {
         get { CGPoint(x: posX, y: posY) }
@@ -71,6 +75,7 @@ struct CanvasNode: Identifiable, Codable {
         self.posX        = position.x
         self.posY        = position.y
         self.scalingMode = .none
+        self.label       = nil
     }
 }
 
@@ -95,6 +100,7 @@ struct CanvasEdge: Identifiable, Codable {
 // MARK: - Serialized snapshot (sent to validation)
 
 struct DesignGraph {
-    let components: [String]      // unique BlockType.rawValues present on canvas
-    let connections: [[String]]   // [["Input","Server"], ...]
+    let components: [String]           // BlockType.rawValues with duplicates — count encodes quantity
+    let connections: [[String]]        // [["Input","Server"], ...]
+    let nodeLabels: [String: String]   // nodeId.uuidString → user-assigned label
 }

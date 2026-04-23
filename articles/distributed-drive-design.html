@@ -1,0 +1,1477 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>File Upload & Hosting Service</title>
+</head>
+<body>
+
+<h1>File Upload &amp; Hosting Service</h1>
+<p><em>System Design Interview — Dropbox / Google Drive at Scale</em></p>
+<div class="note">
+
+<p><strong>SCOPE:</strong> Senior Software Engineer · FANG Interview Prep · High-Level System Design
+Architecture • Deep Dives • Flow Diagrams • Trade-offs
+Covers: Upload Pipeline • Chunking &amp; Deduplication • Sync Engine • Storage Tiers • Collaboration • CDN • Security</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-requirements-gathering">Requirements Gathering</a></li>
+<li><a href="#2-capacity-estimation--scale">Capacity Estimation &amp; Scale</a></li>
+<li><a href="#3-high-level-architecture">High-Level Architecture</a></li>
+<li><a href="#4-data-models--database-design">Data Models &amp; Database Design</a></li>
+<li><a href="#5-api-design">API Design</a></li>
+<li><a href="#6-component-deep-dives">Component Deep Dives</a></li>
+<li><a href="#7-cdn--download-optimization">CDN &amp; Download Optimization</a></li>
+<li><a href="#8-security-design">Security Design</a></li>
+<li><a href="#9-design-trade-offs--justifications">Design Trade-offs &amp; Justifications</a></li>
+<li><a href="#10-scaling-strategies--reliability">Scaling Strategies &amp; Reliability</a></li>
+<li><a href="#11-interview-strategy--common-questions">Interview Strategy &amp; Common Questions</a></li>
+<li><a href="#12-quick-reference">Quick Reference</a></li>
+</ol>
+<hr>
+<h2>1. Requirements Gathering</h2>
+<p>Spend the first 5–8 minutes of the interview on requirements. The file storage domain is deceptively broad — Google Drive, Dropbox, iCloud, and OneDrive share a surface-level description but have very different design priorities. Nail the scope before touching a whiteboard.</p>
+<div class="tip">
+
+<p><strong>INTERVIEW TIP:</strong> Questions to Ask</p>
+<ul>
+<li>What is the primary use case: personal storage, enterprise collaboration, or developer API?</li>
+<li>Do we need real-time co-editing (Google Docs) or just sync + share (Dropbox)?</li>
+<li>What is the expected max file size? 1 GB? 5 GB? 100 GB video files?</li>
+<li>Do we need versioning? How many versions should we retain?</li>
+<li>Is deduplication across users (global dedup) in scope?</li>
+<li>What platforms: web, desktop sync client, mobile?</li>
+</ul>
+</div>
+
+
+<h3>1.1 Functional Requirements</h3>
+<p><strong>Core (P0 — Must Have)</strong></p>
+<ul>
+<li><strong>File Upload:</strong> Users can upload any file type up to 5 GB per file via web or desktop client</li>
+<li><strong>File Download:</strong> Users can download any of their stored files at any time</li>
+<li><strong>File Management:</strong> Create folders, rename, move, copy, and delete files/folders</li>
+<li><strong>File Sharing:</strong> Generate shareable links (view-only or edit); share with specific users by email</li>
+<li><strong>File Sync:</strong> Desktop client automatically syncs local file changes to the cloud and across devices</li>
+<li><strong>Conflict Resolution:</strong> When the same file is edited on two devices simultaneously, produce a conflict copy</li>
+<li><strong>File Versioning:</strong> Retain last 30 versions of each file; users can restore any prior version</li>
+<li><strong>File Search:</strong> Full-text search across filenames and document content (PDF, DOCX, TXT)</li>
+</ul>
+<p><strong>Extended (P1 — Should Have)</strong></p>
+<ul>
+<li><strong>Chunked / Resumable Upload:</strong> Large files split into chunks; interrupted uploads resume from last checkpoint</li>
+<li><strong>Delta Sync:</strong> Only the changed portion (bytes) of a modified file is uploaded, not the whole file</li>
+<li><strong>Real-time Collaboration:</strong> Multiple users can edit a Google-Doc-style document simultaneously (OT/CRDT)</li>
+<li><strong>Offline Support:</strong> Desktop/mobile client works offline; changes queue and sync when back online</li>
+<li><strong>Storage Quotas:</strong> Per-user storage limits (e.g., 15 GB free tier, paid tiers for more)</li>
+<li><strong>Thumbnail &amp; Preview:</strong> Generate image thumbnails, PDF previews, video stills inline</li>
+<li><strong>Audit Log:</strong> Record all file events (upload, download, share, delete) for compliance</li>
+</ul>
+<p><strong>Out of Scope</strong></p>
+<ul>
+<li>Real-time rich text co-editing (Google Docs internals — CRDT/OT is a separate design)</li>
+<li>Payments and billing infrastructure</li>
+<li>Machine learning features (smart search, photo recognition)</li>
+</ul>
+<h3>1.2 Non-Functional Requirements</h3>
+<table>
+<thead>
+<tr>
+<th>Requirement</th>
+<th>Target</th>
+<th>Justification</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Availability</td>
+<td>99.99% (52 min downtime/year)</td>
+<td>Storage is mission-critical; data loss is catastrophic</td>
+</tr>
+<tr>
+<td>Durability</td>
+<td>99.999999999% (11 nines)</td>
+<td>Files must never be lost — multi-region replication</td>
+</tr>
+<tr>
+<td>Upload Latency</td>
+<td>&lt; 200 ms to first byte accepted</td>
+<td>User experience; background upload queuing</td>
+</tr>
+<tr>
+<td>Download Latency (P99)</td>
+<td>&lt; 500 ms TTFB via CDN</td>
+<td>CDN edge cache for hot files</td>
+</tr>
+<tr>
+<td>Throughput</td>
+<td>10 GB/s aggregate upload across fleet</td>
+<td>500K DAU × 20 MB avg daily upload</td>
+</tr>
+<tr>
+<td>Consistency</td>
+<td>Strong for metadata; eventual for blobs</td>
+<td>Metadata needs ACID; blob propagation can lag</td>
+</tr>
+<tr>
+<td>Scalability</td>
+<td>Horizontal; handle 10x traffic spikes</td>
+<td>Launch day / viral sharing events</td>
+</tr>
+<tr>
+<td>Security</td>
+<td>Encryption at rest (AES-256) and in transit (TLS 1.3)</td>
+<td>Regulatory compliance; user trust</td>
+</tr>
+<tr>
+<td>Data Isolation</td>
+<td>Multi-tenant with strict isolation</td>
+<td>No user can access another&#39;s private files</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>2. Capacity Estimation &amp; Scale</h2>
+<p>Always state your assumptions explicitly. Interviewers want to see your reasoning process, not just numbers.</p>
+<h3>2.1 Traffic Estimation</h3>
+<p><strong>Assumptions</strong></p>
+<ul>
+<li>Total registered users: 500 million</li>
+<li>Daily Active Users (DAU): 100 million (20% of registered)</li>
+<li>Average files uploaded per DAU per day: 2</li>
+<li>Average file size: 500 KB (mix of documents, images, and large files)</li>
+<li>Read-to-write ratio: 10:1 (files read more often than written)</li>
+</ul>
+<div class="note">
+
+<p><strong>BACK-OF-ENVELOPE:</strong></p>
+<pre><code>Daily uploads  = 100M DAU × 2 files        = 200 million files/day
+Upload RPS      = 200M / 86,400             = ~2,315 writes/s (avg)
+Peak upload RPS = 2,315 × 3 (peak factor)  = ~7,000 writes/s
+Download RPS    = 7,000 × 10 (read:write)  = ~70,000 reads/s
+Metadata ops/s  = 70,000 + 7,000           = ~77,000 ops/s
+</code></pre>
+</div>
+
+
+<h3>2.2 Storage Estimation</h3>
+<p><strong>File Storage (Object Store)</strong></p>
+<ul>
+<li>New data per day: 200M files × 500 KB = 100 TB/day</li>
+<li>Replication factor: 3x (for durability) → 300 TB raw/day</li>
+<li>Annual growth: 100 TB × 365 = ~36.5 PB/year (before replication)</li>
+<li>With deduplication savings (~30%): net ~26 PB/year</li>
+</ul>
+<p><strong>Metadata Storage (Relational / Key-Value)</strong></p>
+<ul>
+<li>Per file metadata: ~2 KB (name, path, size, hash, timestamps, ACLs, version pointers)</li>
+<li>Files stored after 5 years: 200M/day × 365 × 5 = ~365 billion file records</li>
+<li>Metadata storage: 365B × 2 KB = ~730 TB — requires sharded relational DB</li>
+</ul>
+<p><strong>Version Storage</strong></p>
+<ul>
+<li>30 versions per file average, but most files have &lt; 5 versions</li>
+<li>Effective version overhead: ~2x on modified files</li>
+<li>Deduplication of unchanged chunks reduces version overhead dramatically (delta storage)</li>
+</ul>
+<h3>2.3 Bandwidth Estimation</h3>
+<ul>
+<li><strong>Inbound (upload):</strong> 7,000 RPS × 500 KB avg = 3.5 GB/s inbound bandwidth</li>
+<li><strong>Outbound (download):</strong> 70,000 RPS × 500 KB avg = 35 GB/s outbound</li>
+<li><strong>CDN offload (~80%):</strong> Origin outbound = 7 GB/s — manageable</li>
+<li><strong>Peak outbound with CDN edge:</strong> ~175 GB/s across all CDN PoPs globally</li>
+</ul>
+<hr>
+<h2>3. High-Level Architecture</h2>
+<p>The architecture separates three core concerns: (1) the <strong>control plane</strong> — metadata, auth, and coordination; (2) the <strong>data plane</strong> — raw file bytes stored in object storage; and (3) the <strong>sync engine</strong> — keeping clients consistent. This separation allows each to scale independently.</p>
+<h3>3.1 System Overview</h3>
+<pre class="mermaid">
+graph TD
+    subgraph Clients
+        WEB[Web Browser]
+        DESK[Desktop Client]
+        MOB[Mobile App]
+        SDK[SDK / API]
+    end
+
+    subgraph Edge
+        CDN[CDN + API Gateway<br/>SSL · Rate Limit · Auth · Routing]
+    end
+
+    subgraph ControlPlane[Control Plane]
+        API[API / Metadata Service<br/>Auth · File Metadata · Share · Search · Quota]
+        SYNC[Sync Engine<br/>Delta tracking · Conflict detect · Change notify]
+    end
+
+    subgraph DataPlane[Data Plane]
+        UPLOAD[Upload Service<br/>Chunking · Resumable · Dedup · Presigned]
+        OBJ[Object Storage Layer<br/>S3 / GCS / Azure Blob<br/>Hot / Warm / Cold Tiers]
+        WORKERS[Background Workers<br/>Thumbnail · Virus Scan · Search Index · Replication]
+    end
+
+    subgraph Infra
+        KAFKA[Apache Kafka<br/>file-events · sync-notifications · audit-log]
+        DB[(Metadata DB<br/>PostgreSQL + Citus)]
+        NOTIFY[Notification Service<br/>WebSocket · Push · SSE]
+        SEARCH[(Search Index<br/>Elasticsearch)]
+    end
+
+    WEB & DESK & MOB & SDK --> CDN
+    CDN --> API
+    CDN --> UPLOAD
+    API --> DB
+    API --> SYNC
+    UPLOAD --> OBJ
+    UPLOAD --> KAFKA
+    KAFKA --> WORKERS
+    KAFKA --> NOTIFY
+    KAFKA --> SEARCH
+    SYNC --> NOTIFY
+</pre>
+<h3>3.2 Key Architectural Principles</h3>
+<p><strong>1. Separate Control Plane from Data Plane</strong>
+The metadata (what files exist, who owns them, sharing ACLs) never flows through the same path as raw bytes. This allows the metadata service to be a strongly-consistent relational system while the object storage layer optimizes purely for throughput and durability.</p>
+<p><strong>2. Client-Side Chunking Before Upload</strong>
+Files are split into fixed-size chunks (4 MB default) on the client before transmission. Each chunk is hashed (SHA-256). The server checks which chunks already exist (deduplication) so only novel chunks are actually transferred — the core of Dropbox&#39;s performance advantage.</p>
+<p><strong>3. Asynchronous Processing Pipeline</strong>
+Heavy operations (thumbnail generation, virus scanning, content indexing, replication verification) are decoupled from the upload critical path via Kafka. Upload returns success once chunks are durably written; enrichment happens asynchronously.</p>
+<hr>
+<h2>4. Data Models &amp; Database Design</h2>
+<p>The metadata layer is the heart of the system. It must support complex hierarchical queries (folder trees), ACL lookups, version history, and sharing — all with strong consistency. Raw file content lives entirely in the object store, referenced only by content-hash.</p>
+<h3>4.1 Core Entity Schemas</h3>
+<p><strong>Users &amp; Accounts</strong></p>
+<pre><code class="language-sql">TABLE: users
+─────────────────────────────────────────────
+user_id               UUID PRIMARY KEY
+email                 VARCHAR(320) UNIQUE NOT NULL
+display_name          VARCHAR(128)
+password_hash         VARCHAR(256)          -- Argon2id
+storage_used_bytes    BIGINT DEFAULT 0
+storage_quota_bytes   BIGINT DEFAULT 15000000000  -- 15 GB
+plan                  ENUM  -- FREE, PRO, BUSINESS, ENTERPRISE
+created_at            TIMESTAMPTZ
+last_login_at         TIMESTAMPTZ
+mfa_enabled           BOOLEAN
+─────────────────────────────────────────────
+INDEX: email (login)
+</code></pre>
+<p><strong>Files &amp; Folders — the Namespace</strong></p>
+<pre><code class="language-sql">TABLE: nodes  (unified table for both files and folders)
+─────────────────────────────────────────────────────────────
+node_id          UUID PRIMARY KEY
+owner_id         UUID FK -&gt; users.user_id
+parent_id        UUID FK -&gt; nodes.node_id   (NULL = root)
+name             VARCHAR(1024) NOT NULL
+node_type        ENUM  -- FILE | FOLDER
+size_bytes       BIGINT                     -- 0 for folders
+mime_type        VARCHAR(128)
+current_version  INTEGER DEFAULT 1
+content_hash     VARCHAR(64)               -- SHA-256 (NULL for folders)
+is_deleted       BOOLEAN DEFAULT FALSE     -- soft delete (trash)
+deleted_at       TIMESTAMPTZ
+created_at       TIMESTAMPTZ DEFAULT NOW()
+modified_at      TIMESTAMPTZ DEFAULT NOW()
+─────────────────────────────────────────────────────────────
+UNIQUE  (owner_id, parent_id, name) WHERE NOT is_deleted
+INDEX:  (owner_id, parent_id)    -- list folder contents
+INDEX:  (content_hash)           -- dedup / version lookups
+
+NOTE: Uses the Closure Table pattern for deep folder hierarchies
+</code></pre>
+<p><strong>File Versions</strong></p>
+<pre><code class="language-sql">TABLE: file_versions
+─────────────────────────────────────────────────────────────
+version_id            UUID PRIMARY KEY
+node_id               UUID FK -&gt; nodes.node_id
+version_number        INTEGER NOT NULL
+size_bytes            BIGINT
+content_hash          VARCHAR(64)           -- SHA-256 of full file
+storage_path          VARCHAR(512)          -- path in object store
+uploader_id           UUID FK -&gt; users
+upload_device_id      VARCHAR(64)
+created_at            TIMESTAMPTZ
+is_current            BOOLEAN DEFAULT TRUE
+delta_base_version_id UUID                  -- for delta encoding reference
+─────────────────────────────────────────────────────────────
+PRIMARY KEY (node_id, version_number)
+RETENTION: versions older than 30 days (or &gt; 30 count) are purged
+</code></pre>
+<p><strong>Chunks (Content-Addressable Storage)</strong></p>
+<pre><code class="language-sql">TABLE: chunks  (global, de-duplicated chunk registry)
+─────────────────────────────────────────────────────────────
+chunk_hash       VARCHAR(64) PRIMARY KEY   -- SHA-256
+size_bytes       INTEGER
+storage_key      VARCHAR(512)              -- S3: chunks/{hash[0:2]}/{hash}
+reference_count  INTEGER DEFAULT 1         -- # of files using this chunk
+compressed_size  INTEGER                   -- after LZ4/Zstd
+created_at       TIMESTAMPTZ
+
+TABLE: file_chunk_map  (ordered mapping of file -&gt; chunks)
+─────────────────────────────────────────────────────────────
+version_id    UUID FK -&gt; file_versions
+chunk_index   INTEGER           -- 0-based sequence
+chunk_hash    VARCHAR(64) FK -&gt; chunks
+byte_offset   BIGINT            -- start byte of this chunk in file
+─────────────────────────────────────────────────────────────
+PRIMARY KEY (version_id, chunk_index)
+</code></pre>
+<p><strong>Sharing &amp; Permissions</strong></p>
+<pre><code class="language-sql">TABLE: shares
+─────────────────────────────────────────────────────────────
+share_id        UUID PRIMARY KEY
+node_id         UUID FK -&gt; nodes
+shared_by       UUID FK -&gt; users
+share_type      ENUM  -- LINK | USER | GROUP
+recipient_id    UUID FK -&gt; users   (NULL if LINK share)
+permission      ENUM  -- VIEWER | COMMENTER | EDITOR | OWNER
+link_token      VARCHAR(64) UNIQUE   -- hashed random token for URL shares
+password_hash   VARCHAR(256)         -- optional link password
+expires_at      TIMESTAMPTZ          -- NULL = no expiry
+download_limit  INTEGER              -- NULL = unlimited
+download_count  INTEGER DEFAULT 0
+created_at      TIMESTAMPTZ
+─────────────────────────────────────────────────────────────
+INDEX: (node_id, share_type)   -- ACL checks
+INDEX: (link_token)            -- public link resolution
+INDEX: (recipient_id)          -- &#39;shared with me&#39; query
+</code></pre>
+<h3>4.2 Folder Hierarchy: Closure Table Pattern</h3>
+<p>A naive adjacency list (<code>parent_id</code> pointer) requires N recursive queries to traverse a deep folder tree. Google Drive uses a <strong>Closure Table</strong>, which pre-materializes all ancestor-descendant relationships for O(1) subtree queries.</p>
+<pre class="mermaid">
+graph TD
+    Root --> Work
+    Work --> Reports
+    Reports --> Q4["Q4.pdf"]
+
+    style Root fill:#4A90D9,color:#fff
+    style Work fill:#4A90D9,color:#fff
+    style Reports fill:#4A90D9,color:#fff
+    style Q4 fill:#27AE60,color:#fff
+</pre>
+<p>The closure table stores every ancestor → descendant pair at every depth:</p>
+<pre><code class="language-sql">TABLE: node_closure
+ancestor_id   UUID FK -&gt; nodes
+descendant_id UUID FK -&gt; nodes
+depth         INTEGER   -- 0=self, 1=direct child, 2=grandchild ...
+PRIMARY KEY (ancestor_id, descendant_id)
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>ancestor_id</th>
+<th>descendant_id</th>
+<th>depth</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Root</td>
+<td>Root</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Root</td>
+<td>Work</td>
+<td>1</td>
+</tr>
+<tr>
+<td>Root</td>
+<td>Reports</td>
+<td>2</td>
+</tr>
+<tr>
+<td>Root</td>
+<td>Q4.pdf</td>
+<td>3</td>
+</tr>
+<tr>
+<td>Work</td>
+<td>Work</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Work</td>
+<td>Reports</td>
+<td>1</td>
+</tr>
+<tr>
+<td>Work</td>
+<td>Q4.pdf</td>
+<td>2</td>
+</tr>
+<tr>
+<td>Reports</td>
+<td>Reports</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Reports</td>
+<td>Q4.pdf</td>
+<td>1</td>
+</tr>
+<tr>
+<td>Q4.pdf</td>
+<td>Q4.pdf</td>
+<td>0</td>
+</tr>
+</tbody></table>
+<pre><code class="language-sql">-- All contents of /Root (one query, any depth):
+SELECT descendant_id FROM node_closure
+WHERE ancestor_id = &#39;Root&#39; AND depth &gt; 0
+
+-- Full path of Q4.pdf:
+SELECT ancestor_id FROM node_closure
+WHERE descendant_id = &#39;Q4.pdf&#39; ORDER BY depth DESC
+</code></pre>
+<h3>4.3 Database Technology Decisions</h3>
+<table>
+<thead>
+<tr>
+<th>Store</th>
+<th>Technology</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>File/Folder Metadata</td>
+<td>PostgreSQL + Citus (sharded)</td>
+<td>ACID, complex joins, ACL queries; Citus shards by owner_id</td>
+</tr>
+<tr>
+<td>Chunk Registry</td>
+<td>PostgreSQL or DynamoDB</td>
+<td>High-frequency dedup lookups by hash; DynamoDB for pure KV speed</td>
+</tr>
+<tr>
+<td>File Content (blobs)</td>
+<td>Amazon S3 / Google GCS</td>
+<td>Industry-standard; 11-nines durability; lifecycle rules for tiering</td>
+</tr>
+<tr>
+<td>Session / Auth Tokens</td>
+<td>Redis Cluster</td>
+<td>Sub-ms TTL-based token validation</td>
+</tr>
+<tr>
+<td>Upload State (in-progress)</td>
+<td>Redis + PostgreSQL</td>
+<td>Track chunk upload progress; persist for resumability</td>
+</tr>
+<tr>
+<td>Search Index</td>
+<td>Elasticsearch</td>
+<td>Full-text across filename + content; inverted index</td>
+</tr>
+<tr>
+<td>Change Feed / Events</td>
+<td>Apache Kafka</td>
+<td>Async processing pipeline; sync notification backbone</td>
+</tr>
+<tr>
+<td>Audit Log</td>
+<td>Cassandra / ClickHouse</td>
+<td>Append-only, high-write, time-series; compliance retention</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>5. API Design</h2>
+<p>The API surface is split into two groups: the <strong>Metadata API</strong> (control plane, authenticated REST) and the <strong>Transfer API</strong> (data plane, often token-scoped for direct cloud storage access). All requests carry a JWT Bearer token; sharing links use a signed token in the query string.</p>
+<h3>5.1 Authentication API</h3>
+<pre><code>POST   /v1/auth/register          Body: { email, password, display_name }
+POST   /v1/auth/login             Body: { email, password } → JWT + refresh
+POST   /v1/auth/refresh           Body: { refresh_token } → new JWT
+POST   /v1/auth/logout            Invalidates refresh token
+POST   /v1/auth/mfa/verify        Body: { totp_code }
+GET    /v1/auth/devices           List active sessions
+DELETE /v1/auth/devices/{id}      Remote logout
+</code></pre>
+<h3>5.2 File &amp; Folder (Namespace) API</h3>
+<pre><code>-- LISTING
+GET    /v1/files                  List root; ?parent_id= for subfolders
+GET    /v1/files/{node_id}        Get single node metadata
+GET    /v1/files/{node_id}/path   Get full path string
+
+-- FOLDER OPERATIONS
+POST   /v1/folders                Body: { name, parent_id }
+PUT    /v1/files/{id}             Body: { name?, parent_id? }  (rename/move)
+DELETE /v1/files/{id}             Soft-delete (move to Trash)
+POST   /v1/files/{id}/restore     Restore from Trash
+DELETE /v1/files/{id}/permanent   Hard-delete (irreversible)
+POST   /v1/files/{id}/copy        Body: { dest_parent_id, new_name? }
+
+-- VERSIONS
+GET    /v1/files/{id}/versions              List all versions
+POST   /v1/files/{id}/versions/{v}/restore  Restore to version v
+DELETE /v1/files/{id}/versions/{v}          Delete a specific version
+</code></pre>
+<h3>5.3 Upload API — 3-Phase Protocol</h3>
+<p>Upload uses a two-phase protocol. <strong>Phase 1</strong> is a metadata handshake (what am I about to upload?). <strong>Phase 2</strong> is direct chunk transfer, often bypassing application servers entirely via presigned URLs.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant API as Upload Service
+    participant S3 as Object Storage
+
+    C->>API: POST /v1/uploads/initiate<br/>{filename, size, chunks:[{index,hash,size}]}
+    API->>API: Check existing chunk hashes
+    API-->>C: {upload_id, existing_chunks:[], upload_urls:{0:"s3://...", 3:"s3://..."}}
+
+    par Parallel chunk upload (novel chunks only)
+        C->>S3: PUT presigned_url (chunk 0 binary)
+        C->>S3: PUT presigned_url (chunk 3 binary)
+    end
+    S3-->>C: 200 OK (ETag = hash)
+
+    C->>API: POST /v1/uploads/{upload_id}/complete<br/>{uploaded_chunks:[{index,etag}]}
+    API->>API: Build file_chunk_map, update nodes
+    API-->>C: {node_id, version_id, file_url}
+</pre>
+<p><strong>Resumable Upload:</strong></p>
+<pre><code>GET /v1/uploads/{upload_id}/status
+→ { received_chunks: [0,1,2,5], missing_chunks: [3,4,6..12] }
+</code></pre>
+<h3>5.4 Download API</h3>
+<pre><code>GET /v1/files/{node_id}/download
+    ?version={n}          Optional; defaults to current
+    → 302 Redirect → signed CDN URL (1-hour expiry)
+
+GET /v1/files/{node_id}/download?inline=true
+    For browser preview (PDF, images)
+    → Content-Disposition: inline
+
+GET /v1/share/{link_token}/download
+    Public link download (no auth required; token validated)
+
+-- Range download (resumable):
+GET /v1/files/{node_id}/download
+    Headers: Range: bytes=0-4194303    (chunk 0)
+    → 206 Partial Content
+</code></pre>
+<h3>5.5 Sharing API</h3>
+<pre><code>POST   /v1/files/{id}/shares      Body: { share_type, permission, recipient_email?,
+                                          expires_at?, password?, download_limit? }
+GET    /v1/files/{id}/shares      List shares on a node
+PUT    /v1/shares/{share_id}      Update permission or expiry
+DELETE /v1/shares/{share_id}      Revoke share
+GET    /v1/files/shared-with-me   Files others shared with you
+GET    /v1/files/shared-by-me     Files you have shared
+</code></pre>
+<hr>
+<h2>6. Component Deep Dives</h2>
+<h3>6.1 Chunked Upload &amp; Content-Addressable Storage</h3>
+<p>Chunking is the single most important design decision in a file storage system. It enables resumability, deduplication, parallel upload, and delta sync — all at once. This is the core innovation behind Dropbox&#39;s original architecture.</p>
+<pre class="mermaid">
+flowchart TD
+    subgraph Client["CLIENT (before any network call)"]
+        FILE["Large File 50 MB"]
+        C0["Chunk 0: bytes 0–4MB
+SHA-256 → hash_0"]
+        C1["Chunk 1: bytes 4–8MB
+SHA-256 → hash_1"]
+        CM["... 13 chunks total ..."]
+        ROOT["content_hash = SHA-256(hash_0 ‖ hash_1 ‖ ... ‖ hash_12)
+(Merkle-style root hash)"]
+        FILE --> C0 & C1 & CM --> ROOT
+    end
+
+    subgraph Step1["STEP 1: Dedup Check"]
+        INIT["POST /v1/uploads/initiate
+Send chunk manifest"]
+        CHECK["Server: SELECT chunk_hash FROM chunks
+WHERE chunk_hash IN (all 13 hashes)"]
+        RESP["Response:
+existing = [hash_0, hash_2, hash_5]
+novel = [hash_1, hash_3, hash_4, ...]"]
+        INIT --> CHECK --> RESP
+    end
+
+    subgraph Step2["STEP 2: Parallel Upload (novel chunks only)"]
+        P1["PUT presigned_url_hash_1 → S3"]
+        P2["PUT presigned_url_hash_3 → S3"]
+        P3["PUT presigned_url_hash_4 → S3"]
+    end
+
+    subgraph Step3["STEP 3: Complete"]
+        COMP["POST /v1/uploads/{id}/complete"]
+        MAP["Insert file_chunk_map:
+version_id | chunk_index | chunk_hash | byte_offset"]
+        KAFKA2["Publish to Kafka → async workers"]
+        COMP --> MAP --> KAFKA2
+    end
+
+    ROOT --> INIT
+    RESP --> P1 & P2 & P3
+    P1 & P2 & P3 --> COMP
+</pre>
+<div class="tip">
+
+<p><strong>WHY CONTENT-ADDRESSABLE STORAGE (CAS)?</strong></p>
+<ol>
+<li><strong>Global Deduplication:</strong> If 10,000 users upload the same PDF, only ONE copy is stored. Dropbox reports 70%+ storage savings.</li>
+<li><strong>Integrity Checking:</strong> SHA-256 hash validates data correctness — bit rot is instantly detected.</li>
+<li><strong>Delta Sync:</strong> Modified file reuses unchanged chunks. Only changed chunks are re-uploaded.</li>
+<li><strong>Immutability:</strong> Chunks are write-once, never mutated. Cache-forever, simplifies replication.</li>
+<li><strong>Garbage Collection:</strong> Reference counting on chunks enables safe cleanup of unreferenced data.</li>
+</ol>
+</div>
+
+
+<h3>6.2 Resumable Upload State Machine</h3>
+<p>Network interruptions during large file uploads are inevitable. The system must allow resumption from the last successfully uploaded chunk, not restart from zero.</p>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> INITIATED: POST /uploads/initiate
+    INITIATED --> IN_PROGRESS: Client starts uploading chunks
+    IN_PROGRESS --> IN_PROGRESS: Chunk upload success (SADD to Redis Set)
+    IN_PROGRESS --> INTERRUPTED: Network failure / app close
+    INTERRUPTED --> IN_PROGRESS: GET /uploads/{id}/status
+→ resume missing chunks
+    IN_PROGRESS --> COMPLETE: POST /uploads/{id}/complete
+(all chunks received)
+    INTERRUPTED --> EXPIRED: 72 hours elapsed
+    EXPIRED --> [*]: Redis TTL cleans state
+S3 lifecycle purges orphan chunks
+    COMPLETE --> [*]: File available
+</pre>
+<p>Upload state stored in Redis (<code>upload:{upload_id}</code>, TTL 72 hours):</p>
+<pre><code class="language-json">{
+  &quot;owner_id&quot;: &quot;uuid&quot;,
+  &quot;node_id&quot;: &quot;uuid&quot;,
+  &quot;filename&quot;: &quot;report.pdf&quot;,
+  &quot;total_chunks&quot;: 13,
+  &quot;received_chunks&quot;: [0, 1, 2, 5],
+  &quot;created_at&quot;: &quot;2024-01-24T10:00:00Z&quot;,
+  &quot;status&quot;: &quot;IN_PROGRESS&quot;
+}
+</code></pre>
+<div class="warning">
+
+<p><strong>CHUNK UPLOAD IDEMPOTENCY</strong></p>
+<p>If a chunk PUT times out and is retried:</p>
+<ul>
+<li>S3 presigned PUT is idempotent (same hash → same object key)</li>
+<li>Server checks chunk exists before re-registering — no duplicate data</li>
+<li><code>SADD</code> on Redis Set is idempotent by definition</li>
+</ul>
+</div>
+
+
+<h3>6.3 File Sync Engine</h3>
+<p>The sync engine is what makes Dropbox feel magical — changes on one device appear on all others within seconds.</p>
+<pre class="mermaid">
+flowchart LR
+    subgraph Desktop["DESKTOP CLIENT"]
+        FW["File Watcher
+inotify / FSEvents"]
+        QUEUE["Local Change Queue
+(debounced 500ms)"]
+        HASHER["Hasher: SHA-256
+Compare vs local DB"]
+        UPLOAD2["Chunk Splitter
++ Upload Service"]
+        LOCALDB[("SQLite
+local state")]
+        FW --> QUEUE --> HASHER --> UPLOAD2
+        HASHER --> LOCALDB
+        UPLOAD2 --> LOCALDB
+    end
+
+    subgraph Server["SYNC SERVER"]
+        CHANGES["Change Feed
+(Kafka → cursor-based)"]
+        NOTIFY2["Notification Service
+Long-poll / SSE / WebSocket"]
+        CHANGES --> NOTIFY2
+    end
+
+    UPLOAD2 -->|"Upload changes"| Server
+    Server -->|"Push remote changes
+(cursor)"| Desktop
+</pre>
+<p><strong>Conflict Resolution</strong></p>
+<pre class="mermaid">
+sequenceDiagram
+    participant Alice
+    participant Server
+    participant Bob
+
+    Note over Alice,Bob: Both start at version 4
+    Bob->>Server: Edit report.pdf (online)
+    Server-->>Bob: Saved as version 5
+    Note over Alice: Offline — edits report.pdf locally
+    Alice->>Server: POST /uploads/initiate {base_version:4, hash:"alice_hash"}
+    Server->>Server: current_version==5 AND hash≠alice_hash → CONFLICT
+    Server-->>Alice: {status:"CONFLICT", current_version:5}
+    Alice->>Server: Upload as NEW file
+    Server-->>Alice: "report (Alice conflicted copy 2024-01-24).pdf" created
+    Note over Alice,Bob: Both versions preserved — NO DATA LOSS
+</pre>
+<h3>6.4 Delta Sync</h3>
+<p>When a user edits a 500 MB video file by adding a 1-second clip, naive sync re-uploads 500 MB. Delta sync re-uploads only the changed chunks — perhaps 4–8 MB.</p>
+<pre class="mermaid">
+graph LR
+    subgraph V1["Version 1 (original)"]
+        A1["Chunk 0
+hash_A"]
+        B1["Chunk 1
+hash_B"]
+        C1["Chunk 2
+hash_C"]
+        D1["Chunk 3
+hash_D"]
+    end
+    subgraph V2["Version 2 (after edit)"]
+        A2["Chunk 0
+hash_A ✓ EXISTS"]
+        B2["Chunk 1
+hash_X ✗ UPLOAD"]
+        C2["Chunk 2
+hash_Y ✗ UPLOAD"]
+        D2["Chunk 3
+hash_D ✓ EXISTS"]
+    end
+    A1 -.->|unchanged| A2
+    D1 -.->|unchanged| D2
+    style B2 fill:#e74c3c,color:#fff
+    style C2 fill:#e74c3c,color:#fff
+    style A2 fill:#27ae60,color:#fff
+    style D2 fill:#27ae60,color:#fff
+</pre>
+<div class="note">
+
+<p><strong>SAVINGS CALCULATION</strong></p>
+<ul>
+<li>500 MB file with 4 MB chunks = 125 chunks</li>
+<li>Only 2 chunks changed → 8 MB upload instead of 500 MB = <strong>98.4% bandwidth savings</strong></li>
+</ul>
+<p><strong>Fixed-size vs Content-Defined Chunking (CDC):</strong>
+Inserting bytes at the start of a file shifts ALL fixed-size chunk boundaries — most &quot;unchanged&quot; content ends up in different chunks, defeating delta sync. CDC (Rabin fingerprinting) sets boundaries by content, not byte offset. Insert 1 byte → only 1–2 boundary chunks change.</p>
+</div>
+
+
+<h3>6.5 Storage Tiering</h3>
+<pre class="mermaid">
+flowchart TD
+    HOT["🔥 HOT TIER
+S3 Standard / GCS Standard
+Access: milliseconds | Cost: $0.023/GB/mo
+Criteria: accessed in last 30 days
+Replication: 3× within region, cross-AZ"]
+    WARM["🌤 WARM TIER
+S3 Standard-IA / GCS Nearline
+Access: milliseconds | Cost: $0.0125/GB/mo
+Criteria: infrequently accessed, quick retrieval needed
+Minimum storage: 30 days"]
+    COLD["🧊 COLD TIER
+S3 Glacier / GCS Coldline
+Access: 1–12 hours | Cost: $0.004/GB/mo
+Criteria: rarely accessed; compliance retention
+Note: restore fee applies"]
+    ARCHIVE["📦 ARCHIVE TIER
+S3 Glacier Deep Archive
+Access: 12–48 hours | Cost: $0.00099/GB/mo
+Criteria: legal hold; enterprise compliance; auditing"]
+
+    HOT -->|"No access 30 days
+S3 Lifecycle Rule"| WARM
+    WARM -->|"No access 90 days"| COLD
+    COLD -->|"Deleted files in trash > 30 days"| ARCHIVE
+
+    style HOT fill:#e74c3c,color:#fff
+    style WARM fill:#e67e22,color:#fff
+    style COLD fill:#3498db,color:#fff
+    style ARCHIVE fill:#2c3e50,color:#fff
+</pre>
+<p>Tier transition runs as a <strong>daily background worker:</strong></p>
+<pre><code class="language-sql">-- Move to warm tier
+SELECT chunk_hash FROM chunks
+WHERE last_accessed_at &lt; NOW() - INTERVAL &#39;30 days&#39;
+  AND current_tier = &#39;HOT&#39;
+-- → Issue S3 CopyObject to IA storage class
+-- → Update chunks.storage_tier in DB
+
+-- When user downloads a cold/archive file:
+-- → Issue S3 RestoreObject (async)
+-- → Notify user: &quot;File is being prepared (est. 2 hrs)&quot;
+</code></pre>
+<h3>6.6 Access Control &amp; Sharing</h3>
+<p>The ACL system must answer one question in &lt;10ms at download time: &quot;Does user U have permission P on node N?&quot;</p>
+<pre class="mermaid">
+flowchart TD
+    START["Can Bob download /Alice/Reports/Q4.pdf?"]
+    OWNER["Step 1: Is Bob the owner?
+nodes.owner_id = Alice → NO"]
+    DIRECT["Step 2: Direct share on this file?
+SELECT permission FROM shares
+WHERE node_id=Q4.pdf AND recipient_id=Bob"]
+    FOUND1{Found?}
+    INHERIT["Step 3: Inherited share via parent folder?
+JOIN node_closure: check if Bob has
+access to /Reports or /Alice"]
+    FOUND2{Found?}
+    LINK["Step 4: Link-based access?
+request includes link_token?"]
+    FOUND3{Valid token?}
+    ALLOW["✅ ALLOW"]
+    DENY["❌ DENY"]
+
+    START --> OWNER --> DIRECT --> FOUND1
+    FOUND1 -->|Yes| ALLOW
+    FOUND1 -->|No| INHERIT --> FOUND2
+    FOUND2 -->|Yes| ALLOW
+    FOUND2 -->|No| LINK --> FOUND3
+    FOUND3 -->|Yes| ALLOW
+    FOUND3 -->|No| DENY
+
+    style ALLOW fill:#27ae60,color:#fff
+    style DENY fill:#e74c3c,color:#fff
+</pre>
+<div class="tip">
+
+<p><strong>ACL CACHING</strong></p>
+<p>Redis key: <code>acl:{user_id}:{node_id}</code> → permission (TTL 60s)
+Invalidated when: share created/revoked, file moved, owner changed.
+Cache miss rate ~5% for hot files → database read on miss.</p>
+</div>
+
+
+<h3>6.7 Search Service</h3>
+<pre class="mermaid">
+flowchart LR
+    subgraph Index["INDEXING (async after upload)"]
+        KAFKA3["Kafka: file-events"]
+        WORKER["Content Indexer Worker"]
+        TEXT["TEXT/DOCX/PDF:
+Extract text → tokenize"]
+        IMG["Images (JPG/PNG):
+OCR via Tesseract / Vision API"]
+        META["All files:
+filename, path, mime_type,
+owner_id, shared_with[], modified_at"]
+        ES[("Elasticsearch")]
+        KAFKA3 --> WORKER --> TEXT & IMG & META --> ES
+    end
+
+    subgraph Query["SEARCH QUERY"]
+        REQ["GET /v1/search?q=quarterly+report
+&type=pdf&modified_after=2024-01-01"]
+        ACL2["ACL filter:
+owner_id = current_user
+OR shared_with ∋ current_user"]
+        RES["Results with highlights"]
+        REQ --> ACL2 --> ES --> RES
+    end
+</pre>
+<hr>
+<h2>7. CDN &amp; Download Optimization</h2>
+<h3>7.1 CDN Architecture</h3>
+<p>Files are stored once in origin object storage (S3/GCS) and served globally via CDN edge nodes. The CDN reduces latency from ~200ms (origin) to ~20ms (edge) for popular files, and offloads ~80% of bandwidth from origin.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User (Europe)
+    participant API2 as API Server
+    participant CDN2 as CDN Edge (Frankfurt)
+    participant S3b as Origin S3
+
+    U->>API2: GET /v1/files/{id}/download
+    API2-->>U: 302 → https://cdn.example.com/files/{content_hash}?token=signed_jwt
+
+    U->>CDN2: GET /files/{content_hash}?token=...
+    CDN2->>CDN2: 1. Validate signed token (HMAC)
+    CDN2->>CDN2: 2. Check LRU cache by content_hash
+
+    alt Cache HIT (80% of requests)
+        CDN2-->>U: 200 OK (served from edge, ~20ms)
+    else Cache MISS
+        CDN2->>S3b: Fetch from origin
+        S3b-->>CDN2: File content
+        CDN2->>CDN2: Cache with max-age=31536000, immutable
+        CDN2-->>U: 200 OK (~200ms)
+    end
+</pre>
+<div class="tip">
+
+<p><strong>CACHE KEY = content_hash (not URL)</strong></p>
+<p>The same 10 MB PDF uploaded by 1,000 different users produces 1,000 different download URLs — but all resolve to the <strong>same content_hash</strong>. This means one CDN edge fetch serves all 1,000 users. URL-based cache keys would result in 1,000 separate origin fetches.</p>
+</div>
+
+
+<h3>7.2 Large File Download Optimization</h3>
+<ul>
+<li><strong>Multipart / Range requests:</strong> Client downloads large files in parallel 4 MB chunks</li>
+<li><strong>Adaptive bitrate for video:</strong> HLS/DASH streaming served from CDN for video files</li>
+<li><strong>Content-based cache keys:</strong> CDN cache key = content_hash → cache hit across all users with same file</li>
+<li><strong>Prefetching:</strong> Desktop client prefetches file metadata but defers blob download until needed</li>
+<li><strong>Compression:</strong> CDN applies Brotli/Gzip for compressible files (text, JSON, HTML) on the fly</li>
+</ul>
+<hr>
+<h2>8. Security Design</h2>
+<h3>8.1 Encryption Layers</h3>
+<p><strong>Encryption in Transit</strong></p>
+<ul>
+<li>TLS 1.3 mandatory for all client-server communication</li>
+<li>Certificate pinning in desktop and mobile clients</li>
+<li>Presigned S3 URLs use HTTPS — data encrypted during direct upload to S3</li>
+</ul>
+<p><strong>Encryption at Rest</strong></p>
+<ul>
+<li>S3 Server-Side Encryption: SSE-KMS with per-customer keys (AWS KMS)</li>
+<li>Database encryption: PostgreSQL TDE (Transparent Data Encryption)</li>
+<li>Envelope encryption: DEK (Data Encryption Key) per file, encrypted with KEK in KMS</li>
+<li>Key rotation: KEKs rotated annually; re-encryption of DEKs without touching file blobs</li>
+</ul>
+<p><strong>Envelope Encryption Model</strong></p>
+<pre class="mermaid">
+sequenceDiagram
+    participant ES as Encryption Service
+    participant KMS as AWS KMS
+    participant DB as Database
+    participant S3c as S3
+
+    Note over ES,KMS: FILE UPLOAD
+    ES->>KMS: GenerateDataKey()
+    KMS-->>ES: plaintext_DEK + encrypted_DEK
+    ES->>ES: Encrypt file with plaintext_DEK (AES-256-GCM)
+    ES->>DB: Store encrypted_DEK in file_versions
+    ES->>S3c: Store encrypted blob
+    ES->>ES: Discard plaintext_DEK from memory
+
+    Note over ES,KMS: FILE DOWNLOAD
+    ES->>DB: Fetch encrypted_DEK
+    ES->>KMS: Decrypt(encrypted_DEK)
+    KMS-->>ES: plaintext_DEK
+    ES->>S3c: Fetch encrypted blob
+    ES->>ES: Decrypt blob → stream to user
+    ES->>ES: Discard plaintext_DEK
+
+    Note over KMS: Master Key (CMK) never leaves KMS
+</pre>
+<div class="tip">
+
+<p><strong>KEY ISOLATION BENEFIT</strong></p>
+<p>If one file&#39;s DEK is compromised, only that file is exposed — not all files. The master key (CMK) never leaves KMS. Re-keying a user rotates only their DEKs; blobs in S3 are untouched.</p>
+</div>
+
+
+<h3>8.2 Content Safety</h3>
+<ul>
+<li><strong>Virus / malware scanning:</strong> ClamAV + commercial scanner on all uploaded files before making available</li>
+<li><strong>CSAM detection:</strong> PhotoDNA hash matching on image/video uploads</li>
+<li><strong>Rate limiting:</strong> 100 uploads/min per user; 1000 download requests/min</li>
+<li><strong>Quota enforcement:</strong> Check storage_used_bytes against quota before accepting upload</li>
+<li><strong>DDoS protection:</strong> Cloudflare Magic Transit + rate limiting at edge</li>
+</ul>
+<hr>
+<h2>9. Design Trade-offs &amp; Justifications</h2>
+<p>Every architectural decision is a trade-off. Being able to articulate WHY you chose an approach — and what you gave up — is the hallmark of a senior engineer in a FANG interview.</p>
+<h3>9.1 Major Design Decisions</h3>
+<table>
+<thead>
+<tr>
+<th>Decision</th>
+<th>Chosen Approach</th>
+<th>Alternatives Rejected</th>
+<th>Justification &amp; Trade-off</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>File storage backend</td>
+<td>Object storage (S3/GCS)</td>
+<td>HDFS, NFS, custom block store</td>
+<td>S3: 11-nines durability, serverless, lifecycle rules, CDN integration. HDFS: operational overhead, not cloud-native</td>
+</tr>
+<tr>
+<td>Chunk size</td>
+<td>4 MB fixed (with optional CDC)</td>
+<td>1 MB fixed, 64 MB fixed</td>
+<td>4 MB: balance between dedup granularity and request overhead. Too small: many requests. Too large: poor delta savings</td>
+</tr>
+<tr>
+<td>Deduplication scope</td>
+<td>Global (cross-user)</td>
+<td>Per-user only</td>
+<td>Global dedup maximizes storage savings. Trade-off: hash oracle attack possible. Mitigated by never exposing hashes to users</td>
+</tr>
+<tr>
+<td>Folder tree storage</td>
+<td>Closure Table</td>
+<td>Adjacency list, Nested sets, MPTT</td>
+<td>Closure Table: O(1) subtree reads. Adjacency list: O(depth) queries. Nested sets: expensive writes on insert</td>
+</tr>
+<tr>
+<td>Sync notification</td>
+<td>Long-poll + SSE (fallback WS)</td>
+<td>Pure polling, pure WebSocket</td>
+<td>Long-poll: firewall-friendly, simple. SSE: efficient server push. WebSocket: added complexity; sync doesn&#39;t need bidirectional</td>
+</tr>
+<tr>
+<td>Conflict resolution</td>
+<td>Conflict copy (Dropbox-style)</td>
+<td>Last-write-wins, 3-way merge</td>
+<td>Conflict copy: preserves all data, no data loss. LWW: data loss risk. 3-way merge: only works for text</td>
+</tr>
+<tr>
+<td>CDN cache key</td>
+<td>content_hash (not URL)</td>
+<td>Full URL per user</td>
+<td>Hash-based: cache hit across all users for identical file. URL-based: cache bust on every share</td>
+</tr>
+<tr>
+<td>Metadata DB</td>
+<td>PostgreSQL + Citus</td>
+<td>MongoDB, Cassandra, DynamoDB</td>
+<td>PostgreSQL: ACID, complex joins (ACL, closure table). MongoDB: weaker consistency. Cassandra: no joins, no transactions</td>
+</tr>
+<tr>
+<td>Upload path</td>
+<td>Client → presigned URL → S3 directly</td>
+<td>Client → API server → S3</td>
+<td>Direct: API servers not in data path; no bandwidth bottleneck. Proxy: server becomes throughput bottleneck at scale</td>
+</tr>
+</tbody></table>
+<h3>9.2 Consistency Analysis</h3>
+<div class="important">
+
+<p><strong>STRONG CONSISTENCY REQUIRED</strong></p>
+<ol>
+<li><strong>File Metadata (create/rename/delete):</strong> ACID transactions — must be atomic. Rename + move must not leave file unreachable if server crashes mid-op.</li>
+<li><strong>Quota enforcement:</strong> Check + decrement <code>storage_used_bytes</code> must be atomic to prevent over-quota uploads.</li>
+<li><strong>Share permission changes:</strong> Revocation of a share must take effect immediately — not eventually.</li>
+<li><strong>Version creation:</strong> Assigning version numbers must be strongly ordered — no duplicate versions.</li>
+</ol>
+</div>
+
+
+
+<div class="note">
+
+<p><strong>EVENTUAL CONSISTENCY ACCEPTABLE</strong></p>
+<ol>
+<li><strong>Chunk replication:</strong> New chunks replicate to secondary region within seconds — tolerable.</li>
+<li><strong>Search index:</strong> Elasticsearch updates lag 5–10 seconds — acceptable for search.</li>
+<li><strong>Thumbnail generation:</strong> Thumbnails appear seconds after upload — acceptable UX.</li>
+<li><strong>Storage tier migration:</strong> Hot→warm transition may lag hours — no user-visible impact.</li>
+<li><strong>Sync notifications:</strong> Desktop clients may receive change notification 1–2 seconds late — fine.</li>
+</ol>
+</div>
+
+
+<h3>9.3 Scalability Bottleneck Analysis</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Bottleneck</th>
+<th>Detection</th>
+<th>Solution</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Metadata DB (PostgreSQL)</td>
+<td>Write throughput &gt;50K TPS on single node</td>
+<td>Query latency rises, connection pool exhaustion</td>
+<td>Citus sharding by owner_id; read replicas; PgBouncer</td>
+</tr>
+<tr>
+<td>Chunk dedup check</td>
+<td>100K hash lookups/second on chunks table</td>
+<td>Slow upload initiate response time</td>
+<td>Cache chunk hashes in Redis Bloom filter; DynamoDB for KV lookup</td>
+</tr>
+<tr>
+<td>Storage quota check</td>
+<td>Atomic increment on hot accounts (celebrities)</td>
+<td>Quota update contention</td>
+<td>Pre-shard user quota counters; optimistic locking; background reconciliation</td>
+</tr>
+<tr>
+<td>Elasticsearch indexing</td>
+<td>Index write throughput ceiling</td>
+<td>Indexing lag &gt;60 seconds</td>
+<td>Increase shards; index aliases with hot/warm rotation; async bulk indexing</td>
+</tr>
+<tr>
+<td>CDN origin fetch</td>
+<td>Traffic spike causes origin overload</td>
+<td>Cache hit rate drops; S3 429 errors</td>
+<td>Increase S3 request rate limits; add origin shield; pre-warm cache for popular shares</td>
+</tr>
+<tr>
+<td>Sync long-poll</td>
+<td>10M concurrent connections on sync servers</td>
+<td>Memory exhaustion</td>
+<td>Use async event-loop servers (Go/Node.js); limit 30s timeout; shed load gracefully</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>10. Scaling Strategies &amp; Reliability</h2>
+<h3>10.1 Multi-Region Architecture</h3>
+<pre class="mermaid">
+graph TD
+    subgraph USEast["US-EAST-1 (Primary)"]
+        API_US[API Servers]
+        DB_US[(PostgreSQL Citus)]
+        S3_US[(S3 Primary)]
+        REDIS_US[(Redis Cluster)]
+        ES_US[(Elasticsearch)]
+    end
+    subgraph EUWest["EU-WEST-1"]
+        API_EU[API Servers]
+        DB_EU[(PostgreSQL Citus)]
+        S3_EU[(S3 Replica)]
+        REDIS_EU[(Redis Cluster)]
+        ES_EU[(Elasticsearch)]
+    end
+    subgraph APSouth["AP-SOUTHEAST-1"]
+        API_AP[API Servers]
+        DB_AP[(PostgreSQL Citus)]
+        S3_AP[(S3 Replica)]
+        REDIS_AP[(Redis Cluster)]
+        ES_AP[(Elasticsearch)]
+    end
+
+    GA["AWS Global Accelerator
+(GeoDNS → nearest region)"]
+    GA --> USEast & EUWest & APSouth
+
+    DB_US -->|"Async replication
+<15 min"| DB_EU & DB_AP
+    S3_US -->|"S3 Cross-Region
+Replication"| S3_EU & S3_AP
+</pre>
+<div class="note">
+
+<p><strong>FAILOVER TARGETS</strong></p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Target</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>RPO (Recovery Point Objective)</td>
+<td>&lt; 15 min (S3 replication lag)</td>
+</tr>
+<tr>
+<td>RTO (Recovery Time Objective)</td>
+<td>&lt; 2 min (DNS TTL + health check)</td>
+</tr>
+<tr>
+<td>Single AZ failure recovery</td>
+<td>&lt; 2 min (auto-scaling in remaining AZs)</td>
+</tr>
+</tbody></table>
+</div>
+
+
+<h3>10.2 Reliability Patterns</h3>
+<p><strong>Circuit Breakers</strong></p>
+<ul>
+<li>Wrap all downstream calls (S3, KMS, Elasticsearch) in circuit breakers</li>
+<li>If S3 error rate &gt;5% in 30s window → open circuit → serve from cache or return 503</li>
+<li>Elasticsearch circuit breaker: search degrades gracefully (empty results vs crash)</li>
+</ul>
+<p><strong>Idempotency</strong></p>
+<ul>
+<li>All upload operations use <code>upload_id</code> as idempotency key — safe to retry</li>
+<li>Chunk PUT to S3 is inherently idempotent (same hash → same object)</li>
+<li>POST /complete is idempotent — duplicate calls return same <code>version_id</code></li>
+</ul>
+<p><strong>Graceful Degradation</strong></p>
+<ul>
+<li>Thumbnail failure → show file icon instead of thumbnail — never block download</li>
+<li>Search failure → show empty results with &quot;search temporarily unavailable&quot; — never block file access</li>
+<li>Quota service failure → fail open (allow upload) with async reconciliation — better than blocking</li>
+</ul>
+<h3>10.3 Disaster Recovery</h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Impact</th>
+<th>Recovery Strategy</th>
+<th>RTO</th>
+<th>RPO</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Single AZ failure</td>
+<td>~30% capacity loss</td>
+<td>Auto-scaling in remaining AZs; ALB removes failed AZ</td>
+<td>&lt; 2 min</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Full region failure</td>
+<td>Region unavailable</td>
+<td>GeoDNS failover to nearest healthy region</td>
+<td>&lt; 5 min</td>
+<td>&lt; 15 min</td>
+</tr>
+<tr>
+<td>Database corruption</td>
+<td>Metadata inaccessible</td>
+<td>Point-In-Time Recovery (PITR); 5-min window</td>
+<td>&lt; 30 min</td>
+<td>&lt; 5 min</td>
+</tr>
+<tr>
+<td>S3 bucket accidental deletion</td>
+<td>File blobs inaccessible</td>
+<td>Object versioning + MFA delete; restore from replica</td>
+<td>&lt; 4 hrs</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Ransomware / mass deletion</td>
+<td>User files deleted</td>
+<td>Object versioning + 30-day delete retention</td>
+<td>&lt; 1 hr</td>
+<td>0</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>11. Interview Strategy &amp; Common Questions</h2>
+<div class="tip">
+
+<p><strong>45-MINUTE INTERVIEW BREAKDOWN</strong></p>
+<table>
+<thead>
+<tr>
+<th>Time</th>
+<th>Activity</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>0–5 min</td>
+<td>Clarify requirements — ask 4–5 targeted questions (file size, versioning, dedup, E2E?)</td>
+</tr>
+<tr>
+<td>5–10 min</td>
+<td>Capacity estimation — DAU, storage/day, upload RPS, bandwidth</td>
+</tr>
+<tr>
+<td>10–20 min</td>
+<td>High-level architecture — draw the big picture, name each component clearly</td>
+</tr>
+<tr>
+<td>20–35 min</td>
+<td>Deep dives — pick 2–3 of: upload flow, sync engine, dedup, storage tiering, ACL</td>
+</tr>
+<tr>
+<td>35–42 min</td>
+<td>Trade-offs — CAP theorem placement, database choices, chunking strategy</td>
+</tr>
+<tr>
+<td>42–45 min</td>
+<td>Ask the interviewer thoughtful questions</td>
+</tr>
+</tbody></table>
+</div>
+
+
+<h3>11.1 Common Follow-Up Questions</h3>
+<p><strong>Q: How does deduplication work when two users upload the same file?</strong></p>
+<p>We use content-addressable storage — each chunk is stored once, indexed by its SHA-256 hash. When the upload service receives a manifest of chunk hashes, it queries the <code>chunks</code> table for which hashes already exist. Existing chunks are not re-uploaded — the new <code>file_chunk_map</code> just references them. We increment <code>reference_count</code> on those chunks. The file&#39;s metadata (owner, name, path) is separate from the blob — so both users have independent file records pointing to the same physical chunk objects. The reference count ensures chunks are only garbage-collected when no files reference them.</p>
+<p><strong>Q: How do you handle a 10 GB file upload?</strong></p>
+<p>The client splits the file into 4 MB chunks (2,560 chunks for 10 GB). Three-phase upload: (1) manifest submission and dedup check, (2) parallel direct-to-S3 upload of novel chunks via presigned URLs — up to 5 concurrent — and (3) completion where we register the chunk map. If interrupted, the client polls <code>/uploads/{id}/status</code> for missing chunks and resumes. The client retains upload state in local SQLite, so even an app restart doesn&#39;t require starting over. Total transfer at 100 Mbps ≈ 13 minutes.</p>
+<p><strong>Q: What happens when Alice deletes a shared file?</strong></p>
+<p>Deletion is two-step. First, soft-delete: <code>is_deleted=true</code>, file moves to Trash. All existing shares become inaccessible immediately (ACL check fails on <code>is_deleted=true</code>). If Alice permanently deletes from Trash, the node record is hard-deleted; all shares cascade-delete. The <code>file_versions</code> and <code>file_chunk_map</code> records are scheduled for GC. Reference counts on chunks are decremented; if <code>ref_count</code> reaches 0, the chunk is scheduled for deletion from S3. Bob receives a notification that the file is no longer available.</p>
+<p><strong>Q: How do you prevent users from exceeding their storage quota?</strong></p>
+<p>Atomic check-and-decrement on upload complete:</p>
+<pre><code class="language-sql">UPDATE users
+SET storage_used_bytes = storage_used_bytes + :file_size
+WHERE user_id = :uid
+  AND storage_used_bytes + :file_size &lt;= storage_quota_bytes
+</code></pre>
+<p>If this returns 0 rows updated, the quota was exceeded and we reject the upload. The file bytes already in S3 are purged via lifecycle rule. We cache quota status in Redis (60s TTL) — over-quota users are rejected at cache layer without hitting the DB.</p>
+<p><strong>Q: How would you implement Google Drive&#39;s real-time collaborative editing?</strong></p>
+<p>That&#39;s fundamentally different from file sync — it requires Operational Transform (OT) or CRDTs. For OT: every user edit is an operation (insert N chars at position P, delete M chars from position Q). The server maintains an operations log; concurrent edits are transformed against each other to produce consistent final state. Newer systems use CRDTs (Yjs, Automerge) which are mathematically guaranteed to converge without server coordination. This is a separate design — flag it as out of scope for file sync.</p>
+<h3>11.2 What Impresses FANG Interviewers</h3>
+<ul>
+<li>Proactively mention <strong>content-defined chunking (CDC)</strong> vs fixed-size — shows depth</li>
+<li>Discuss the <strong>reference_count garbage collection</strong> problem — shows full lifecycle thinking</li>
+<li>Bring up the <strong>closure table</strong> for folder hierarchy before being asked — rare knowledge</li>
+<li>Mention <strong>envelope encryption</strong> vs SSE — shows security depth</li>
+<li>Discuss <strong>storage tiering and cost implications</strong> — shows real-world economics thinking</li>
+<li>Address the <strong>hash oracle problem</strong> in global dedup — shows security awareness</li>
+<li>Mention <strong>idempotency keys</strong> on upload operations — shows distributed systems maturity</li>
+</ul>
+<div class="warning">
+
+<p><strong>RED FLAGS TO AVOID</strong></p>
+<ul>
+<li><strong>Never</strong> store file blobs in a relational database — even for &quot;small&quot; files, it doesn&#39;t scale</li>
+<li><strong>Never</strong> propose a single database for metadata without discussing sharding at 500M users</li>
+<li><strong>Don&#39;t</strong> propose &quot;use UUID as folder path&quot; — explain the closure table need</li>
+<li><strong>Don&#39;t</strong> ignore conflict resolution — it&#39;s a core correctness requirement for sync</li>
+<li><strong>Don&#39;t</strong> say &quot;store everything in S3 directly&quot; without discussing the metadata layer</li>
+<li><strong>Don&#39;t</strong> forget ACL enforcement on every read path — security is non-negotiable</li>
+<li><strong>Don&#39;t</strong> use WebSocket for large file transfers — HTTP/S with range requests is correct</li>
+</ul>
+</div>
+
+
+<hr>
+<h2>12. Quick Reference</h2>
+<h3>12.1 Technology Stack</h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Technology</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>API Gateway</td>
+<td>Kong / AWS API Gateway</td>
+<td>Rate limiting, auth, routing, SSL termination</td>
+</tr>
+<tr>
+<td>API Servers</td>
+<td>Go / Java (Spring Boot)</td>
+<td>Business logic, metadata ops, ACL enforcement</td>
+</tr>
+<tr>
+<td>Upload Service</td>
+<td>Go (high concurrency)</td>
+<td>Chunk manifest, dedup check, presigned URL generation</td>
+</tr>
+<tr>
+<td>Sync Engine</td>
+<td>Go / Node.js</td>
+<td>Long-poll/SSE, cursor-based change feed</td>
+</tr>
+<tr>
+<td>Object Storage</td>
+<td>Amazon S3 / GCS</td>
+<td>Raw file blobs; 11-nines durability; lifecycle tiering</td>
+</tr>
+<tr>
+<td>Metadata DB</td>
+<td>PostgreSQL 15 + Citus</td>
+<td>File/folder metadata; ACID; sharded by owner_id</td>
+</tr>
+<tr>
+<td>Cache</td>
+<td>Redis Cluster 7.x</td>
+<td>Sessions, ACL cache, quota cache, upload state</td>
+</tr>
+<tr>
+<td>Search</td>
+<td>Elasticsearch 8.x</td>
+<td>Full-text file name + content search with ACL filtering</td>
+</tr>
+<tr>
+<td>Message Bus</td>
+<td>Apache Kafka</td>
+<td>Async processing pipeline; audit log; sync events</td>
+</tr>
+<tr>
+<td>Background Workers</td>
+<td>Kubernetes Jobs</td>
+<td>Thumbnail gen, virus scan, content indexing, GC</td>
+</tr>
+<tr>
+<td>CDN</td>
+<td>Cloudflare / CloudFront</td>
+<td>Global file delivery; edge caching by content_hash</td>
+</tr>
+<tr>
+<td>Key Management</td>
+<td>AWS KMS / HashiCorp Vault</td>
+<td>DEK/KEK management; envelope encryption</td>
+</tr>
+<tr>
+<td>Monitoring</td>
+<td>Prometheus + Grafana + PagerDuty</td>
+<td>Metrics, SLO tracking, on-call alerting</td>
+</tr>
+<tr>
+<td>Tracing</td>
+<td>Jaeger / AWS X-Ray</td>
+<td>Distributed request tracing across services</td>
+</tr>
+</tbody></table>
+<h3>12.2 Key Numbers to Memorize</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Registered Users</td>
+<td>500 million</td>
+<td>—</td>
+</tr>
+<tr>
+<td>DAU</td>
+<td>100 million</td>
+<td>20% of registered</td>
+</tr>
+<tr>
+<td>Uploads per day</td>
+<td>200 million files</td>
+<td>2 per DAU</td>
+</tr>
+<tr>
+<td>Storage growth</td>
+<td>100 TB/day raw</td>
+<td>500 KB avg file</td>
+</tr>
+<tr>
+<td>With dedup savings</td>
+<td>~70 TB/day net</td>
+<td>~30% dedup rate</td>
+</tr>
+<tr>
+<td>Upload RPS (peak)</td>
+<td>~7,000 writes/s</td>
+<td>3× average</td>
+</tr>
+<tr>
+<td>Download RPS (peak)</td>
+<td>~70,000 reads/s</td>
+<td>10:1 read:write</td>
+</tr>
+<tr>
+<td>Chunk size</td>
+<td>4 MB (fixed) or CDC</td>
+<td>~25 chunks per 100 MB file</td>
+</tr>
+<tr>
+<td>Resumable upload TTL</td>
+<td>72 hours</td>
+<td>After which upload_id expires</td>
+</tr>
+<tr>
+<td>Version retention</td>
+<td>30 versions or 30 days</td>
+<td>Whichever limit reached first</td>
+</tr>
+<tr>
+<td>CDN cache hit rate</td>
+<td>~80%</td>
+<td>Reduces origin bandwidth by 80%</td>
+</tr>
+<tr>
+<td>Metadata DB availability</td>
+<td>99.99%</td>
+<td>52 min downtime/year</td>
+</tr>
+<tr>
+<td>Object storage durability</td>
+<td>99.999999999%</td>
+<td>11 nines</td>
+</tr>
+</tbody></table>
+
+</body>
+</html>

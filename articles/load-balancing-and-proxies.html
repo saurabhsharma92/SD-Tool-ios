@@ -1,0 +1,1171 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Load Balancing and Proxies — Complete System Design Reference</title>
+</head>
+<body>
+
+<h1>Load Balancing and Proxies — Complete System Design Reference</h1>
+<h3>Staff Engineer Interview Preparation Guide</h3>
+<div class="tip">
+
+<p>Load balancing appears in virtually every system design interview. The difference between a junior and senior answer is knowing <em>which type</em> of load balancer to use, <em>why</em>, and how it interacts with your overall architecture. This guide covers everything you need.</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-what-load-balancers-do">What Load Balancers Do</a></li>
+<li><a href="#2-l4-vs-l7-load-balancing">L4 vs L7 Load Balancing</a></li>
+<li><a href="#3-hardware-vs-software-load-balancers">Hardware vs Software Load Balancers</a></li>
+<li><a href="#4-load-balancing-algorithms">Load Balancing Algorithms</a></li>
+<li><a href="#5-health-checks-and-failover">Health Checks and Failover</a></li>
+<li><a href="#6-forward-proxy-vs-reverse-proxy">Forward Proxy vs Reverse Proxy</a></li>
+<li><a href="#7-reverse-proxy-deep-dive">Reverse Proxy Deep Dive</a></li>
+<li><a href="#8-global-server-load-balancing-gslb">Global Server Load Balancing (GSLB)</a></li>
+<li><a href="#9-session-persistence-sticky-sessions">Session Persistence (Sticky Sessions)</a></li>
+<li><a href="#10-load-balancing-at-scale">Load Balancing at Scale</a></li>
+<li><a href="#11-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. What Load Balancers Do</h2>
+<p>A load balancer distributes incoming network traffic across multiple backend servers. It sits between clients and your server fleet, serving as the single entry point.</p>
+<h3>Core Functions</h3>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Traffic distribution</td>
+<td>Spread requests across servers to prevent any single server from being overwhelmed</td>
+</tr>
+<tr>
+<td>High availability</td>
+<td>Route around failed servers automatically</td>
+</tr>
+<tr>
+<td>Horizontal scaling</td>
+<td>Add or remove servers without clients knowing</td>
+</tr>
+<tr>
+<td>SSL termination</td>
+<td>Handle TLS encryption/decryption to offload backend servers</td>
+</tr>
+<tr>
+<td>Health monitoring</td>
+<td>Continuously check server status and remove unhealthy ones from rotation</td>
+</tr>
+<tr>
+<td>Connection management</td>
+<td>Pool and reuse backend connections, manage client connection limits</td>
+</tr>
+</tbody></table>
+<h3>Where Load Balancers Sit in Architecture</h3>
+<pre class="mermaid">
+graph TD
+    Users["Users (Worldwide)"] --> DNS["DNS\nReturns LB IP"]
+    DNS --> LB1["Load Balancer\n(L7 - Entry Point)"]
+
+    LB1 --> WEB1["Web Server 1"]
+    LB1 --> WEB2["Web Server 2"]
+    LB1 --> WEB3["Web Server 3"]
+
+    WEB1 --> LB2["Internal Load Balancer\n(L4 - Service Layer)"]
+    WEB2 --> LB2
+    WEB3 --> LB2
+
+    LB2 --> SVC1["Service A\n(Instance 1)"]
+    LB2 --> SVC2["Service A\n(Instance 2)"]
+    LB2 --> SVC3["Service B\n(Instance 1)"]
+    LB2 --> SVC4["Service B\n(Instance 2)"]
+
+    SVC1 --> DB_LB["Database Load Balancer\n(Read Replicas)"]
+    SVC2 --> DB_LB
+    SVC3 --> DB_LB
+    SVC4 --> DB_LB
+
+    DB_LB --> R1["Read Replica 1"]
+    DB_LB --> R2["Read Replica 2"]
+    DB_LB --> R3["Read Replica 3"]
+</pre>
+<div class="note">
+
+<p>Production systems typically have multiple layers of load balancing. The entry point is usually an L7 load balancer (for HTTP routing), internal services use L4 load balancers (for speed), and database read replicas have their own distribution layer. Mentioning this layered approach in interviews shows architectural maturity.</p>
+</div>
+
+
+<hr>
+<h2>2. L4 vs L7 Load Balancing</h2>
+<p>This is one of the most important distinctions in load balancing. The &quot;layer&quot; refers to the OSI model layer at which the load balancer operates.</p>
+<h3>Layer 4 (Transport Layer)</h3>
+<p>An L4 load balancer makes routing decisions based on information available in the TCP/UDP headers: source IP, destination IP, source port, and destination port. It does not inspect the payload.</p>
+<p><strong>How it works:</strong> The load balancer receives a TCP connection, picks a backend server, and establishes a separate connection to it. It then relays packets between the two connections. Some L4 load balancers use DSR (Direct Server Return), where response traffic goes directly from the backend to the client, bypassing the load balancer.</p>
+<p><strong>Key characteristic:</strong> The load balancer does not understand HTTP, gRPC, or any application protocol. It simply shuffles bytes.</p>
+<h3>Layer 7 (Application Layer)</h3>
+<p>An L7 load balancer reads and understands the application-layer protocol (typically HTTP). It can make routing decisions based on the full request content: URL path, headers, cookies, query parameters, and even the request body.</p>
+<p><strong>How it works:</strong> The load balancer terminates the client&#39;s HTTP connection, inspects the request, decides which backend should handle it, and creates a new HTTP connection to that backend. The response travels back through the load balancer.</p>
+<h3>L4 vs L7 Comparison</h3>
+<pre class="mermaid">
+graph LR
+    subgraph L4["L4 Load Balancer"]
+        direction TB
+        L4_IN["Incoming TCP/UDP\nSees: IP + Port only"] --> L4_LB["Load Balancer\nDecision: IP hash, round robin"]
+        L4_LB --> L4_S1["Server 1"]
+        L4_LB --> L4_S2["Server 2"]
+        L4_LB --> L4_S3["Server 3"]
+    end
+
+    subgraph L7["L7 Load Balancer"]
+        direction TB
+        L7_IN["Incoming HTTP\nSees: URL, headers, cookies, body"] --> L7_LB["Load Balancer\nDecision: path-based routing"]
+        L7_LB -->|"/api/*"| L7_API["API Servers"]
+        L7_LB -->|"/static/*"| L7_STATIC["Static File Servers"]
+        L7_LB -->|"/ws/*"| L7_WS["WebSocket Servers"]
+    end
+</pre>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>L4 Load Balancer</th>
+<th>L7 Load Balancer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Operates on</td>
+<td>TCP/UDP packets</td>
+<td>HTTP requests</td>
+</tr>
+<tr>
+<td>Inspects</td>
+<td>IP addresses, ports</td>
+<td>URLs, headers, cookies, body</td>
+</tr>
+<tr>
+<td>Routing intelligence</td>
+<td>Basic (IP hash, round robin)</td>
+<td>Content-based (/api to API servers, /static to CDN)</td>
+</tr>
+<tr>
+<td>SSL termination</td>
+<td>No (passes encrypted traffic through)</td>
+<td>Yes (decrypts, inspects, re-encrypts or passes plain)</td>
+</tr>
+<tr>
+<td>Performance</td>
+<td>Very fast (minimal processing)</td>
+<td>Slower (must parse HTTP)</td>
+</tr>
+<tr>
+<td>Connection handling</td>
+<td>Passes through or NATs</td>
+<td>Terminates and re-establishes</td>
+</tr>
+<tr>
+<td>WebSocket support</td>
+<td>Yes (it is just TCP)</td>
+<td>Yes (with upgrade handling)</td>
+</tr>
+<tr>
+<td>Throughput</td>
+<td>Higher (less overhead)</td>
+<td>Lower (more processing per request)</td>
+</tr>
+<tr>
+<td>Visibility</td>
+<td>No request-level metrics</td>
+<td>Full request-level logging and metrics</td>
+</tr>
+<tr>
+<td>Examples</td>
+<td>AWS NLB, IPVS, LVS</td>
+<td>AWS ALB, Nginx, HAProxy (L7 mode), Envoy</td>
+</tr>
+<tr>
+<td>Cost</td>
+<td>Lower</td>
+<td>Higher</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>Interview rule of thumb: Use L7 for your public-facing edge (need content routing, SSL termination, HTTP features). Use L4 for internal service-to-service traffic (need raw speed, simpler config). If asked &quot;which type?&quot;, always explain <em>why</em> based on the requirements.</p>
+</div>
+
+
+<hr>
+<h2>3. Hardware vs Software Load Balancers</h2>
+<h3>Hardware Load Balancers</h3>
+<p>Hardware load balancers are dedicated physical appliances (like F5 BIG-IP or Citrix ADC) with custom ASICs optimized for packet processing. They were the standard choice for decades.</p>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Extremely high throughput (millions of connections)</td>
+<td>Very expensive ($50K–$500K+)</td>
+</tr>
+<tr>
+<td>Dedicated hardware, no resource contention</td>
+<td>Vendor lock-in</td>
+</tr>
+<tr>
+<td>Built-in features (SSL offload, DDoS protection)</td>
+<td>Long procurement cycles</td>
+</tr>
+<tr>
+<td>Vendor support and SLAs</td>
+<td>Capacity is fixed (scaling means buying more)</td>
+</tr>
+<tr>
+<td>Battle-tested reliability</td>
+<td>Configuration is often proprietary</td>
+</tr>
+</tbody></table>
+<h3>Software Load Balancers</h3>
+<p>Software load balancers run on commodity hardware or virtual machines. They have largely replaced hardware load balancers in modern architectures.</p>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Key Strengths</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Nginx</td>
+<td>L7 (also L4)</td>
+<td>Most popular web server/reverse proxy, excellent HTTP handling</td>
+</tr>
+<tr>
+<td>HAProxy</td>
+<td>L4 and L7</td>
+<td>High-performance, rich health checking, widely used</td>
+</tr>
+<tr>
+<td>Envoy</td>
+<td>L7</td>
+<td>Modern, designed for microservices, gRPC-native, used in service meshes</td>
+</tr>
+<tr>
+<td>Traefik</td>
+<td>L7</td>
+<td>Auto-discovery of services, integrates with Docker/Kubernetes</td>
+</tr>
+<tr>
+<td>AWS ALB</td>
+<td>L7 (managed)</td>
+<td>Fully managed, integrates with AWS ecosystem</td>
+</tr>
+<tr>
+<td>AWS NLB</td>
+<td>L4 (managed)</td>
+<td>Ultra-low latency, millions of connections, static IP</td>
+</tr>
+<tr>
+<td>Google Cloud LB</td>
+<td>L4 and L7 (managed)</td>
+<td>Global anycast, integrated with GCP services</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>In system design interviews, always choose software load balancers unless there is a specific reason for hardware. Cloud-managed load balancers (ALB, NLB, Google Cloud LB) are the most common answer because they eliminate operational overhead. If asked about on-premises, mention Nginx or HAProxy.</p>
+</div>
+
+
+<hr>
+<h2>4. Load Balancing Algorithms</h2>
+<h3>Round Robin</h3>
+<p>The simplest algorithm. Requests are distributed to servers sequentially: Server 1, Server 2, Server 3, Server 1, Server 2, Server 3, and so on.</p>
+<p><strong>Pros:</strong> Dead simple, fair distribution when servers are identical, no state to maintain.</p>
+<p><strong>Cons:</strong> Ignores server capacity differences. Ignores current load. A server processing a slow request gets the next one anyway.</p>
+<p><strong>Best for:</strong> Homogeneous server fleets with similar request processing times.</p>
+<h3>Weighted Round Robin</h3>
+<p>Like round robin, but each server has a weight proportional to its capacity. A server with weight 3 receives three times as many requests as a server with weight 1.</p>
+<table>
+<thead>
+<tr>
+<th>Server</th>
+<th>Weight</th>
+<th>Requests (out of 10)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Server A (8 CPU)</td>
+<td>3</td>
+<td>5</td>
+</tr>
+<tr>
+<td>Server B (4 CPU)</td>
+<td>2</td>
+<td>3</td>
+</tr>
+<tr>
+<td>Server C (2 CPU)</td>
+<td>1</td>
+<td>2</td>
+</tr>
+</tbody></table>
+<p><strong>Best for:</strong> Heterogeneous fleets where servers have different hardware specs. Common during rolling deployments where old and new hardware coexist.</p>
+<h3>Least Connections</h3>
+<p>Routes new requests to the server with the fewest active connections. This naturally adapts to server processing speed — faster servers complete requests sooner, have fewer active connections, and receive more new requests.</p>
+<p><strong>Pros:</strong> Adapts to variable request processing times. Handles slow requests gracefully.</p>
+<p><strong>Cons:</strong> Requires tracking connection count per server (state). Does not account for connection weight (a connection streaming a video is heavier than one serving a small JSON response).</p>
+<p><strong>Best for:</strong> Workloads with highly variable request processing times (e.g., some requests take 10ms, others take 10 seconds).</p>
+<h3>Weighted Least Connections</h3>
+<p>Combines least connections with server weights. The routing formula considers both active connections and server capacity:</p>
+<pre><code>score = active_connections / weight
+Route to the server with the lowest score.
+</code></pre>
+<p>A server with weight 4 and 20 active connections (score = 5) is preferred over a server with weight 2 and 12 active connections (score = 6).</p>
+<h3>IP Hash</h3>
+<p>The client&#39;s IP address is hashed to determine which server handles the request. The same IP always goes to the same server (as long as the server pool does not change).</p>
+<p><strong>Pros:</strong> Natural session affinity without cookies. Predictable routing.</p>
+<p><strong>Cons:</strong> Uneven distribution if some IP ranges generate more traffic. Adding/removing servers remaps many clients (can be improved with consistent hashing). Does not account for load.</p>
+<p><strong>Best for:</strong> When you need session affinity but cannot use cookies (e.g., UDP-based protocols, non-HTTP traffic).</p>
+<h3>Consistent Hashing</h3>
+<p>An evolution of IP hash that minimizes disruption when servers are added or removed. Servers and request keys are mapped onto a hash ring. A request is routed to the next server clockwise on the ring from its hash position.</p>
+<p>When a server is added, only requests that hash between the new server and its predecessor are remapped. When a server is removed, only its requests are redistributed to the next server. In contrast, regular hashing remaps a large fraction of requests on any pool change.</p>
+<div class="important">
+
+<p>Consistent hashing is crucial for caching layers. If your load balancer sits in front of cache servers, regular hashing causes massive cache misses when the pool changes (all keys remap). Consistent hashing limits the blast radius to ~1/N of the keys, where N is the number of servers.</p>
+</div>
+
+
+<h3>Random</h3>
+<p>Requests are assigned to a randomly selected server. Surprisingly effective with a large number of servers due to the law of large numbers — distribution approaches uniform.</p>
+<p><strong>Power of Two Random Choices:</strong> A refinement where the load balancer picks two servers at random and sends the request to whichever has fewer active connections. This dramatically reduces the maximum load on any server compared to pure random, with minimal overhead.</p>
+<h3>Algorithm Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Algorithm</th>
+<th align="center">Load Awareness</th>
+<th align="center">Session Affinity</th>
+<th align="center">State Required</th>
+<th align="center">Complexity</th>
+<th>Best For</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Round Robin</td>
+<td align="center">No</td>
+<td align="center">No</td>
+<td align="center">None</td>
+<td align="center">Very Low</td>
+<td>Homogeneous, stateless</td>
+</tr>
+<tr>
+<td>Weighted Round Robin</td>
+<td align="center">No</td>
+<td align="center">No</td>
+<td align="center">Weight config</td>
+<td align="center">Low</td>
+<td>Mixed hardware</td>
+</tr>
+<tr>
+<td>Least Connections</td>
+<td align="center">Yes</td>
+<td align="center">No</td>
+<td align="center">Connection counts</td>
+<td align="center">Medium</td>
+<td>Variable latency workloads</td>
+</tr>
+<tr>
+<td>Weighted Least Conn</td>
+<td align="center">Yes</td>
+<td align="center">No</td>
+<td align="center">Counts + weights</td>
+<td align="center">Medium</td>
+<td>Variable latency + mixed HW</td>
+</tr>
+<tr>
+<td>IP Hash</td>
+<td align="center">No</td>
+<td align="center">Yes</td>
+<td align="center">None</td>
+<td align="center">Low</td>
+<td>UDP, non-HTTP sticky</td>
+</tr>
+<tr>
+<td>Consistent Hashing</td>
+<td align="center">No</td>
+<td align="center">Yes</td>
+<td align="center">Hash ring</td>
+<td align="center">Medium</td>
+<td>Cache servers</td>
+</tr>
+<tr>
+<td>Random (Power of 2)</td>
+<td align="center">Yes</td>
+<td align="center">No</td>
+<td align="center">Minimal</td>
+<td align="center">Low</td>
+<td>Large pools, simplicity</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>In interviews, start with the simplest algorithm that meets requirements. If all servers are identical and requests are stateless, round robin is fine. Add complexity only when needed: weighted for mixed hardware, least connections for variable latency, consistent hashing for caches. Explain your reasoning.</p>
+</div>
+
+
+<hr>
+<h2>5. Health Checks and Failover</h2>
+<h3>Types of Health Checks</h3>
+<p><strong>Passive health checks:</strong> The load balancer monitors responses from backend servers during normal traffic. If a server returns too many errors (e.g., 5xx status codes) or times out repeatedly, it is marked unhealthy and removed from rotation.</p>
+<p><strong>Active health checks:</strong> The load balancer proactively sends periodic probe requests to each backend server (e.g., <code>GET /health</code> every 10 seconds). The server&#39;s response determines its health status.</p>
+<table>
+<thead>
+<tr>
+<th>Health Check Type</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Passive</td>
+<td>No extra traffic, detects issues that affect real requests</td>
+<td>Slow detection (must wait for real traffic to fail)</td>
+</tr>
+<tr>
+<td>Active (HTTP)</td>
+<td>Fast detection, catches issues before users see them</td>
+<td>Extra load on servers, probe may pass but real requests fail</td>
+</tr>
+<tr>
+<td>Active (TCP)</td>
+<td>Very lightweight, confirms server is accepting connections</td>
+<td>Does not verify application logic</td>
+</tr>
+<tr>
+<td>Active (Script)</td>
+<td>Custom logic (check DB connection, disk space, etc.)</td>
+<td>Complex to maintain, slower</td>
+</tr>
+</tbody></table>
+<h3>Health Check Configuration</h3>
+<p>A typical active health check configuration:</p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Typical Value</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Interval</td>
+<td>5-30 seconds</td>
+<td>How often to probe</td>
+</tr>
+<tr>
+<td>Timeout</td>
+<td>2-5 seconds</td>
+<td>How long to wait for a response</td>
+</tr>
+<tr>
+<td>Healthy threshold</td>
+<td>2-3 consecutive successes</td>
+<td>How many passes before marking healthy</td>
+</tr>
+<tr>
+<td>Unhealthy threshold</td>
+<td>2-3 consecutive failures</td>
+<td>How many failures before marking unhealthy</td>
+</tr>
+<tr>
+<td>Path</td>
+<td><code>/health</code> or <code>/healthz</code></td>
+<td>Endpoint to probe</td>
+</tr>
+</tbody></table>
+<h3>Designing Health Check Endpoints</h3>
+<p>A good health check endpoint should:</p>
+<ol>
+<li><strong>Check critical dependencies:</strong> Database connectivity, cache reachability, essential external services</li>
+<li><strong>Be fast:</strong> Should respond within 100ms. Do not run expensive queries.</li>
+<li><strong>Distinguish deep from shallow checks:</strong><ul>
+<li><strong>Shallow (<code>/health</code>):</strong> Am I running and accepting connections? (Always fast)</li>
+<li><strong>Deep (<code>/health/ready</code>):</strong> Can I actually serve traffic? (Checks DB, cache, etc.)</li>
+</ul>
+</li>
+</ol>
+<div class="warning">
+
+<p>A common failure pattern: the health check endpoint queries the database on every probe. If the database has a brief latency spike, all servers fail their health checks simultaneously, and the load balancer removes all backends. Sudden total outage. Use cached health status with a reasonable staleness window (e.g., check DB once per minute, cache the result, report that cached result on every probe).</p>
+</div>
+
+
+<h3>Failover Patterns</h3>
+<p><strong>Active-passive failover:</strong> A primary load balancer handles all traffic. A standby (passive) monitors the primary via heartbeat. If the primary fails, the standby takes over (typically using a floating IP or DNS update). Downtime during failover is typically 10-30 seconds.</p>
+<p><strong>Active-active failover:</strong> Multiple load balancers handle traffic simultaneously. If one fails, DNS or an upstream router removes it. No failover delay since others are already serving. More complex to configure but provides zero-downtime failover.</p>
+<h3>Graceful Server Removal (Draining)</h3>
+<p>When removing a server (for deployment, maintenance, etc.), you do not want to abruptly kill active connections:</p>
+<ol>
+<li>Mark the server as &quot;draining&quot; — no new connections are sent to it</li>
+<li>Existing connections continue until they complete naturally</li>
+<li>After a timeout (e.g., 30 seconds), force-close any remaining connections</li>
+<li>Remove the server from the pool</li>
+</ol>
+<hr>
+<h2>6. Forward Proxy vs Reverse Proxy</h2>
+<h3>Forward Proxy</h3>
+<p>A forward proxy sits in front of clients and makes requests to servers on their behalf. The server does not know the client&#39;s real identity — it sees the proxy&#39;s IP address.</p>
+<h3>Reverse Proxy</h3>
+<p>A reverse proxy sits in front of servers and receives requests from clients on behalf of the servers. The client does not know which backend server handles their request — it sees only the proxy.</p>
+<pre class="mermaid">
+graph LR
+    subgraph FP["Forward Proxy"]
+        direction LR
+        C1["Client A"] --> FWD["Forward\nProxy"]
+        C2["Client B"] --> FWD
+        C3["Client C"] --> FWD
+        FWD --> INT["Internet\n(Servers)"]
+    end
+
+    subgraph RP["Reverse Proxy"]
+        direction LR
+        INT2["Internet\n(Clients)"] --> REV["Reverse\nProxy"]
+        REV --> S1["Server 1"]
+        REV --> S2["Server 2"]
+        REV --> S3["Server 3"]
+    end
+</pre>
+<h3>Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Forward Proxy</th>
+<th>Reverse Proxy</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Sits in front of</td>
+<td>Clients</td>
+<td>Servers</td>
+</tr>
+<tr>
+<td>Hides identity of</td>
+<td>Clients (from servers)</td>
+<td>Servers (from clients)</td>
+</tr>
+<tr>
+<td>Deployed by</td>
+<td>Client organization (corporate IT)</td>
+<td>Server organization (engineering team)</td>
+</tr>
+<tr>
+<td>Client awareness</td>
+<td>Clients must be configured to use it</td>
+<td>Clients are unaware (transparent)</td>
+</tr>
+<tr>
+<td>Primary purpose</td>
+<td>Access control, privacy, caching for clients</td>
+<td>Load balancing, security, caching for servers</td>
+</tr>
+</tbody></table>
+<h3>Forward Proxy Use Cases</h3>
+<table>
+<thead>
+<tr>
+<th>Use Case</th>
+<th>How</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Corporate internet access control</td>
+<td>Proxy blocks banned sites, logs browsing</td>
+</tr>
+<tr>
+<td>Privacy / anonymity</td>
+<td>Client IP is hidden from destination servers</td>
+</tr>
+<tr>
+<td>Content filtering</td>
+<td>Proxy inspects and filters response content</td>
+</tr>
+<tr>
+<td>Client-side caching</td>
+<td>Proxy caches frequently accessed resources for all clients</td>
+</tr>
+<tr>
+<td>Bypassing geo-restrictions</td>
+<td>Proxy in another region accesses region-locked content</td>
+</tr>
+</tbody></table>
+<h3>Reverse Proxy Use Cases</h3>
+<table>
+<thead>
+<tr>
+<th>Use Case</th>
+<th>How</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Load balancing</td>
+<td>Distributes requests across backend servers</td>
+</tr>
+<tr>
+<td>SSL termination</td>
+<td>Handles TLS, sends plain HTTP to backends</td>
+</tr>
+<tr>
+<td>Caching</td>
+<td>Caches responses to reduce backend load</td>
+</tr>
+<tr>
+<td>Compression</td>
+<td>Compresses responses (gzip, Brotli) before sending to client</td>
+</tr>
+<tr>
+<td>Security</td>
+<td>Hides backend topology, provides DDoS protection, WAF</td>
+</tr>
+<tr>
+<td>Request routing</td>
+<td>Routes /api to API servers, /static to file servers</td>
+</tr>
+<tr>
+<td>Rate limiting</td>
+<td>Enforces request rate limits per client/API key</td>
+</tr>
+<tr>
+<td>A/B testing</td>
+<td>Routes percentage of traffic to canary servers</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>In interviews, when you say &quot;we&#39;ll put a reverse proxy in front,&quot; be specific about what it does for your design. Is it for SSL termination? Content-based routing? Caching? Rate limiting? Specificity demonstrates that you understand the tool, not just the buzzword.</p>
+</div>
+
+
+<hr>
+<h2>7. Reverse Proxy Deep Dive</h2>
+<h3>Nginx</h3>
+<p>Nginx is the most widely deployed reverse proxy and web server. It uses an event-driven, asynchronous, non-blocking architecture that handles thousands of concurrent connections with a small memory footprint.</p>
+<p><strong>Key capabilities as a reverse proxy:</strong></p>
+<ul>
+<li>HTTP and HTTPS reverse proxying with keep-alive to backends</li>
+<li>Load balancing (round robin, least connections, IP hash, consistent hash)</li>
+<li>Static file serving (often serves static assets directly while proxying dynamic requests)</li>
+<li>Response caching with configurable TTL and cache invalidation</li>
+<li>Request rate limiting per client IP or custom key</li>
+<li>SSL termination with OCSP stapling and HTTP/2 support</li>
+<li>gzip and Brotli compression</li>
+<li>WebSocket proxying (with <code>Upgrade</code> header handling)</li>
+</ul>
+<p><strong>Architecture:</strong> Nginx uses a master process that manages worker processes. Each worker handles thousands of connections using an event loop (epoll on Linux). There is no thread-per-connection overhead. This is why Nginx can handle 10,000+ concurrent connections with minimal memory.</p>
+<h3>HAProxy</h3>
+<p>HAProxy (High Availability Proxy) is purpose-built for load balancing and proxying. It can operate at both L4 and L7 and is known for extreme performance and reliability.</p>
+<p><strong>Key capabilities:</strong></p>
+<ul>
+<li>L4 (TCP) and L7 (HTTP) load balancing in a single binary</li>
+<li>Advanced health checking with custom scripts and multi-step probes</li>
+<li>Connection draining for zero-downtime deployments</li>
+<li>Detailed real-time statistics dashboard</li>
+<li>Stick tables for session persistence with peer synchronization</li>
+<li>ACL-based routing with complex matching rules</li>
+<li>SSL termination with SNI-based routing</li>
+</ul>
+<h3>Envoy</h3>
+<p>Envoy is a modern L7 proxy designed for cloud-native architectures. Originally built at Lyft, it is now the data plane for major service meshes (Istio, AWS App Mesh).</p>
+<p><strong>Key differentiators:</strong></p>
+<ul>
+<li>First-class gRPC support (not an afterthought)</li>
+<li>Dynamic configuration via xDS APIs (no restart needed to update routing)</li>
+<li>Distributed tracing integration (Zipkin, Jaeger, OpenTelemetry)</li>
+<li>Circuit breaking per upstream cluster</li>
+<li>Automatic retries with configurable budgets</li>
+<li>Request shadowing (mirror traffic to a test cluster)</li>
+<li>Hot restart (reload configuration without dropping connections)</li>
+</ul>
+<h3>Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Nginx</th>
+<th>HAProxy</th>
+<th>Envoy</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Primary use</td>
+<td>Web server + reverse proxy</td>
+<td>Load balancer</td>
+<td>Service mesh data plane</td>
+</tr>
+<tr>
+<td>L4 support</td>
+<td>Limited</td>
+<td>Excellent</td>
+<td>Good</td>
+</tr>
+<tr>
+<td>L7 support</td>
+<td>Excellent</td>
+<td>Excellent</td>
+<td>Excellent</td>
+</tr>
+<tr>
+<td>gRPC</td>
+<td>Supported (newer versions)</td>
+<td>Supported</td>
+<td>Native</td>
+</tr>
+<tr>
+<td>Dynamic config</td>
+<td>Requires reload (or Nginx Plus API)</td>
+<td>Requires reload</td>
+<td>xDS API (live updates)</td>
+</tr>
+<tr>
+<td>Service discovery</td>
+<td>Manual or scripted</td>
+<td>Manual or DNS</td>
+<td>Native (EDS)</td>
+</tr>
+<tr>
+<td>Observability</td>
+<td>Access logs, basic metrics</td>
+<td>Rich stats, dashboard</td>
+<td>Deep metrics, tracing, logging</td>
+</tr>
+<tr>
+<td>Config style</td>
+<td>Declarative (nginx.conf)</td>
+<td>Declarative (haproxy.cfg)</td>
+<td>YAML/JSON + xDS APIs</td>
+</tr>
+<tr>
+<td>Learning curve</td>
+<td>Low</td>
+<td>Medium</td>
+<td>High</td>
+</tr>
+<tr>
+<td>Memory footprint</td>
+<td>Very low</td>
+<td>Low</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Best for</td>
+<td>Edge proxy, static serving</td>
+<td>High-performance LB</td>
+<td>Microservice architectures</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>8. Global Server Load Balancing (GSLB)</h2>
+<h3>The Problem</h3>
+<p>A single load balancer in one region cannot serve a global user base efficiently. Users in Tokyo connecting to servers in Virginia experience 150ms+ round-trip latency on every request. GSLB distributes traffic across multiple geographic regions.</p>
+<h3>How GSLB Works</h3>
+<p>GSLB operates at the DNS layer. When a user resolves your domain, the GSLB-enabled DNS returns the IP address of the nearest (or best) data center based on various signals.</p>
+<pre class="mermaid">
+graph TD
+    User_US["User in New York"] --> DNS["GSLB DNS\n(Evaluates: geography,\nhealth, load, latency)"]
+    User_EU["User in London"] --> DNS
+    User_AP["User in Tokyo"] --> DNS
+
+    DNS -->|"Closest healthy DC"| US_DC["US-East Data Center\n(Virginia)"]
+    DNS -->|"Closest healthy DC"| EU_DC["EU-West Data Center\n(Ireland)"]
+    DNS -->|"Closest healthy DC"| AP_DC["AP-Northeast Data Center\n(Tokyo)"]
+
+    US_DC --> US_LB["Regional LB"] --> US_S["Servers"]
+    EU_DC --> EU_LB["Regional LB"] --> EU_S["Servers"]
+    AP_DC --> AP_LB["Regional LB"] --> AP_S["Servers"]
+</pre>
+<h3>GSLB Routing Methods</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>How It Works</th>
+<th>Best For</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Geographic</td>
+<td>Route based on client&#39;s geographic location (via IP geolocation)</td>
+<td>Content localization, data sovereignty compliance</td>
+</tr>
+<tr>
+<td>Latency-based</td>
+<td>Route to the region with lowest measured latency from the client&#39;s resolver</td>
+<td>Performance optimization</td>
+</tr>
+<tr>
+<td>Weighted</td>
+<td>Distribute percentage of traffic across regions (e.g., 60% US, 40% EU)</td>
+<td>Gradual regional rollouts</td>
+</tr>
+<tr>
+<td>Failover</td>
+<td>Primary region serves all traffic; DNS switches to backup on failure</td>
+<td>Active-passive multi-region</td>
+</tr>
+</tbody></table>
+<h3>Anycast</h3>
+<p>Anycast is a network routing technique where the same IP address is announced by multiple data centers worldwide. The network&#39;s BGP routing naturally directs each client to the nearest data center.</p>
+<p><strong>How it differs from DNS-based GSLB:</strong></p>
+<ul>
+<li>DNS GSLB returns different IPs based on geography → the client connects to a region-specific IP</li>
+<li>Anycast returns the same IP everywhere → the network routes to the nearest instance of that IP</li>
+</ul>
+<p><strong>Advantages of Anycast:</strong></p>
+<ul>
+<li>No DNS TTL delay — routing changes are immediate (BGP convergence)</li>
+<li>Works for UDP protocols (DNS uses anycast extensively)</li>
+<li>Simple client config (one IP address for the whole world)</li>
+</ul>
+<p><strong>Limitations:</strong></p>
+<ul>
+<li>TCP connections can break if BGP routes shift mid-connection (rare but possible)</li>
+<li>Requires significant network infrastructure (announcing IP prefixes via BGP)</li>
+<li>Most commonly used for DNS services and CDN edge nodes</li>
+</ul>
+<div class="note">
+
+<p>Cloudflare, Google Public DNS (8.8.8.8), and most major CDNs use Anycast. When a system design question involves global DNS or CDN, mention anycast as the mechanism that makes &quot;the nearest edge server&quot; possible.</p>
+</div>
+
+
+<hr>
+<h2>9. Session Persistence (Sticky Sessions)</h2>
+<h3>What Sticky Sessions Are</h3>
+<p>Sticky sessions (also called session affinity) ensure that all requests from a specific client are routed to the same backend server for the duration of their session.</p>
+<h3>How Sticky Sessions Work</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Mechanism</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Cookie-based</td>
+<td>LB inserts a cookie (e.g., <code>SERVERID=server2</code>) in the first response</td>
+<td>Works across NATs, most reliable</td>
+<td>Requires L7 LB, cookie overhead</td>
+</tr>
+<tr>
+<td>IP-based</td>
+<td>Route by client IP hash</td>
+<td>Simple, works at L4</td>
+<td>Breaks with NAT (many users share one IP)</td>
+</tr>
+<tr>
+<td>URL/header-based</td>
+<td>Route by session ID in URL or custom header</td>
+<td>Flexible</td>
+<td>Requires application cooperation</td>
+</tr>
+</tbody></table>
+<h3>When You Need Sticky Sessions</h3>
+<ul>
+<li><strong>In-memory session state:</strong> If your application stores session data in server memory (not recommended at scale, but common in legacy systems)</li>
+<li><strong>WebSocket connections:</strong> After the handshake, the connection is tied to a specific server by nature</li>
+<li><strong>Long-running operations:</strong> Multi-step processes where intermediate state is held server-side</li>
+<li><strong>File uploads:</strong> Chunked uploads where the server assembles chunks in local storage</li>
+</ul>
+<h3>When to Avoid Sticky Sessions</h3>
+<div class="warning">
+
+<p>Sticky sessions are an anti-pattern for most modern architectures. They create uneven load distribution (one server might get all the heavy users), complicate horizontal scaling (cannot freely move users between servers), and make server failures disruptive (sticky users lose their session state when their server dies).</p>
+</div>
+
+
+<p><strong>Better alternatives:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Instead of Sticky Sessions</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>In-memory sessions</td>
+<td>External session store (Redis, Memcached)</td>
+</tr>
+<tr>
+<td>Server-local cache</td>
+<td>Distributed cache with consistent hashing</td>
+</tr>
+<tr>
+<td>Server-local file assembly</td>
+<td>Object storage (S3) for upload chunks</td>
+</tr>
+<tr>
+<td>Stateful WebSockets</td>
+<td>Pub/Sub backbone (Redis, Kafka) for cross-server messaging</td>
+</tr>
+</tbody></table>
+<p>The general principle: <strong>externalize state.</strong> Move session data, cache data, and any mutable state out of individual servers and into shared stores. This makes your servers stateless and interchangeable, which is the foundation of elastic horizontal scaling.</p>
+<div class="tip">
+
+<p>In interviews, if your design uses sticky sessions, the interviewer will likely probe: &quot;What happens when that server goes down?&quot; Have the answer ready: either you externalize the state (preferred) or you accept session loss on failure (sometimes acceptable for non-critical state).</p>
+</div>
+
+
+<hr>
+<h2>10. Load Balancing at Scale</h2>
+<h3>The Load Balancer as a Bottleneck</h3>
+<p>If all traffic flows through a single load balancer, that load balancer becomes a single point of failure and a throughput bottleneck. At scale, this is addressed through multiple strategies.</p>
+<h3>Multi-Tier Load Balancing</h3>
+<p>Large-scale systems use multiple layers of load balancing:</p>
+<p><strong>Tier 1 — DNS / GSLB:</strong> Distributes traffic across data centers globally. No single point of failure because DNS itself is distributed.</p>
+<p><strong>Tier 2 — L4 Load Balancer (e.g., NLB, IPVS):</strong> Within each data center, an L4 load balancer handles raw TCP/UDP distribution. These are extremely fast (millions of connections) because they do not inspect payloads.</p>
+<p><strong>Tier 3 — L7 Load Balancer (e.g., Nginx, Envoy):</strong> Behind the L4 layer, L7 load balancers handle HTTP routing, SSL termination, and content-based routing. These are more resource-intensive but provide rich features.</p>
+<p><strong>Tier 4 — Service Mesh Sidecar (e.g., Envoy as sidecar):</strong> In microservice architectures, each service instance has a sidecar proxy that handles service-to-service load balancing, retries, circuit breaking, and observability.</p>
+<h3>Load Balancer High Availability</h3>
+<p><strong>Active-Passive with Floating IP:</strong></p>
+<ul>
+<li>Two LB instances share a virtual IP (VIP) via VRRP (Virtual Router Redundancy Protocol)</li>
+<li>The active LB owns the VIP and handles all traffic</li>
+<li>The passive LB monitors the active via heartbeat</li>
+<li>On active failure, the passive claims the VIP (typically within seconds)</li>
+</ul>
+<p><strong>Active-Active with ECMP:</strong></p>
+<ul>
+<li>Multiple LB instances announce the same IP via BGP</li>
+<li>Upstream routers use ECMP (Equal-Cost Multi-Path) to distribute packets across all LBs</li>
+<li>Any LB can fail without traffic disruption</li>
+<li>More efficient (all LBs are utilized) but more complex</li>
+</ul>
+<h3>Connection Draining at Scale</h3>
+<p>During deployments, you rotate servers in and out. Connection draining ensures zero dropped requests:</p>
+<ol>
+<li>Signal the LB to stop sending new requests to the target server</li>
+<li>The server continues processing in-flight requests</li>
+<li>After a configurable drain timeout (e.g., 30s), remaining connections are force-closed</li>
+<li>The server is removed and can be updated or terminated</li>
+</ol>
+<h3>Auto-Scaling Integration</h3>
+<p>Modern cloud load balancers integrate with auto-scaling groups:</p>
+<ol>
+<li><p><strong>Scale out:</strong> Metric (CPU, request count) exceeds threshold. Auto-scaler launches new instances. New instances register with the LB after passing health checks. LB starts routing traffic to them.</p>
+</li>
+<li><p><strong>Scale in:</strong> Metric drops below threshold. Auto-scaler marks instances for termination. LB drains connections from marked instances. After draining completes, instances are terminated.</p>
+</li>
+</ol>
+<p>The key challenge is the lag between detection and readiness. Launching a new VM takes 1-3 minutes. If traffic spikes faster than instances can launch, requests queue or fail. Solutions include:</p>
+<ul>
+<li><strong>Pre-warming:</strong> Keep a minimum number of instances running (over-provisioning slightly)</li>
+<li><strong>Predictive scaling:</strong> Use historical patterns to pre-scale before expected spikes</li>
+<li><strong>Serverless overflow:</strong> Route excess traffic to serverless functions (Lambda, Cloud Functions) that scale instantly</li>
+</ul>
+<h3>Rate Limiting at the Load Balancer</h3>
+<p>Load balancers are the ideal point to enforce rate limits because they see all traffic before it reaches your application servers:</p>
+<table>
+<thead>
+<tr>
+<th>Rate Limit Type</th>
+<th>Scope</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Per IP</td>
+<td>Requests per second per client IP</td>
+<td>Prevent individual client abuse</td>
+</tr>
+<tr>
+<td>Per API key</td>
+<td>Requests per minute per authenticated client</td>
+<td>Tiered API plans</td>
+</tr>
+<tr>
+<td>Global</td>
+<td>Total requests per second across all clients</td>
+<td>Protect backend capacity</td>
+</tr>
+<tr>
+<td>Per endpoint</td>
+<td>Requests per second to a specific path</td>
+<td>Protect expensive operations</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>Distributed rate limiting (across multiple LB instances) requires a shared counter store (Redis is common). Each LB instance checks and increments the counter before allowing or rejecting the request. This adds a Redis lookup to every request, so some implementations use local approximate counters synchronized periodically.</p>
+</div>
+
+
+<hr>
+<h2>11. Interview Cheat Sheet</h2>
+<h3>Quick Reference: When to Use What</h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Solution</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Single-region web app</td>
+<td>L7 LB (ALB or Nginx) with round robin</td>
+</tr>
+<tr>
+<td>Microservices with gRPC</td>
+<td>L7 LB with least connections (gRPC-aware: Envoy)</td>
+</tr>
+<tr>
+<td>Global user base</td>
+<td>GSLB (DNS-based) + regional L7 LBs</td>
+</tr>
+<tr>
+<td>Cache server fleet</td>
+<td>Consistent hashing to minimize cache misses</td>
+</tr>
+<tr>
+<td>Legacy app with server sessions</td>
+<td>Sticky sessions (cookie-based) — but externalize state if possible</td>
+</tr>
+<tr>
+<td>TCP/UDP non-HTTP protocol</td>
+<td>L4 LB (NLB or HAProxy L4 mode)</td>
+</tr>
+<tr>
+<td>Extremely high throughput (millions CPS)</td>
+<td>L4 LB with DSR (Direct Server Return)</td>
+</tr>
+<tr>
+<td>Service mesh</td>
+<td>Envoy sidecars with xDS control plane</td>
+</tr>
+</tbody></table>
+<h3>Algorithm Selection Flowchart</h3>
+<pre><code>Are all servers identical?
+├── No → Use Weighted variant of whatever algorithm you pick
+└── Yes → Do requests have highly variable processing time?
+         ├── Yes → Least Connections
+         └── No → Do you need session affinity?
+                  ├── Yes → IP Hash (L4) or Cookie-based (L7)
+                  │         └── Is this a cache layer? → Consistent Hashing
+                  └── No → Round Robin (simple) or Power of Two Random Choices (large fleet)
+</code></pre>
+<h3>Numbers You Should Know</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>L4 LB throughput (NLB)</td>
+<td>Millions of new connections/sec</td>
+</tr>
+<tr>
+<td>L7 LB throughput (ALB)</td>
+<td>Tens of thousands of new connections/sec</td>
+</tr>
+<tr>
+<td>Nginx concurrent connections</td>
+<td>10,000+ per worker (event-driven)</td>
+</tr>
+<tr>
+<td>HAProxy concurrent connections</td>
+<td>1,000,000+ (optimized configs)</td>
+</tr>
+<tr>
+<td>Health check interval</td>
+<td>5-30 seconds typical</td>
+</tr>
+<tr>
+<td>Connection drain timeout</td>
+<td>15-60 seconds typical</td>
+</tr>
+<tr>
+<td>GSLB DNS failover time</td>
+<td>30s-5min (depends on TTL)</td>
+</tr>
+<tr>
+<td>Anycast failover time</td>
+<td>~30 seconds (BGP convergence)</td>
+</tr>
+<tr>
+<td>Auto-scale lag (new VM ready)</td>
+<td>1-3 minutes</td>
+</tr>
+</tbody></table>
+<h3>Common Interview Mistakes</h3>
+<table>
+<thead>
+<tr>
+<th>Mistake</th>
+<th>Better Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>&quot;Just add a load balancer&quot; without specifying type</td>
+<td>Specify L4 or L7 and explain why</td>
+</tr>
+<tr>
+<td>Using sticky sessions as default</td>
+<td>Externalize state (Redis), make servers stateless</td>
+</tr>
+<tr>
+<td>Forgetting LB is a single point of failure</td>
+<td>Discuss active-passive or active-active HA for the LB itself</td>
+</tr>
+<tr>
+<td>Not mentioning health checks</td>
+<td>Always discuss how failed servers are detected and removed</td>
+</tr>
+<tr>
+<td>&quot;DNS for failover&quot; without mentioning TTL lag</td>
+<td>DNS failover is not instant — explain TTL and its implications</td>
+</tr>
+<tr>
+<td>Ignoring gRPC load balancing challenges</td>
+<td>gRPC multiplexes on one connection; L7 LB or client-side LB needed</td>
+</tr>
+<tr>
+<td>Picking consistent hashing everywhere</td>
+<td>Only needed for cache layers; overkill for stateless application servers</td>
+</tr>
+</tbody></table>
+<h3>Key Relationships to Articulate</h3>
+<ol>
+<li><p><strong>L4 is fast but dumb; L7 is smart but slower.</strong> Use L4 for raw throughput and L7 for intelligent routing. Layer them: L4 in front, L7 behind.</p>
+</li>
+<li><p><strong>Stateless servers are the goal.</strong> Load balancing works best when any server can handle any request. Externalize session state to make this possible.</p>
+</li>
+<li><p><strong>Health checks prevent cascading failure.</strong> Without them, the LB sends traffic to dead servers and users see errors. With overly aggressive checks, transient issues cause all servers to be removed simultaneously.</p>
+</li>
+<li><p><strong>GSLB solves the latency problem that no single-region optimization can.</strong> The speed of light is a hard limit. The only answer is to move servers closer to users.</p>
+</li>
+<li><p><strong>Consistent hashing is specifically for stateful routing (caches).</strong> For stateless application servers, simpler algorithms work fine and are easier to reason about.</p>
+</li>
+<li><p><strong>The load balancer itself needs high availability.</strong> It is the entry point for all traffic — if it goes down, everything goes down. Always discuss LB redundancy.</p>
+</li>
+<li><p><strong>Auto-scaling and load balancing are complementary.</strong> The LB distributes traffic; auto-scaling ensures there are enough servers to handle it. They work together through health check registration.</p>
+</li>
+</ol>
+<hr>
+<div class="tip">
+
+<p>When discussing load balancing in interviews, always start with the requirements: What protocol? How much traffic? How many regions? Stateful or stateless? The algorithm and LB type flow naturally from the answers. Starting with requirements instead of jumping to a solution is what distinguishes Staff-level thinking from memorized answers.</p>
+</div>
+
+
+</body>
+</html>

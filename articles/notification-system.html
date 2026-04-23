@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Design a Notification System</title>
+</head>
+<body>
+
+<h1>Design a Notification System</h1>
+<h2>Introduction</h2>
+<p>Notifications are the connective tissue of modern applications. Every time a user receives an order confirmation email, a breaking news push alert, or an SMS verification code, a notification system is at work behind the scenes. At scale, this seemingly simple &quot;send a message&quot; operation becomes a deeply challenging distributed systems problem involving millions of messages per second, multiple delivery channels, user preferences, rate limiting, and reliability guarantees.</p>
+<p>In a Staff/Senior-level interview, you are expected to design a system that can handle billions of notifications daily while maintaining soft real-time delivery, respecting user preferences, and providing observability into delivery success. This article walks through every layer of that design.</p>
+<hr>
+<h2>Requirements</h2>
+<h3>Functional Requirements</h3>
+<ol>
+<li><strong>Multi-channel delivery</strong>: Send notifications via push (APNs, FCM), SMS, email, and in-app channels.</li>
+<li><strong>Template system</strong>: Support reusable notification templates with variable substitution (e.g., &quot;Hello {{user_name}}, your order {{order_id}} has shipped&quot;).</li>
+<li><strong>User preference management</strong>: Allow users to opt in/out of specific notification types per channel.</li>
+<li><strong>Priority levels</strong>: Support at least three priority tiers (critical, transactional, marketing).</li>
+<li><strong>Scheduling</strong>: Allow notifications to be scheduled for future delivery.</li>
+<li><strong>Analytics</strong>: Track delivery, open, and click-through rates.</li>
+</ol>
+<h3>Non-Functional Requirements</h3>
+<ol>
+<li><strong>Soft real-time</strong>: Critical notifications (e.g., 2FA codes) delivered within seconds; marketing within minutes.</li>
+<li><strong>At-least-once delivery</strong>: Every notification must be delivered at least once; duplicates are acceptable over missed messages.</li>
+<li><strong>Pluggable channels</strong>: Adding a new delivery channel (e.g., WhatsApp) should not require modifying core logic.</li>
+<li><strong>High availability</strong>: The system must remain operational even if individual components fail.</li>
+<li><strong>Scalability</strong>: Handle 1 billion notifications per day with room to grow.</li>
+</ol>
+<hr>
+<h2>Capacity Estimation</h2>
+<p>Let us work through the numbers for a system handling <strong>1 billion notifications per day</strong>.</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Calculation</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Notifications/day</td>
+<td>Given</td>
+<td>1,000,000,000</td>
+</tr>
+<tr>
+<td>Notifications/second (avg)</td>
+<td>1B / 86,400</td>
+<td>~11,574 QPS</td>
+</tr>
+<tr>
+<td>Peak QPS (5x average)</td>
+<td>11,574 x 5</td>
+<td>~58,000 QPS</td>
+</tr>
+<tr>
+<td>Avg notification payload</td>
+<td>Estimated</td>
+<td>~2 KB</td>
+</tr>
+<tr>
+<td>Daily data ingress</td>
+<td>1B x 2 KB</td>
+<td>~2 TB/day</td>
+</tr>
+<tr>
+<td>Monthly storage (metadata)</td>
+<td>30 x 2 TB</td>
+<td>~60 TB/month</td>
+</tr>
+<tr>
+<td>Template storage</td>
+<td>100K templates x 5 KB</td>
+<td>~500 MB</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>In an interview, round aggressively. Saying &quot;about 12K QPS average, 60K peak&quot; is sufficient. The interviewer wants to see your reasoning process, not exact arithmetic.</p>
+</div>
+
+
+<h3>Channel Breakdown Assumption</h3>
+<table>
+<thead>
+<tr>
+<th>Channel</th>
+<th>% of Total</th>
+<th>Daily Volume</th>
+<th>Avg Latency Target</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Push (APNs/FCM)</td>
+<td>50%</td>
+<td>500M</td>
+<td>&lt; 2 seconds</td>
+</tr>
+<tr>
+<td>Email</td>
+<td>30%</td>
+<td>300M</td>
+<td>&lt; 30 seconds</td>
+</tr>
+<tr>
+<td>SMS</td>
+<td>10%</td>
+<td>100M</td>
+<td>&lt; 5 seconds</td>
+</tr>
+<tr>
+<td>In-app</td>
+<td>10%</td>
+<td>100M</td>
+<td>&lt; 1 second</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>High-Level Architecture</h2>
+<pre class="mermaid">
+graph TB
+    subgraph Clients ["Upstream Services"]
+        OrderSvc["Order Service"]
+        AuthSvc["Auth Service"]
+        MarketSvc["Marketing Service"]
+        CronSvc["Scheduler / Cron"]
+    end
+
+    subgraph Core ["Notification Platform"]
+        API["Notification API Gateway"]
+        VS["Validation Service"]
+        TE["Template Engine"]
+        PS["Preference Store"]
+        PQ["Priority Router"]
+
+        subgraph Queues ["Message Queues"]
+            CritQ["Critical Queue"]
+            TransQ["Transactional Queue"]
+            MktQ["Marketing Queue"]
+        end
+
+        subgraph Workers ["Channel Workers"]
+            PushW["Push Worker"]
+            EmailW["Email Worker"]
+            SMSW["SMS Worker"]
+            InAppW["In-App Worker"]
+        end
+    end
+
+    subgraph External ["Third-Party Providers"]
+        APNs["Apple APNs"]
+        FCM["Google FCM"]
+        SG["SendGrid / SES"]
+        TW["Twilio"]
+    end
+
+    subgraph Storage ["Data Stores"]
+        DB[("Notification DB")]
+        Cache[("Redis Cache")]
+        Analytics[("Analytics Store")]
+    end
+
+    OrderSvc & AuthSvc & MarketSvc & CronSvc --> API
+    API --> VS
+    VS --> TE
+    VS --> PS
+    TE --> PQ
+    PQ --> CritQ & TransQ & MktQ
+    CritQ & TransQ & MktQ --> PushW & EmailW & SMSW & InAppW
+    PushW --> APNs & FCM
+    EmailW --> SG
+    SMSW --> TW
+    InAppW --> Cache
+    PushW & EmailW & SMSW & InAppW --> DB
+    PushW & EmailW & SMSW & InAppW --> Analytics
+</pre>
+<h3>Request Flow</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant Caller as Upstream Service
+    participant API as Notification API
+    participant Valid as Validation
+    participant Tmpl as Template Engine
+    participant Pref as Preference Store
+    participant Queue as Priority Queue
+    participant Worker as Channel Worker
+    participant Provider as External Provider
+    participant DB as Notification DB
+
+    Caller->>API: POST /notify (user_id, type, channel, data)
+    API->>API: Generate idempotency_key if absent
+    API->>Valid: Validate payload schema
+    Valid->>Pref: Check user preferences
+    Pref-->>Valid: User allows email, blocks SMS
+    Valid->>Tmpl: Render template with variables
+    Tmpl-->>Valid: Rendered message body
+    Valid->>Queue: Enqueue with priority
+    Queue-->>API: Accepted (202)
+    API-->>Caller: 202 Accepted + notification_id
+
+    Note over Queue,Worker: Async processing begins
+
+    Queue->>Worker: Dequeue message
+    Worker->>DB: Write PENDING record
+    Worker->>Provider: Deliver notification
+    Provider-->>Worker: Success / Failure
+    Worker->>DB: Update status (DELIVERED / FAILED)
+    Worker->>Worker: If failed, schedule retry
+</pre>
+<div class="note">
+
+<p>The API returns 202 Accepted immediately after enqueuing. The caller does not wait for actual delivery. This decoupling is essential for handling bursts and slow downstream providers.</p>
+</div>
+
+
+<hr>
+<h2>Core Components Deep Dive</h2>
+<h3>1. Notification API Gateway</h3>
+<p>The API gateway is the single entry point for all notification requests. It handles:</p>
+<ul>
+<li><strong>Authentication</strong>: Validates the calling service&#39;s API key or JWT.</li>
+<li><strong>Schema validation</strong>: Ensures the request contains all required fields.</li>
+<li><strong>Idempotency</strong>: Checks whether a notification with the same idempotency key has already been processed (more on this later).</li>
+<li><strong>Rate limiting at the ingress</strong>: Prevents any single upstream service from overwhelming the system.</li>
+</ul>
+<pre><code>POST /v1/notifications
+{
+  &quot;idempotency_key&quot;: &quot;order-123-shipped-2024&quot;,
+  &quot;user_id&quot;: &quot;u_abc123&quot;,
+  &quot;notification_type&quot;: &quot;ORDER_SHIPPED&quot;,
+  &quot;channels&quot;: [&quot;push&quot;, &quot;email&quot;],
+  &quot;priority&quot;: &quot;transactional&quot;,
+  &quot;template_id&quot;: &quot;tmpl_order_shipped&quot;,
+  &quot;template_data&quot;: {
+    &quot;user_name&quot;: &quot;Alice&quot;,
+    &quot;order_id&quot;: &quot;ORD-456&quot;,
+    &quot;tracking_url&quot;: &quot;https://example.com/track/789&quot;
+  },
+  &quot;scheduled_at&quot;: null
+}
+</code></pre>
+<h3>2. Template Engine</h3>
+<p>Templates separate content authoring from engineering. A marketing team can update email copy without deploying code.</p>
+<p><strong>Template storage</strong>: Templates are stored in a database and cached in Redis. Each template has a unique ID, a channel variant (push templates are short; email templates are HTML), and placeholder variables.</p>
+<p>Example template:</p>
+<pre><code>Template ID: tmpl_order_shipped
+Channel: email
+Subject: &quot;Your order {{order_id}} is on its way!&quot;
+Body: &quot;Hi {{user_name}}, great news! Your order {{order_id}}
+       has shipped. Track it here: {{tracking_url}}&quot;
+</code></pre>
+<p><strong>Variable substitution</strong> is straightforward string interpolation. The engine validates that all required variables are present before rendering. If a variable is missing, the notification is rejected with a clear error rather than sending a broken message.</p>
+<div class="warning">
+
+<p>Never trust template data blindly. Sanitize all user-provided variables to prevent injection attacks, especially in HTML email templates where XSS is possible.</p>
+</div>
+
+
+<h3>3. User Preference Store</h3>
+<p>Every user has a preference record that governs which notifications they receive on which channels.</p>
+<pre class="mermaid">
+graph LR
+    subgraph Preferences ["User Preference Matrix"]
+        direction TB
+        Header["User: u_abc123"]
+        R1["ORDER_UPDATES: push=ON, email=ON, sms=OFF"]
+        R2["MARKETING: push=OFF, email=ON, sms=OFF"]
+        R3["SECURITY_ALERTS: push=ON, email=ON, sms=ON"]
+    end
+</pre>
+<p><strong>Implementation</strong>: A preference record is a map of <code>(notification_type, channel) -&gt; enabled</code>. The preference store is read on every notification request, so it must be fast. Redis is a natural choice, with the source of truth in a relational database. Preferences are updated infrequently (when a user changes settings), so cache invalidation is manageable.</p>
+<p><strong>Global overrides</strong>: Some notifications cannot be disabled. Security alerts (password reset, suspicious login) bypass user preferences entirely. This is enforced by marking certain notification types as <code>mandatory</code> in the system configuration.</p>
+<h3>4. Priority Router and Queues</h3>
+<p>Not all notifications are equal. A 2FA code must arrive in seconds; a weekly newsletter can wait minutes.</p>
+<table>
+<thead>
+<tr>
+<th>Priority</th>
+<th>SLA</th>
+<th>Queue</th>
+<th>Consumer Count</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Critical</td>
+<td>&lt; 2s</td>
+<td>Dedicated high-priority queue</td>
+<td>High (auto-scaled)</td>
+<td>2FA, security alerts</td>
+</tr>
+<tr>
+<td>Transactional</td>
+<td>&lt; 30s</td>
+<td>Standard queue</td>
+<td>Medium</td>
+<td>Order confirmations, receipts</td>
+</tr>
+<tr>
+<td>Marketing</td>
+<td>&lt; 5 min</td>
+<td>Bulk queue with rate control</td>
+<td>Low</td>
+<td>Promotions, newsletters</td>
+</tr>
+</tbody></table>
+<p><strong>Why separate queues?</strong> A single queue would allow a marketing blast of 50 million emails to starve critical 2FA codes. Separate queues with independent consumer pools ensure that marketing volume never impacts transactional latency.</p>
+<p><strong>Queue technology</strong>: Kafka is well-suited here. Each priority level maps to a separate Kafka topic. Consumer groups for each channel type read from the appropriate topics. Kafka&#39;s ordering guarantees within a partition are useful for deduplication and replay.</p>
+<h3>5. Channel Adapters (Pluggable Delivery)</h3>
+<p>Each delivery channel is abstracted behind an adapter interface. This is the key to the &quot;pluggable channels&quot; requirement.</p>
+<pre><code>interface NotificationChannel {
+    func send(message: RenderedMessage) -&gt; DeliveryResult
+    func checkStatus(deliveryId: String) -&gt; DeliveryStatus
+    func getChannelType() -&gt; ChannelType
+}
+</code></pre>
+<p>Concrete implementations:</p>
+<ul>
+<li><strong>PushAdapter</strong>: Manages connections to APNs (for iOS) and FCM (for Android). Handles device token management and registration.</li>
+<li><strong>EmailAdapter</strong>: Integrates with SendGrid or Amazon SES. Manages email-specific concerns like HTML rendering, attachments, and bounce handling.</li>
+<li><strong>SMSAdapter</strong>: Integrates with Twilio. Handles phone number formatting, country code routing, and carrier-specific limitations.</li>
+<li><strong>InAppAdapter</strong>: Writes to a per-user notification inbox stored in Redis (for recent) and a database (for history).</li>
+</ul>
+<div class="important">
+
+<p>Each adapter handles its own retry logic, circuit breaking, and provider-specific error codes. The core notification service does not know or care about APNs-specific error handling.</p>
+</div>
+
+
+<p><strong>Adding a new channel</strong> (e.g., WhatsApp): Create a new adapter implementing the interface, register it in the channel registry, and add it to the preference store schema. No changes to the core pipeline.</p>
+<h3>6. Third-Party Provider Integration</h3>
+<pre class="mermaid">
+graph TB
+    subgraph Adapter ["Push Adapter"]
+        Router["Device OS Router"]
+    end
+
+    Router -->|iOS device| APNs["Apple APNs<br/>HTTP/2 connection pool"]
+    Router -->|Android device| FCM["Google FCM<br/>HTTP API"]
+
+    APNs -->|Success| Log["Log delivery"]
+    APNs -->|Token invalid| Cleanup["Remove stale token"]
+    APNs -->|Rate limited| Backoff["Exponential backoff"]
+
+    FCM -->|Success| Log
+    FCM -->|Token invalid| Cleanup
+    FCM -->|Server error| Backoff
+</pre>
+<p><strong>Device token management</strong> is critical for push notifications. Users may have multiple devices, and tokens can become stale when a user uninstalls the app. The system must:</p>
+<ol>
+<li>Store all active device tokens per user.</li>
+<li>Remove tokens when APNs/FCM reports them as invalid.</li>
+<li>Handle token refresh events from the mobile app.</li>
+</ol>
+<p><strong>Provider failover</strong>: For email and SMS, maintain integrations with multiple providers (e.g., SendGrid primary, SES secondary). If the primary provider is experiencing an outage, the adapter falls back to the secondary. This is implemented with a circuit breaker pattern.</p>
+<hr>
+<h2>Rate Limiting</h2>
+<p>Rate limiting in a notification system serves two purposes: protecting users from notification fatigue and protecting downstream providers from being overwhelmed.</p>
+<h3>Per-User Rate Limits</h3>
+<table>
+<thead>
+<tr>
+<th>Limit Type</th>
+<th>Threshold</th>
+<th>Window</th>
+<th>Action When Exceeded</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Push per user</td>
+<td>10</td>
+<td>1 hour</td>
+<td>Drop and log</td>
+</tr>
+<tr>
+<td>Email per user</td>
+<td>5</td>
+<td>1 hour</td>
+<td>Queue for next window</td>
+</tr>
+<tr>
+<td>SMS per user</td>
+<td>3</td>
+<td>1 hour</td>
+<td>Drop and alert</td>
+</tr>
+<tr>
+<td>Total per user</td>
+<td>30</td>
+<td>1 day</td>
+<td>Drop marketing only</td>
+</tr>
+</tbody></table>
+<p>Critical notifications (security alerts, 2FA) bypass per-user rate limits.</p>
+<h3>Per-Channel Rate Limits</h3>
+<p>Each external provider has its own rate limits. The system must respect these:</p>
+<ul>
+<li><strong>APNs</strong>: Allows bursts but throttles sustained high volume.</li>
+<li><strong>Twilio SMS</strong>: Account-level messages-per-second limit.</li>
+<li><strong>SendGrid</strong>: Daily sending limit based on plan tier.</li>
+</ul>
+<p><strong>Implementation</strong>: Use a token bucket algorithm (covered in detail in the Rate Limiter article) with Redis as the backing store. Each rate limit dimension (user+channel, global channel) has its own bucket.</p>
+<pre class="mermaid">
+graph LR
+    Msg["Notification Message"] --> UserCheck{"Per-user<br/>limit OK?"}
+    UserCheck -->|Yes| ChannelCheck{"Per-channel<br/>limit OK?"}
+    UserCheck -->|No, Critical| ChannelCheck
+    UserCheck -->|No, Non-critical| Drop["Drop / Defer"]
+    ChannelCheck -->|Yes| Send["Send to Provider"]
+    ChannelCheck -->|No| Backpressure["Apply Backpressure<br/>Slow consumer"]
+</pre>
+<hr>
+<h2>Retry with Exponential Backoff</h2>
+<p>When a delivery attempt fails, the system must retry intelligently.</p>
+<h3>Retry Strategy</h3>
+<pre><code>Attempt 1: Immediate
+Attempt 2: Wait 1 second
+Attempt 3: Wait 4 seconds
+Attempt 4: Wait 16 seconds
+Attempt 5: Wait 64 seconds
+Attempt 6: Wait 256 seconds (~4 min)
+Max attempts: 6
+</code></pre>
+<p><strong>Jitter</strong>: Add random jitter (0-50% of the delay) to prevent thundering herd problems when many notifications fail simultaneously (e.g., during a provider outage).</p>
+<p><strong>Retry classification</strong>: Not all failures are retryable.</p>
+<table>
+<thead>
+<tr>
+<th>Error Type</th>
+<th>Retryable?</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Provider 5xx</td>
+<td>Yes</td>
+<td>Retry with backoff</td>
+</tr>
+<tr>
+<td>Network timeout</td>
+<td>Yes</td>
+<td>Retry with backoff</td>
+</tr>
+<tr>
+<td>Invalid token (APNs)</td>
+<td>No</td>
+<td>Remove token, mark failed</td>
+</tr>
+<tr>
+<td>Invalid phone number</td>
+<td>No</td>
+<td>Mark failed, alert</td>
+</tr>
+<tr>
+<td>Provider rate limited (429)</td>
+<td>Yes</td>
+<td>Retry after Retry-After header</td>
+</tr>
+<tr>
+<td>Malformed request (4xx)</td>
+<td>No</td>
+<td>Mark failed, alert engineering</td>
+</tr>
+</tbody></table>
+<h3>Dead Letter Queue</h3>
+<p>After exhausting all retries, the notification moves to a dead letter queue (DLQ). An operations team monitors the DLQ and can:</p>
+<ol>
+<li>Investigate the root cause.</li>
+<li>Fix the issue and replay messages from the DLQ.</li>
+<li>Mark messages as permanently failed.</li>
+</ol>
+<div class="tip">
+
+<p>In an interview, mentioning the DLQ shows maturity. It demonstrates that you think about what happens when things go wrong at the edges, not just the happy path.</p>
+</div>
+
+
+<hr>
+<h2>Delivery Guarantees and Deduplication</h2>
+<h3>At-Least-Once Delivery</h3>
+<p>The system guarantees at-least-once delivery by:</p>
+<ol>
+<li><strong>Persisting before sending</strong>: The notification record is written to the database with status PENDING before any delivery attempt.</li>
+<li><strong>Acknowledging after delivery</strong>: The queue message is acknowledged only after successful delivery or permanent failure.</li>
+<li><strong>Crash recovery</strong>: If a worker crashes mid-delivery, the unacknowledged message is re-delivered by the queue to another worker.</li>
+</ol>
+<h3>Idempotency Keys</h3>
+<p>At-least-once means duplicates are possible. The idempotency key prevents a user from receiving the same notification twice.</p>
+<p><strong>How it works</strong>:</p>
+<ol>
+<li>The caller includes an <code>idempotency_key</code> in the request (e.g., <code>order-123-shipped</code>).</li>
+<li>Before processing, the system checks a dedup table (Redis with TTL or a database unique constraint).</li>
+<li>If the key exists, the notification is skipped and the original notification_id is returned.</li>
+<li>If the key does not exist, it is written atomically and processing continues.</li>
+</ol>
+<pre class="mermaid">
+flowchart TD
+    Receive["Receive Notification Request"] --> CheckKey{"Idempotency key<br/>in dedup table?"}
+    CheckKey -->|Yes| Return["Return original notification_id<br/>Skip processing"]
+    CheckKey -->|No| Write["Write key to dedup table<br/>with TTL (e.g., 7 days)"]
+    Write --> Process["Process notification normally"]
+    Process --> Deliver["Deliver via channel"]
+</pre>
+<div class="note">
+
+<p>The TTL on the dedup table is important. Keeping keys forever wastes storage. A 7-day TTL is usually sufficient since upstream services are unlikely to retry the same event after a week.</p>
+</div>
+
+
+<hr>
+<h2>Analytics</h2>
+<h3>Delivery Tracking</h3>
+<p>Every notification generates a lifecycle of events:</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Timestamp</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>CREATED</td>
+<td>When request received</td>
+<td>Notification API</td>
+</tr>
+<tr>
+<td>QUEUED</td>
+<td>When enqueued</td>
+<td>Priority Router</td>
+</tr>
+<tr>
+<td>SENT</td>
+<td>When sent to provider</td>
+<td>Channel Worker</td>
+</tr>
+<tr>
+<td>DELIVERED</td>
+<td>When provider confirms</td>
+<td>Provider webhook/callback</td>
+</tr>
+<tr>
+<td>OPENED</td>
+<td>When user views</td>
+<td>Tracking pixel (email) / app event (push)</td>
+</tr>
+<tr>
+<td>CLICKED</td>
+<td>When user taps link</td>
+<td>Redirect URL tracking</td>
+</tr>
+<tr>
+<td>BOUNCED</td>
+<td>When delivery fails permanently</td>
+<td>Provider webhook</td>
+</tr>
+<tr>
+<td>UNSUBSCRIBED</td>
+<td>When user opts out via link</td>
+<td>Unsubscribe handler</td>
+</tr>
+</tbody></table>
+<h3>Tracking Mechanisms</h3>
+<ul>
+<li><strong>Email opens</strong>: Embed a 1x1 tracking pixel that fires an HTTP request when loaded. Not 100% reliable (images may be blocked), but industry standard.</li>
+<li><strong>Email clicks</strong>: Wrap URLs in redirect links (e.g., <code>https://track.example.com/click/abc123?url=...</code>) to capture click events before redirecting.</li>
+<li><strong>Push opens</strong>: The mobile app reports to the analytics service when a push notification is tapped.</li>
+<li><strong>SMS delivery</strong>: Twilio provides delivery status callbacks via webhook.</li>
+</ul>
+<h3>Analytics Storage</h3>
+<p>Raw events are written to a streaming pipeline (Kafka -&gt; analytics consumer -&gt; ClickHouse or BigQuery). Aggregated metrics are precomputed for dashboards:</p>
+<ul>
+<li>Delivery rate by channel, type, priority</li>
+<li>Open rate by template, user segment</li>
+<li>Click-through rate by campaign</li>
+<li>Bounce rate and unsubscribe trends</li>
+</ul>
+<hr>
+<h2>Data Models &amp; Storage</h2>
+<h3>Core Tables</h3>
+<p><strong>notifications</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>id</td>
+<td>UUID</td>
+<td>Primary key</td>
+</tr>
+<tr>
+<td>idempotency_key</td>
+<td>VARCHAR(255)</td>
+<td>Unique, for dedup</td>
+</tr>
+<tr>
+<td>user_id</td>
+<td>VARCHAR(128)</td>
+<td>Target user</td>
+</tr>
+<tr>
+<td>notification_type</td>
+<td>ENUM</td>
+<td>ORDER_SHIPPED, SECURITY_ALERT, etc.</td>
+</tr>
+<tr>
+<td>channel</td>
+<td>ENUM</td>
+<td>push, email, sms, in_app</td>
+</tr>
+<tr>
+<td>priority</td>
+<td>ENUM</td>
+<td>critical, transactional, marketing</td>
+</tr>
+<tr>
+<td>template_id</td>
+<td>VARCHAR(64)</td>
+<td>Reference to template</td>
+</tr>
+<tr>
+<td>rendered_content</td>
+<td>TEXT</td>
+<td>Final rendered message</td>
+</tr>
+<tr>
+<td>status</td>
+<td>ENUM</td>
+<td>pending, sent, delivered, failed, bounced</td>
+</tr>
+<tr>
+<td>retry_count</td>
+<td>INT</td>
+<td>Number of delivery attempts</td>
+</tr>
+<tr>
+<td>scheduled_at</td>
+<td>TIMESTAMP</td>
+<td>Null for immediate delivery</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>When the request was received</td>
+</tr>
+<tr>
+<td>updated_at</td>
+<td>TIMESTAMP</td>
+<td>Last status change</td>
+</tr>
+</tbody></table>
+<p><strong>user_preferences</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>user_id</td>
+<td>VARCHAR(128)</td>
+<td>FK to user</td>
+</tr>
+<tr>
+<td>notification_type</td>
+<td>ENUM</td>
+<td>Which type</td>
+</tr>
+<tr>
+<td>channel</td>
+<td>ENUM</td>
+<td>Which channel</td>
+</tr>
+<tr>
+<td>enabled</td>
+<td>BOOLEAN</td>
+<td>Opt-in or opt-out</td>
+</tr>
+<tr>
+<td>updated_at</td>
+<td>TIMESTAMP</td>
+<td>Last change</td>
+</tr>
+</tbody></table>
+<p><strong>device_tokens</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>id</td>
+<td>UUID</td>
+<td>Primary key</td>
+</tr>
+<tr>
+<td>user_id</td>
+<td>VARCHAR(128)</td>
+<td>FK to user</td>
+</tr>
+<tr>
+<td>platform</td>
+<td>ENUM</td>
+<td>ios, android</td>
+</tr>
+<tr>
+<td>token</td>
+<td>VARCHAR(512)</td>
+<td>APNs or FCM token</td>
+</tr>
+<tr>
+<td>is_active</td>
+<td>BOOLEAN</td>
+<td>Set false on invalid token</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>When registered</td>
+</tr>
+<tr>
+<td>last_used_at</td>
+<td>TIMESTAMP</td>
+<td>Last successful push</td>
+</tr>
+</tbody></table>
+<p><strong>templates</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>id</td>
+<td>VARCHAR(64)</td>
+<td>Primary key (e.g., tmpl_order_shipped)</td>
+</tr>
+<tr>
+<td>channel</td>
+<td>ENUM</td>
+<td>Channel-specific variant</td>
+</tr>
+<tr>
+<td>subject</td>
+<td>VARCHAR(255)</td>
+<td>For email subject lines</td>
+</tr>
+<tr>
+<td>body</td>
+<td>TEXT</td>
+<td>Template body with {{variables}}</td>
+</tr>
+<tr>
+<td>required_vars</td>
+<td>JSON</td>
+<td>List of required variable names</td>
+</tr>
+<tr>
+<td>version</td>
+<td>INT</td>
+<td>Template version for A/B testing</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>Creation time</td>
+</tr>
+</tbody></table>
+<h3>Storage Choices</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Technology</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Notification records</td>
+<td>PostgreSQL (sharded by user_id)</td>
+<td>ACID for status tracking, good for queries</td>
+</tr>
+<tr>
+<td>Preferences cache</td>
+<td>Redis</td>
+<td>Sub-ms reads on every notification</td>
+</tr>
+<tr>
+<td>Dedup table</td>
+<td>Redis with TTL</td>
+<td>Fast existence checks, auto-expiry</td>
+</tr>
+<tr>
+<td>Templates</td>
+<td>PostgreSQL + Redis cache</td>
+<td>Infrequent writes, frequent reads</td>
+</tr>
+<tr>
+<td>Analytics events</td>
+<td>Kafka -&gt; ClickHouse</td>
+<td>High write throughput, fast aggregation</td>
+</tr>
+<tr>
+<td>In-app notifications</td>
+<td>Redis (recent) + Cassandra (history)</td>
+<td>Fast reads for inbox, scalable archive</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>Scalability Strategies</h2>
+<h3>Horizontal Scaling by Channel</h3>
+<p>Each channel worker pool scales independently. During a marketing email blast, email workers scale up while push workers remain at baseline. This is achieved with separate Kubernetes deployments per channel type, each with its own horizontal pod autoscaler (HPA) based on queue depth.</p>
+<h3>Database Sharding</h3>
+<p>The notifications table grows fast (1B rows/day). Shard by <code>user_id</code> so that all notifications for a given user are co-located, enabling efficient query patterns (e.g., &quot;show me my recent notifications&quot;).</p>
+<h3>Queue Partitioning</h3>
+<p>Kafka topics are partitioned by <code>user_id</code>. This ensures ordering within a user (notifications arrive in the order they were sent) and allows parallel consumption across partitions.</p>
+<h3>Caching Strategy</h3>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Cache Layer</th>
+<th>TTL</th>
+<th>Invalidation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>User preferences</td>
+<td>Redis</td>
+<td>1 hour</td>
+<td>Write-through on update</td>
+</tr>
+<tr>
+<td>Templates</td>
+<td>Redis</td>
+<td>10 minutes</td>
+<td>Invalidate on publish</td>
+</tr>
+<tr>
+<td>Device tokens</td>
+<td>Redis</td>
+<td>24 hours</td>
+<td>Invalidate on token refresh</td>
+</tr>
+<tr>
+<td>Rate limit counters</td>
+<td>Redis</td>
+<td>Matches rate window</td>
+<td>Auto-expire</td>
+</tr>
+</tbody></table>
+<h3>Geographic Distribution</h3>
+<p>For global users, deploy notification services in multiple regions. User preference and device token data is replicated globally. Channel workers in each region connect to the nearest provider endpoints (e.g., APNs has region-specific endpoints).</p>
+<hr>
+<h2>Design Trade-offs</h2>
+<h3>At-Least-Once vs Exactly-Once</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>At-least-once</td>
+<td>Simpler, no delivery gaps</td>
+<td>Possible duplicate notifications</td>
+</tr>
+<tr>
+<td>Exactly-once</td>
+<td>No duplicates</td>
+<td>Complex, requires distributed transactions, higher latency</td>
+</tr>
+</tbody></table>
+<p><strong>Decision</strong>: At-least-once with idempotency keys. Exactly-once delivery across distributed systems with third-party providers is practically impossible. The idempotency key handles the dedup at our layer, and users tolerate the occasional duplicate far better than a missed notification.</p>
+<h3>Pull vs Push for In-App Notifications</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Push (WebSocket)</td>
+<td>Real-time, low latency</td>
+<td>Connection overhead, complex scaling</td>
+</tr>
+<tr>
+<td>Pull (polling)</td>
+<td>Simple, stateless servers</td>
+<td>Higher latency, wasted requests</td>
+</tr>
+<tr>
+<td>Hybrid (push with pull fallback)</td>
+<td>Best of both worlds</td>
+<td>Implementation complexity</td>
+</tr>
+</tbody></table>
+<p><strong>Decision</strong>: WebSocket for active users with polling fallback. When the app is in the foreground, maintain a WebSocket connection for instant in-app notifications. When the app is backgrounded, fall back to push notifications via APNs/FCM.</p>
+<h3>Synchronous vs Asynchronous Processing</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Sync (request-response)</td>
+<td>Simple, immediate feedback</td>
+<td>Blocks caller, provider latency visible</td>
+</tr>
+<tr>
+<td>Async (queue-based)</td>
+<td>Decoupled, handles bursts</td>
+<td>Delayed feedback, more complex</td>
+</tr>
+</tbody></table>
+<p><strong>Decision</strong>: Fully asynchronous. The API returns 202 Accepted after enqueuing. Callers check delivery status via a separate endpoint or webhook callback.</p>
+<div class="warning">
+
+<p>A common interview mistake is designing the notification API as synchronous (caller waits for delivery). This creates tight coupling with third-party providers and makes the system fragile under load. Always decouple ingestion from delivery.</p>
+</div>
+
+
+<h3>Single Queue vs Multiple Priority Queues</h3>
+<p><strong>Decision</strong>: Multiple queues. The operational cost of managing multiple queues is far outweighed by the risk of a marketing blast delaying a critical 2FA code.</p>
+<hr>
+<h2>Interview Cheat Sheet</h2>
+<h3>Key Points to Mention</h3>
+<ol>
+<li><strong>Decoupled architecture</strong>: Separate ingestion (API) from delivery (workers) with queues in between.</li>
+<li><strong>Priority queues</strong>: Critical notifications must never be starved by marketing volume.</li>
+<li><strong>Pluggable channel adapters</strong>: Interface-based design makes adding channels trivial.</li>
+<li><strong>Idempotency keys</strong>: Prevent duplicate notifications in an at-least-once system.</li>
+<li><strong>User preferences</strong>: Always check before sending; some notifications are mandatory.</li>
+<li><strong>Rate limiting</strong>: Per-user (prevent fatigue) and per-channel (respect provider limits).</li>
+<li><strong>Exponential backoff with jitter</strong>: Smart retry strategy for transient failures.</li>
+<li><strong>Analytics pipeline</strong>: Track delivery, open, click rates for operational visibility.</li>
+</ol>
+<h3>Common Interview Questions and Answers</h3>
+<p><strong>Q: How do you handle a provider outage?</strong>
+A: Circuit breaker pattern on each provider adapter. After N consecutive failures, the circuit opens and traffic routes to a secondary provider. The circuit half-opens periodically to test if the primary has recovered.</p>
+<p><strong>Q: How do you prevent a user from getting 100 push notifications in an hour?</strong>
+A: Per-user, per-channel rate limits enforced at the worker level before delivery. Exceeded non-critical notifications are dropped or deferred to the next window.</p>
+<p><strong>Q: What happens if the notification database goes down?</strong>
+A: The queue acts as a buffer. Workers retry database writes with backoff. Delivery is not blocked since the queue holds the message. Status tracking degrades gracefully but delivery continues.</p>
+<p><strong>Q: How do you handle timezone-aware scheduling?</strong>
+A: Store the user&#39;s timezone in their profile. The scheduler converts &quot;send at 9 AM user time&quot; to UTC and enqueues at the appropriate time. A cron-like scheduler service polls for due notifications every few seconds.</p>
+<p><strong>Q: How would you add WhatsApp as a new channel?</strong>
+A: Implement the NotificationChannel interface with a WhatsApp adapter (using the WhatsApp Business API), register it in the channel registry, add &quot;whatsapp&quot; to the preference store schema, and deploy. No changes to the core pipeline.</p>
+<h3>Diagram Shortcuts for Whiteboard</h3>
+<p>Draw these three things first:</p>
+<ol>
+<li><strong>API -&gt; Queue -&gt; Worker -&gt; Provider</strong>: The core flow.</li>
+<li><strong>Three queues</strong>: Critical, Transactional, Marketing.</li>
+<li><strong>Preference check before enqueuing</strong>: Shows you think about user experience.</li>
+</ol>
+<div class="tip">
+
+<p>When the interviewer asks &quot;how would you handle X at scale,&quot; the answer almost always involves: (1) partition/shard by user_id, (2) add a caching layer, (3) make it asynchronous, and (4) scale the workers horizontally. This pattern applies to most components in the notification system.</p>
+</div>
+
+
+</body>
+</html>

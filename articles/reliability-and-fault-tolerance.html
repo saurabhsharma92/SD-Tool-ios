@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reliability and Fault Tolerance</title>
+</head>
+<body>
+
+<h1>Reliability and Fault Tolerance</h1>
+<h2>Introduction</h2>
+<p>Building systems that survive failure is not optional at scale -- it is the core engineering challenge. Every component in a distributed system will eventually fail: disks corrupt, networks partition, processes crash, and entire data centers lose power. The difference between a well-architected system and a fragile one is not whether failures occur, but how the system responds when they do.</p>
+<p>This article covers the foundational concepts, patterns, and strategies that keep large-scale systems running despite the inevitable chaos of the real world. These topics appear constantly in system design interviews, and understanding them deeply will distinguish you from candidates who only know the surface-level definitions.</p>
+<div class="note">
+
+<p>Reliability and availability are often used interchangeably in casual conversation, but they mean different things. This article will clarify the distinction and explain why both matter.</p>
+</div>
+
+
+<hr>
+<h2>Scalability</h2>
+<p>Scalability is the ability of a system to handle increased load by adding resources. Before diving into fault tolerance, we must understand scalability because it determines the architecture within which failures occur.</p>
+<h3>Vertical Scaling (Scale Up)</h3>
+<p>Vertical scaling means adding more power to an existing machine: more CPU cores, more RAM, faster disks, better network cards. You keep a single machine and make it bigger.</p>
+<p><strong>Advantages:</strong></p>
+<ul>
+<li>Simpler architecture -- no distributed coordination needed</li>
+<li>No data partitioning or replication complexity</li>
+<li>Lower operational overhead</li>
+<li>Transactions and consistency are straightforward</li>
+</ul>
+<p><strong>Disadvantages:</strong></p>
+<ul>
+<li>Hardware limits exist -- you cannot buy a machine with 10 TB of RAM forever</li>
+<li>Single point of failure -- one machine means one failure domain</li>
+<li>Expensive at the top end -- high-end hardware costs disproportionately more</li>
+<li>Downtime during upgrades -- swapping hardware often requires shutdown</li>
+</ul>
+<h3>Horizontal Scaling (Scale Out)</h3>
+<p>Horizontal scaling means adding more machines to a pool. Instead of one powerful server, you run many commodity servers working together.</p>
+<p><strong>Advantages:</strong></p>
+<ul>
+<li>Near-infinite theoretical capacity</li>
+<li>Better fault tolerance -- losing one of 100 machines is manageable</li>
+<li>Cost-effective -- commodity hardware is cheap</li>
+<li>Can scale incrementally</li>
+</ul>
+<p><strong>Disadvantages:</strong></p>
+<ul>
+<li>Distributed systems complexity (consensus, partitioning, replication)</li>
+<li>Network becomes a bottleneck and failure source</li>
+<li>Data consistency is harder to maintain</li>
+<li>Operational overhead increases significantly</li>
+</ul>
+<h3>When to Use Each</h3>
+<table>
+<thead>
+<tr>
+<th>Factor</th>
+<th>Vertical</th>
+<th>Horizontal</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Current load</td>
+<td>Low to moderate</td>
+<td>High or rapidly growing</td>
+</tr>
+<tr>
+<td>Data model</td>
+<td>Relational, heavily joined</td>
+<td>Partitionable, independent</td>
+</tr>
+<tr>
+<td>Team size</td>
+<td>Small team, limited ops</td>
+<td>Dedicated infrastructure team</td>
+</tr>
+<tr>
+<td>Budget</td>
+<td>Moderate, predictable</td>
+<td>Variable, scales with usage</td>
+</tr>
+<tr>
+<td>Consistency needs</td>
+<td>Strong ACID required</td>
+<td>Eventual consistency acceptable</td>
+</tr>
+<tr>
+<td>Typical examples</td>
+<td>Traditional RDBMS, legacy apps</td>
+<td>Web frontends, microservices, caches</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>In interviews, the best answer is usually &quot;start vertical, go horizontal when you hit limits.&quot; This shows pragmatism. Many candidates jump straight to horizontal scaling for a system that serves 1000 users, which is over-engineering.</p>
+</div>
+
+
+<hr>
+<h2>Availability</h2>
+<p>Availability measures the proportion of time a system is operational and accessible. It is expressed as a percentage, commonly referred to as &quot;nines.&quot;</p>
+<h3>The Nines Table</h3>
+<table>
+<thead>
+<tr>
+<th>Availability</th>
+<th>Common Name</th>
+<th>Downtime/Year</th>
+<th>Downtime/Month</th>
+<th>Downtime/Week</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>99%</td>
+<td>Two nines</td>
+<td>3.65 days</td>
+<td>7.31 hours</td>
+<td>1.68 hours</td>
+</tr>
+<tr>
+<td>99.9%</td>
+<td>Three nines</td>
+<td>8.76 hours</td>
+<td>43.8 minutes</td>
+<td>10.1 minutes</td>
+</tr>
+<tr>
+<td>99.99%</td>
+<td>Four nines</td>
+<td>52.6 minutes</td>
+<td>4.38 minutes</td>
+<td>1.01 minutes</td>
+</tr>
+<tr>
+<td>99.999%</td>
+<td>Five nines</td>
+<td>5.26 minutes</td>
+<td>26.3 seconds</td>
+<td>6.05 seconds</td>
+</tr>
+<tr>
+<td>99.9999%</td>
+<td>Six nines</td>
+<td>31.5 seconds</td>
+<td>2.63 seconds</td>
+<td>0.60 seconds</td>
+</tr>
+</tbody></table>
+<h3>SLAs (Service Level Agreements)</h3>
+<p>An SLA is a contractual commitment between a service provider and its customers. It defines what level of availability the provider guarantees and what happens (usually financial credits) when that guarantee is violated.</p>
+<p>Key points about SLAs:</p>
+<ul>
+<li>They are business documents, not just engineering targets</li>
+<li>Violating an SLA triggers contractual penalties</li>
+<li>Cloud providers typically offer 99.9% to 99.99% SLAs for individual services</li>
+<li>Composite SLAs for multi-service architectures are calculated by multiplying individual SLAs</li>
+</ul>
+<p><strong>Composite SLA example:</strong> If your system depends on three services each with 99.9% availability, the composite availability is 0.999 x 0.999 x 0.999 = 99.7%. Adding dependencies reduces overall availability unless you add redundancy.</p>
+<div class="warning">
+
+<p>A common interview mistake is quoting an SLA like &quot;five nines&quot; without understanding the engineering investment required. Five nines means less than 5.26 minutes of downtime per year. That includes planned maintenance, deployments, and unexpected failures. Very few systems truly achieve this.</p>
+</div>
+
+
+<hr>
+<h2>Reliability vs Availability</h2>
+<p>These two concepts are related but distinct, and interviewers love to test whether you understand the difference.</p>
+<p><strong>Availability</strong> answers: &quot;Can the system respond to requests?&quot;</p>
+<p><strong>Reliability</strong> answers: &quot;Does the system respond correctly?&quot;</p>
+<p>A system can be highly available but unreliable. Imagine a database that responds to every query instantly but occasionally returns wrong data. It is 100% available but not reliable.</p>
+<p>Conversely, a system can be reliable but not highly available. A batch processing system that runs once a day, produces perfect results every time, but is offline for 23 hours is reliable but has low availability.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Definition</th>
+<th>Measurement</th>
+<th>Example Failure</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Availability</td>
+<td>System responds to requests</td>
+<td>Uptime percentage</td>
+<td>Server returns HTTP 503</td>
+</tr>
+<tr>
+<td>Reliability</td>
+<td>System responds correctly</td>
+<td>Error rate, data correctness</td>
+<td>Server returns wrong balance</td>
+</tr>
+<tr>
+<td>Durability</td>
+<td>Data is not lost</td>
+<td>Data loss incidents</td>
+<td>Disk failure loses records</td>
+</tr>
+</tbody></table>
+<div class="important">
+
+<p>In interviews, if asked &quot;how would you make this system reliable?&quot;, don&#39;t just talk about uptime. Discuss data correctness, idempotency, validation, and testing. Reliability is about trust in the output, not just the uptime number.</p>
+</div>
+
+
+<hr>
+<h2>Failover Patterns</h2>
+<p>When a component fails, the system needs a strategy to redirect traffic to a healthy component. The two primary patterns are active-passive and active-active failover.</p>
+<h3>Active-Passive Failover</h3>
+<p>In active-passive (also called master-standby), one node handles all traffic while a standby node waits idle. When the active node fails, the passive node takes over.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant LB as Load Balancer
+    participant A as Active Node
+    participant P as Passive Node
+    participant HB as Heartbeat Monitor
+
+    C->>LB: Request
+    LB->>A: Forward Request
+    A-->>LB: Response
+    LB-->>C: Response
+
+    Note over HB,A: Heartbeat check every 5s
+
+    HB->>A: Health Check
+    A-->>HB: OK
+
+    Note over A: Active node crashes
+
+    HB->>A: Health Check
+    HB->>A: Health Check (retry)
+    HB->>HB: Timeout - declare failure
+
+    HB->>LB: Switch to Passive
+    LB->>LB: Update routing
+
+    C->>LB: Request
+    LB->>P: Forward Request (now active)
+    P-->>LB: Response
+    LB-->>C: Response
+</pre>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>The active node processes all requests</li>
+<li>Data is replicated to the passive node (synchronously or asynchronously)</li>
+<li>A heartbeat monitor checks the active node&#39;s health</li>
+<li>On failure detection, the passive node is promoted to active</li>
+<li>DNS or load balancer routing is updated</li>
+</ol>
+<p><strong>Tradeoffs:</strong></p>
+<ul>
+<li>Simpler to implement than active-active</li>
+<li>Wastes resources -- the passive node sits idle during normal operation</li>
+<li>Failover is not instant -- there is a detection delay plus a promotion delay</li>
+<li>Risk of data loss if replication was asynchronous (last few writes may be lost)</li>
+</ul>
+<h3>Active-Active Failover</h3>
+<p>In active-active, all nodes handle traffic simultaneously. If one fails, the remaining nodes absorb its load.</p>
+<pre class="mermaid">
+flowchart LR
+    C[Clients] --> LB[Load Balancer]
+    LB --> N1[Node 1 - Active]
+    LB --> N2[Node 2 - Active]
+    LB --> N3[Node 3 - Active]
+
+    N1 <--> N2
+    N2 <--> N3
+    N1 <--> N3
+
+    style N1 fill:#c8e6c9,stroke:#2e7d32
+    style N2 fill:#c8e6c9,stroke:#2e7d32
+    style N3 fill:#c8e6c9,stroke:#2e7d32
+</pre>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>All nodes serve traffic and share state</li>
+<li>Load balancer distributes requests across all nodes</li>
+<li>When one node fails, the load balancer removes it from the pool</li>
+<li>Remaining nodes handle the redistributed load</li>
+</ol>
+<p><strong>Tradeoffs:</strong></p>
+<ul>
+<li>Better resource utilization -- no idle machines</li>
+<li>Faster failover -- just remove the failed node from the pool</li>
+<li>More complex -- requires state synchronization between all active nodes</li>
+<li>Conflict resolution needed if nodes accept writes to the same data</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Factor</th>
+<th>Active-Passive</th>
+<th>Active-Active</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Resource utilization</td>
+<td>Low (standby is idle)</td>
+<td>High (all nodes work)</td>
+</tr>
+<tr>
+<td>Failover speed</td>
+<td>Slower (promotion needed)</td>
+<td>Faster (just re-route)</td>
+</tr>
+<tr>
+<td>Complexity</td>
+<td>Lower</td>
+<td>Higher</td>
+</tr>
+<tr>
+<td>Data consistency</td>
+<td>Easier</td>
+<td>Harder (conflict resolution)</td>
+</tr>
+<tr>
+<td>Cost efficiency</td>
+<td>Lower</td>
+<td>Higher</td>
+</tr>
+<tr>
+<td>Best for</td>
+<td>Databases, stateful services</td>
+<td>Stateless web servers, CDN</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>In interviews, mention that the choice depends on whether the service is stateful or stateless. Stateless services (web servers, API gateways) naturally fit active-active. Stateful services (databases) often use active-passive because synchronizing mutable state across active nodes is hard.</p>
+</div>
+
+
+<hr>
+<h2>Eliminating Single Points of Failure</h2>
+<p>A single point of failure (SPOF) is any component whose failure brings down the entire system. Eliminating SPOFs is a fundamental principle of reliable system design.</p>
+<p><strong>Common SPOFs and their solutions:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>SPOF Risk</th>
+<th>Redundancy Strategy</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Database</td>
+<td>Single DB server</td>
+<td>Primary-replica replication, multi-AZ</td>
+</tr>
+<tr>
+<td>Load balancer</td>
+<td>Single LB</td>
+<td>Pair of LBs with floating IP (VRRP)</td>
+</tr>
+<tr>
+<td>DNS</td>
+<td>Single DNS provider</td>
+<td>Multiple DNS providers, DNS failover</td>
+</tr>
+<tr>
+<td>Network</td>
+<td>Single ISP</td>
+<td>Multi-homed networking, multiple ISPs</td>
+</tr>
+<tr>
+<td>Data center</td>
+<td>Single region</td>
+<td>Multi-region deployment</td>
+</tr>
+<tr>
+<td>Application server</td>
+<td>Single instance</td>
+<td>Auto-scaling group, multiple instances</td>
+</tr>
+<tr>
+<td>Configuration</td>
+<td>Single config server</td>
+<td>Replicated config store (etcd, ZooKeeper)</td>
+</tr>
+</tbody></table>
+<p>The principle is: <strong>redundancy at every layer</strong>. If you draw your architecture diagram and any single box, when removed, breaks the system, you have a SPOF.</p>
+<div class="note">
+
+<p>Redundancy does not mean just having two of everything. You also need automated failure detection and traffic redirection. Two database servers with no failover mechanism is not true redundancy -- it is just two servers.</p>
+</div>
+
+
+<hr>
+<h2>Circuit Breaker Pattern</h2>
+<p>The circuit breaker pattern prevents a failing service from taking down the entire system. It is inspired by electrical circuit breakers that trip to prevent overload.</p>
+<h3>The Three States</h3>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> Closed
+
+    Closed --> Open : Failure threshold exceeded
+    Open --> HalfOpen : Timeout expires
+    HalfOpen --> Closed : Probe request succeeds
+    HalfOpen --> Open : Probe request fails
+
+    state Closed {
+        [*] --> Monitoring
+        Monitoring --> Monitoring : Success (reset counter)
+        Monitoring --> CountFailures : Failure
+        CountFailures --> CountFailures : More failures
+    }
+
+    state Open {
+        [*] --> Rejecting
+        Rejecting --> Rejecting : All requests fail fast
+    }
+
+    state HalfOpen {
+        [*] --> Probing
+        Probing --> Probing : Allow limited requests
+    }
+</pre>
+<p><strong>Closed State (Normal Operation):</strong></p>
+<ul>
+<li>All requests pass through to the downstream service</li>
+<li>Failures are counted</li>
+<li>If the failure count exceeds a threshold within a time window, the breaker trips to Open</li>
+</ul>
+<p><strong>Open State (Failing Fast):</strong></p>
+<ul>
+<li>All requests immediately fail without calling the downstream service</li>
+<li>This gives the failing service time to recover</li>
+<li>After a configurable timeout, the breaker moves to Half-Open</li>
+</ul>
+<p><strong>Half-Open State (Testing Recovery):</strong></p>
+<ul>
+<li>A limited number of probe requests are allowed through</li>
+<li>If the probe succeeds, the breaker resets to Closed</li>
+<li>If the probe fails, the breaker returns to Open</li>
+</ul>
+<h3>Implementation Considerations</h3>
+<ul>
+<li><strong>Failure threshold:</strong> Too low and it trips on transient errors; too high and it doesn&#39;t protect fast enough</li>
+<li><strong>Timeout duration:</strong> How long to keep the circuit open before probing (typically 30-60 seconds)</li>
+<li><strong>Probe count:</strong> How many test requests to send in half-open state</li>
+<li><strong>What counts as failure:</strong> HTTP 5xx? Timeouts? Distinguish between server errors and client errors (4xx should not trip the breaker)</li>
+<li><strong>Fallback behavior:</strong> What to return when the circuit is open (cached data, default response, error message)</li>
+</ul>
+<div class="tip">
+
+<p>When discussing the circuit breaker in interviews, always mention what the fallback behavior is. Simply saying &quot;requests fail fast&quot; is incomplete. Good systems degrade gracefully -- they might return cached data, a default response, or a reduced feature set.</p>
+</div>
+
+
+<hr>
+<h2>Bulkhead Pattern</h2>
+<p>The bulkhead pattern isolates components so that a failure in one does not cascade to others. The name comes from the watertight compartments in ship hulls -- if one compartment floods, the others stay dry and the ship stays afloat.</p>
+<h3>How It Works</h3>
+<p>Instead of sharing a single resource pool (thread pool, connection pool, memory) across all features, you partition resources into isolated pools.</p>
+<p><strong>Example without bulkheads:</strong></p>
+<ul>
+<li>Your service has one thread pool of 200 threads</li>
+<li>The payment service downstream goes slow, causing all 200 threads to block waiting for payment responses</li>
+<li>Now the user profile endpoint, search endpoint, and everything else also fails because there are no threads left</li>
+<li>One slow dependency took down the entire service</li>
+</ul>
+<p><strong>Example with bulkheads:</strong></p>
+<ul>
+<li>You allocate separate thread pools: 50 for payments, 50 for user profiles, 50 for search, 50 for everything else</li>
+<li>The payment service goes slow, exhausting its 50 threads</li>
+<li>User profiles, search, and other features continue operating normally on their own pools</li>
+<li>The failure is contained to the payment feature</li>
+</ul>
+<h3>Bulkhead Strategies</h3>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Description</th>
+<th>Granularity</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Thread pool isolation</td>
+<td>Separate thread pools per dependency</td>
+<td>Per downstream service</td>
+</tr>
+<tr>
+<td>Connection pool isolation</td>
+<td>Separate DB connection pools per feature</td>
+<td>Per feature or tenant</td>
+</tr>
+<tr>
+<td>Process isolation</td>
+<td>Separate processes or containers</td>
+<td>Per service</td>
+</tr>
+<tr>
+<td>Infrastructure isolation</td>
+<td>Separate clusters or regions</td>
+<td>Per business unit</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>Bulkheads trade efficiency for resilience. Dedicated pools mean some resources sit idle while others are saturated. This is intentional -- the idle resources are your insurance policy against cascading failures.</p>
+</div>
+
+
+<hr>
+<h2>Retry with Exponential Backoff and Jitter</h2>
+<p>Retries are essential for handling transient failures (temporary network glitches, brief service restarts), but naive retry strategies can make failures worse.</p>
+<h3>The Problem with Immediate Retries</h3>
+<p>If a service goes down and 10,000 clients all retry immediately, the service faces a thundering herd of 10,000 simultaneous requests the instant it comes back up. This can knock it right back down, creating a vicious cycle.</p>
+<h3>Exponential Backoff</h3>
+<p>Instead of retrying immediately, each retry waits longer than the previous one:</p>
+<ul>
+<li>Attempt 1: wait 1 second</li>
+<li>Attempt 2: wait 2 seconds</li>
+<li>Attempt 3: wait 4 seconds</li>
+<li>Attempt 4: wait 8 seconds</li>
+<li>Attempt 5: wait 16 seconds (with a max cap)</li>
+</ul>
+<p>The formula is: <code>wait_time = min(base * 2^attempt, max_wait)</code></p>
+<h3>Why Jitter Is Essential</h3>
+<p>Exponential backoff alone is not enough. If 10,000 clients all start at the same time, they all retry at 1s, then 2s, then 4s -- they remain synchronized in a thundering herd, just at longer intervals.</p>
+<p><strong>Jitter</strong> adds randomness to the wait time, spreading retries out over time:</p>
+<ul>
+<li><strong>Full jitter:</strong> <code>wait_time = random(0, base * 2^attempt)</code></li>
+<li><strong>Equal jitter:</strong> <code>wait_time = (base * 2^attempt) / 2 + random(0, (base * 2^attempt) / 2)</code></li>
+<li><strong>Decorrelated jitter:</strong> <code>wait_time = min(max_wait, random(base, previous_wait * 3))</code></li>
+</ul>
+<p>Full jitter provides the best distribution of retry times and is the recommended approach per AWS&#39;s analysis.</p>
+<h3>Retry Budget</h3>
+<p>Beyond individual retry policies, consider a global retry budget. If more than (say) 10% of requests are already retries, stop retrying -- the downstream service is clearly struggling, and more retries will only make it worse. This is where retries meet the circuit breaker pattern.</p>
+<div class="warning">
+
+<p>Never retry non-idempotent operations without careful thought. Retrying a &quot;charge credit card&quot; request could double-charge the customer. This is why idempotency (next section) is a prerequisite for safe retries.</p>
+</div>
+
+
+<hr>
+<h2>Idempotency</h2>
+<p>An operation is idempotent if performing it multiple times produces the same result as performing it once. Idempotency is critical for building reliable systems because retries, network duplicates, and at-least-once delivery guarantees all mean that operations may be executed more than once.</p>
+<h3>Examples</h3>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Idempotent?</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GET /user/123</td>
+<td>Yes</td>
+<td>Reading data doesn&#39;t change state</td>
+</tr>
+<tr>
+<td>DELETE /user/123</td>
+<td>Yes</td>
+<td>Deleting an already-deleted user is a no-op</td>
+</tr>
+<tr>
+<td>PUT /user/123 {name: &quot;Alice&quot;}</td>
+<td>Yes</td>
+<td>Setting a value to the same thing is a no-op</td>
+</tr>
+<tr>
+<td>POST /orders {item: &quot;book&quot;}</td>
+<td>No</td>
+<td>Each call creates a new order</td>
+</tr>
+<tr>
+<td>POST /transfer {amount: 100}</td>
+<td>No</td>
+<td>Each call transfers money again</td>
+</tr>
+</tbody></table>
+<h3>Idempotency Keys</h3>
+<p>For operations that are not naturally idempotent (like creating orders or transferring money), use an <strong>idempotency key</strong>:</p>
+<ol>
+<li>The client generates a unique key (UUID) for each logical operation</li>
+<li>The client includes this key in the request header (e.g., <code>Idempotency-Key: abc-123</code>)</li>
+<li>The server checks if it has already processed a request with this key</li>
+<li>If yes, it returns the stored result without re-executing the operation</li>
+<li>If no, it executes the operation, stores the result keyed by the idempotency key, and returns it</li>
+</ol>
+<p><strong>Implementation details:</strong></p>
+<ul>
+<li>Store idempotency keys with an expiration (e.g., 24 hours)</li>
+<li>The key-to-result mapping must be stored atomically with the operation itself</li>
+<li>Use database transactions or a compare-and-swap mechanism to prevent race conditions with concurrent requests using the same key</li>
+</ul>
+<div class="important">
+
+<p>Idempotency is not just a nice-to-have -- it is a requirement for any system that uses retries, message queues with at-least-once delivery, or webhook callbacks. Without it, you will eventually process duplicate operations with real consequences (double charges, duplicate messages, etc.).</p>
+</div>
+
+
+<hr>
+<h2>Rate Limiting</h2>
+<p>Rate limiting controls how many requests a client can make in a given time window. While rate limiting is primarily an API design topic, it plays a role in fault tolerance by protecting services from being overwhelmed.</p>
+<h3>Token Bucket Algorithm</h3>
+<p>The token bucket is the most common rate limiting algorithm:</p>
+<ol>
+<li>A bucket holds tokens, up to a maximum capacity</li>
+<li>Tokens are added at a fixed rate (e.g., 10 tokens per second)</li>
+<li>Each request consumes one token</li>
+<li>If no tokens are available, the request is rejected (HTTP 429)</li>
+</ol>
+<p><strong>Advantages:</strong> Allows bursts up to the bucket size while enforcing a long-term average rate.</p>
+<h3>Sliding Window Algorithm</h3>
+<p>Maintains a count of requests within a rolling time window:</p>
+<ol>
+<li>Track timestamps of all requests in the current window</li>
+<li>For each new request, count how many requests fall within the last N seconds</li>
+<li>If the count exceeds the limit, reject the request</li>
+</ol>
+<p><strong>Advantages:</strong> Smoother rate enforcement than fixed windows, which can allow 2x the rate at window boundaries.</p>
+<table>
+<thead>
+<tr>
+<th>Algorithm</th>
+<th>Burst Handling</th>
+<th>Memory</th>
+<th>Precision</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Token bucket</td>
+<td>Allows controlled bursts</td>
+<td>Low (just a counter)</td>
+<td>Good</td>
+</tr>
+<tr>
+<td>Fixed window</td>
+<td>Allows 2x burst at boundary</td>
+<td>Low</td>
+<td>Moderate</td>
+</tr>
+<tr>
+<td>Sliding window log</td>
+<td>No bursts</td>
+<td>High (stores timestamps)</td>
+<td>Exact</td>
+</tr>
+<tr>
+<td>Sliding window counter</td>
+<td>Minimal bursts</td>
+<td>Low</td>
+<td>Approximate</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>In interviews, if you mention rate limiting in a fault tolerance context, connect it to the concept of backpressure. Rate limiting is one form of backpressure -- signaling to clients that they need to slow down to prevent system overload.</p>
+</div>
+
+
+<hr>
+<h2>Disaster Recovery</h2>
+<p>Disaster recovery (DR) planning ensures that a system can recover from catastrophic events: data center fires, regional outages, widespread hardware failures, or even human error (accidentally deleting a production database).</p>
+<h3>RPO and RTO</h3>
+<p>These two metrics define your DR requirements:</p>
+<p><strong>RPO (Recovery Point Objective):</strong> How much data loss is acceptable. An RPO of 1 hour means you can tolerate losing the last hour of data. This determines your backup frequency.</p>
+<p><strong>RTO (Recovery Time Objective):</strong> How quickly the system must be restored. An RTO of 15 minutes means the system must be back online within 15 minutes of a disaster. This determines your failover strategy.</p>
+<table>
+<thead>
+<tr>
+<th>RPO</th>
+<th>Implication</th>
+<th>Strategy</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>0 (zero data loss)</td>
+<td>Synchronous replication required</td>
+<td>Active-active or synchronous replicas</td>
+</tr>
+<tr>
+<td>Minutes</td>
+<td>Near-real-time replication</td>
+<td>Asynchronous replication with short lag</td>
+</tr>
+<tr>
+<td>Hours</td>
+<td>Periodic backups sufficient</td>
+<td>Hourly snapshots or WAL shipping</td>
+</tr>
+<tr>
+<td>Days</td>
+<td>Daily backups</td>
+<td>Nightly full backups</td>
+</tr>
+</tbody></table>
+<h3>Standby Strategies</h3>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Description</th>
+<th>RTO</th>
+<th>Cost</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Hot standby</td>
+<td>Fully running replica, receives live data</td>
+<td>Seconds to minutes</td>
+<td>High</td>
+</tr>
+<tr>
+<td>Warm standby</td>
+<td>Scaled-down replica, receives data but handles no traffic</td>
+<td>Minutes to hours</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Cold standby</td>
+<td>Infrastructure provisioned but not running, data restored from backups</td>
+<td>Hours to days</td>
+<td>Low</td>
+</tr>
+</tbody></table>
+<h3>Multi-Region Deployment</h3>
+<p>For true disaster recovery, your system must run across multiple geographic regions. This is the most expensive and complex approach but provides the highest resilience.</p>
+<p><strong>Active-passive multi-region:</strong> One region handles all traffic, another region has a warm or hot standby. On failure, DNS is updated to point to the standby region.</p>
+<p><strong>Active-active multi-region:</strong> Both regions handle traffic simultaneously. This requires solving data consistency across regions (conflict resolution, CRDTs, or region-pinned data).</p>
+<div class="warning">
+
+<p>Multi-region active-active is one of the hardest problems in distributed systems. Don&#39;t propose it casually in interviews. If you do, be prepared to discuss data consistency, conflict resolution, and cross-region latency tradeoffs.</p>
+</div>
+
+
+<hr>
+<h2>Chaos Engineering</h2>
+<p>Chaos engineering is the practice of intentionally injecting failures into a production system to discover weaknesses before they cause real outages.</p>
+<h3>The Netflix Philosophy</h3>
+<p>Netflix pioneered chaos engineering with Chaos Monkey, a tool that randomly terminates production instances during business hours. The reasoning: if your system can&#39;t handle a single instance dying at 2 PM on a Tuesday when everyone is awake and available, it certainly can&#39;t handle it at 3 AM on a Saturday.</p>
+<h3>Principles of Chaos Engineering</h3>
+<ol>
+<li><strong>Start with a hypothesis:</strong> &quot;If we kill one database replica, the system should failover within 30 seconds with no errors visible to users.&quot;</li>
+<li><strong>Minimize blast radius:</strong> Start small. Kill one instance, not an entire region.</li>
+<li><strong>Run in production:</strong> Testing chaos in staging doesn&#39;t validate production resilience. (But start in staging if you&#39;re new to chaos engineering.)</li>
+<li><strong>Automate:</strong> Chaos experiments should run continuously, not just during special events.</li>
+<li><strong>Measure impact:</strong> Track error rates, latency, and user impact during experiments.</li>
+</ol>
+<h3>Game Days</h3>
+<p>Game days are structured chaos engineering exercises where the team deliberately triggers failure scenarios and practices the response:</p>
+<ul>
+<li>Simulate a database failover</li>
+<li>Disconnect a region</li>
+<li>Inject network latency between services</li>
+<li>Exhaust disk space on a critical server</li>
+<li>Revoke permissions on a key credential</li>
+</ul>
+<p>The goal is to build muscle memory for incident response and discover gaps in monitoring, alerting, and runbooks.</p>
+<div class="tip">
+
+<p>Mentioning chaos engineering in interviews shows maturity. It signals that you think about reliability proactively, not just reactively. A good line: &quot;I&#39;d want to validate our failover mechanisms with chaos experiments before we need them in a real outage.&quot;</p>
+</div>
+
+
+<hr>
+<h2>Graceful Degradation</h2>
+<p>Graceful degradation means that when part of the system fails, the system continues to operate with reduced functionality rather than failing completely.</p>
+<h3>Strategies</h3>
+<p><strong>Serve partial results:</strong> If one of three recommendation engines is down, return recommendations from the two that are working. A 66% quality recommendation feed is better than showing nothing.</p>
+<p><strong>Feature flags for degradation:</strong> Use feature flags to disable non-essential features during incidents. If the review service is overwhelmed, disable the reviews section of the product page while keeping the purchase flow fully operational.</p>
+<p><strong>Static fallbacks:</strong> If the personalization service is down, show a generic &quot;popular items&quot; list instead of personalized recommendations.</p>
+<p><strong>Queue and process later:</strong> If a non-critical downstream service (analytics, notifications) is down, queue the requests and process them when the service recovers.</p>
+<p><strong>Read-only mode:</strong> If the write path is failing, switch to read-only mode so users can still browse and search even if they can&#39;t make changes.</p>
+<h3>Priority Shedding</h3>
+<p>Under extreme load, prioritize critical operations over non-critical ones:</p>
+<table>
+<thead>
+<tr>
+<th>Priority</th>
+<th>Operations</th>
+<th>Action Under Stress</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Critical</td>
+<td>Payments, authentication</td>
+<td>Always process</td>
+</tr>
+<tr>
+<td>High</td>
+<td>Core product features</td>
+<td>Process if capacity available</td>
+</tr>
+<tr>
+<td>Medium</td>
+<td>Analytics, logging</td>
+<td>Queue for later</td>
+</tr>
+<tr>
+<td>Low</td>
+<td>Background jobs, emails</td>
+<td>Drop or delay significantly</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>Graceful degradation requires advance planning. You need to identify which features are essential and which can be dropped, implement the circuit breakers and feature flags to control degradation, and test that degraded mode actually works. You can&#39;t improvise graceful degradation during an incident.</p>
+</div>
+
+
+<hr>
+<h2>Putting It All Together</h2>
+<p>These patterns don&#39;t exist in isolation. A well-designed system layers them together:</p>
+<pre class="mermaid">
+flowchart TD
+    Client[Client Request] --> RL[Rate Limiter]
+    RL --> LB[Load Balancer]
+    LB --> S1[Service Instance 1]
+    LB --> S2[Service Instance 2]
+    LB --> S3[Service Instance 3]
+
+    S1 --> CB[Circuit Breaker]
+    CB --> |Closed| DS[Downstream Service]
+    CB --> |Open| FB[Fallback / Cache]
+
+    DS --> |Success| S1
+    DS --> |Failure| RT[Retry with Backoff + Jitter]
+    RT --> DS
+
+    S1 --> BH1[Bulkhead: Payment Pool]
+    S1 --> BH2[Bulkhead: Search Pool]
+    S1 --> BH3[Bulkhead: Profile Pool]
+
+    subgraph Monitoring
+        HC[Health Checks]
+        MT[Metrics]
+        AL[Alerting]
+    end
+
+    S1 --> Monitoring
+    S2 --> Monitoring
+    S3 --> Monitoring
+</pre>
+<p><strong>Request lifecycle with fault tolerance:</strong></p>
+<ol>
+<li>Request arrives, passes rate limiting</li>
+<li>Load balancer routes to a healthy instance (active-active failover)</li>
+<li>Service checks circuit breaker state for downstream dependency</li>
+<li>If circuit is closed, call downstream through a bulkhead-isolated thread pool</li>
+<li>If the call fails, retry with exponential backoff and jitter</li>
+<li>Include an idempotency key so retries are safe</li>
+<li>If failures exceed threshold, circuit breaker opens</li>
+<li>While open, serve fallback response (graceful degradation)</li>
+<li>Health checks and metrics feed into alerting for operator awareness</li>
+</ol>
+<hr>
+<h2>Interview Cheat Sheet</h2>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>One-Liner</th>
+<th>When to Mention</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Vertical scaling</td>
+<td>Bigger machine, simpler but limited</td>
+<td>Early in capacity discussion</td>
+</tr>
+<tr>
+<td>Horizontal scaling</td>
+<td>More machines, complex but unlimited</td>
+<td>When load exceeds single machine</td>
+</tr>
+<tr>
+<td>Availability (nines)</td>
+<td>99.99% = 52 min downtime/year</td>
+<td>When discussing SLAs</td>
+</tr>
+<tr>
+<td>Reliability vs availability</td>
+<td>Reliable = correct, available = responsive</td>
+<td>When asked about system qualities</td>
+</tr>
+<tr>
+<td>Active-passive failover</td>
+<td>Standby takes over on failure</td>
+<td>Stateful services (databases)</td>
+</tr>
+<tr>
+<td>Active-active failover</td>
+<td>All nodes serve traffic</td>
+<td>Stateless services (web servers)</td>
+</tr>
+<tr>
+<td>SPOF elimination</td>
+<td>Redundancy at every layer</td>
+<td>Architecture review</td>
+</tr>
+<tr>
+<td>Circuit breaker</td>
+<td>Stop calling a failing service</td>
+<td>Inter-service communication</td>
+</tr>
+<tr>
+<td>Bulkhead</td>
+<td>Isolate failure domains</td>
+<td>Thread/connection pool design</td>
+</tr>
+<tr>
+<td>Exponential backoff + jitter</td>
+<td>Spread retries over time</td>
+<td>Any retry discussion</td>
+</tr>
+<tr>
+<td>Idempotency</td>
+<td>Same operation, same result</td>
+<td>Payment, order creation, any mutation</td>
+</tr>
+<tr>
+<td>Rate limiting</td>
+<td>Control request volume</td>
+<td>API design, overload protection</td>
+</tr>
+<tr>
+<td>RPO / RTO</td>
+<td>Data loss tolerance / recovery speed</td>
+<td>Disaster recovery planning</td>
+</tr>
+<tr>
+<td>Chaos engineering</td>
+<td>Break things on purpose</td>
+<td>Showing reliability maturity</td>
+</tr>
+<tr>
+<td>Graceful degradation</td>
+<td>Partial service beats no service</td>
+<td>Failure handling strategy</td>
+</tr>
+</tbody></table>
+<p><strong>Key interview phrases:</strong></p>
+<ul>
+<li>&quot;We need redundancy at every layer to eliminate single points of failure.&quot;</li>
+<li>&quot;The circuit breaker prevents cascading failures by failing fast.&quot;</li>
+<li>&quot;Retries must use exponential backoff with jitter to avoid thundering herd.&quot;</li>
+<li>&quot;Every mutating operation should be idempotent to safely support retries.&quot;</li>
+<li>&quot;Our RPO determines backup frequency; our RTO determines failover strategy.&quot;</li>
+<li>&quot;I&#39;d validate our failover with chaos engineering before we need it in production.&quot;</li>
+</ul>
+
+</body>
+</html>

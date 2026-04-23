@@ -10,7 +10,8 @@ import SwiftUI
 struct FavoritesTabV2: View {
     @ObservedObject private var favorites  = FavoriteStore.shared
     @Environment(\.openInAppBrowser) private var openInAppBrowser
-    @State private var navPath = NavigationPath()
+    @State private var navPath   = NavigationPath()
+    @State private var selectedDoc: Doc? = nil
 
     var body: some View {
         NavigationStack(path: $navPath) {
@@ -48,8 +49,10 @@ struct FavoritesTabV2: View {
             }
             .navigationTitle("Favorites")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationDestination(for: Doc.self) { doc in
-                DocReaderView(doc: doc)
+            .sheet(item: $selectedDoc) { doc in
+                NavigationStack {
+                    DocReaderView(doc: doc)
+                }
             }
         }
     }
@@ -84,7 +87,7 @@ struct FavoritesTabV2: View {
             category: "",
             state:    .downloaded
         )
-        navPath.append(doc)
+        selectedDoc = doc
     }
 
     private func openBlog(_ item: FavoriteItem) {

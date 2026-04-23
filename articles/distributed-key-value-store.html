@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Design a Distributed Key-Value Store</title>
+</head>
+<body>
+
+<h1>Design a Distributed Key-Value Store</h1>
+<h2>Introduction</h2>
+<p>A distributed key-value store is one of the most fundamental building blocks in modern infrastructure. Systems like Amazon DynamoDB, Apache Cassandra, and Riak power everything from user sessions to shopping carts to time-series data. The core challenge is deceptively simple: store and retrieve values by key. The complexity arises when you need to do this across hundreds of machines while handling network partitions, server failures, and concurrent writes, all with predictable low latency.</p>
+<p>This topic is a favorite in Staff/Senior-level interviews because it touches on nearly every distributed systems concept: consistent hashing, replication, quorum protocols, conflict resolution, failure detection, and the fundamental tension between consistency and availability described by the CAP theorem.</p>
+<hr>
+<h2>Requirements</h2>
+<h3>Functional Requirements</h3>
+<ol>
+<li><strong>put(key, value)</strong>: Store a value associated with a key.</li>
+<li><strong>get(key)</strong>: Retrieve the value associated with a key.</li>
+<li><strong>delete(key)</strong>: Remove a key-value pair.</li>
+<li><strong>Tunable consistency</strong>: Allow callers to choose consistency level per operation.</li>
+</ol>
+<h3>Non-Functional Requirements</h3>
+<ol>
+<li><strong>High availability</strong>: The system remains operational even when individual nodes fail.</li>
+<li><strong>Partition tolerance</strong>: The system continues to function during network partitions.</li>
+<li><strong>Horizontal scalability</strong>: Add nodes to increase capacity without downtime.</li>
+<li><strong>Low latency</strong>: Single-digit millisecond reads and writes for typical operations.</li>
+<li><strong>Tunable trade-offs</strong>: Operators can choose where to sit on the consistency-availability spectrum.</li>
+</ol>
+<hr>
+<h2>Capacity Estimation</h2>
+<p>For a large-scale deployment (e.g., supporting a major e-commerce platform):</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Total data stored</td>
+<td>100 TB</td>
+</tr>
+<tr>
+<td>Read QPS (average)</td>
+<td>500,000</td>
+</tr>
+<tr>
+<td>Write QPS (average)</td>
+<td>100,000</td>
+</tr>
+<tr>
+<td>Peak read QPS</td>
+<td>2,000,000</td>
+</tr>
+<tr>
+<td>Average value size</td>
+<td>1 KB</td>
+</tr>
+<tr>
+<td>Number of nodes</td>
+<td>500-1,000</td>
+</tr>
+<tr>
+<td>Replication factor (N)</td>
+<td>3</td>
+</tr>
+<tr>
+<td>Raw storage needed</td>
+<td>100 TB x 3 = 300 TB</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>The replication factor triples storage requirements. With 500 nodes, each node stores about 600 GB, which easily fits on a modern SSD. This gives comfortable headroom for the storage layer.</p>
+</div>
+
+
+<hr>
+<h2>High-Level Architecture</h2>
+<pre class="mermaid">
+graph TB
+    subgraph Clients ["Client Layer"]
+        C1["Client 1"]
+        C2["Client 2"]
+        C3["Client N"]
+    end
+
+    subgraph Ring ["Consistent Hash Ring"]
+        N1["Node A<br/>Range: 0-60"]
+        N2["Node B<br/>Range: 61-120"]
+        N3["Node C<br/>Range: 121-180"]
+        N4["Node D<br/>Range: 181-240"]
+        N5["Node E<br/>Range: 241-300"]
+        N6["Node F<br/>Range: 301-360"]
+    end
+
+    subgraph Storage ["Per-Node Storage"]
+        SST["SSTable Files<br/>(on disk)"]
+        Mem["MemTable<br/>(in memory)"]
+        BF["Bloom Filters<br/>(in memory)"]
+        CL["Commit Log<br/>(on disk)"]
+    end
+
+    C1 & C2 & C3 -->|"Any node can<br/>be coordinator"| N1 & N2 & N3 & N4 & N5 & N6
+    N1 --- N2 --- N3 --- N4 --- N5 --- N6 --- N1
+
+    N1 --> SST & Mem & BF & CL
+</pre>
+<hr>
+<h2>Core Components Deep Dive</h2>
+<h3>1. Data Partitioning: Consistent Hashing with Virtual Nodes</h3>
+<p>Data is distributed across nodes using consistent hashing. Each key is hashed to a position on a circular ring (typically 0 to 2^128 or 0 to 2^64). Each node is assigned a position on the ring, and a key is stored on the first node encountered when walking clockwise from the key&#39;s position.</p>
+<p><strong>The problem with basic consistent hashing</strong>: If nodes are placed at single positions, the key distribution can be uneven, especially when nodes have different capacities or when nodes join/leave.</p>
+<p><strong>Virtual nodes</strong>: Each physical node is represented by multiple virtual nodes (e.g., 150-250 virtual nodes per physical node) spread across the ring. This provides:</p>
+<ol>
+<li><strong>Even distribution</strong>: More virtual nodes mean a more uniform spread of keys.</li>
+<li><strong>Heterogeneous hardware</strong>: A more powerful machine gets more virtual nodes, so it handles more keys proportionally.</li>
+<li><strong>Smoother rebalancing</strong>: When a node joins or leaves, only a small fraction of keys move, and the load shift is distributed across many other nodes.</li>
+</ol>
+<pre class="mermaid">
+graph TB
+    subgraph Ring ["Hash Ring (simplified)"]
+        direction LR
+        V1["A-v1<br/>pos: 10"]
+        V2["B-v1<br/>pos: 45"]
+        V3["A-v2<br/>pos: 90"]
+        V4["C-v1<br/>pos: 130"]
+        V5["B-v2<br/>pos: 175"]
+        V6["C-v2<br/>pos: 210"]
+        V7["A-v3<br/>pos: 260"]
+        V8["B-v3<br/>pos: 310"]
+        V9["C-v3<br/>pos: 350"]
+    end
+
+    subgraph Physical ["Physical Nodes"]
+        PA["Node A<br/>(3 virtual nodes)"]
+        PB["Node B<br/>(3 virtual nodes)"]
+        PC["Node C<br/>(3 virtual nodes)"]
+    end
+
+    V1 & V3 & V7 --> PA
+    V2 & V5 & V8 --> PB
+    V4 & V6 & V9 --> PC
+</pre>
+<p><strong>Key assignment example</strong>: A key hashing to position 100 walks clockwise and lands on C-v1 at position 130, so it is stored on physical Node C (and replicated to the next N-1 distinct physical nodes on the ring).</p>
+<h3>2. Data Replication</h3>
+<p>For durability and availability, each key is replicated to N nodes (typically N=3). The node responsible for a key (the one it hashes to on the ring) is the <strong>coordinator</strong> for that key. The key is also stored on the next N-1 distinct physical nodes walking clockwise on the ring.</p>
+<p><strong>Preference list</strong>: The ordered list of nodes responsible for a key. If virtual nodes v1, v2, v3 map to physical nodes A, A, B respectively, the preference list skips duplicates and might be [A, B, C] -- always N distinct physical nodes.</p>
+<pre class="mermaid">
+graph LR
+    subgraph Ring ["Hash Ring (N=3)"]
+        Key["Key K<br/>hash=100"]
+        N1["Node A<br/>pos=130<br/>(coordinator)"]
+        N2["Node B<br/>pos=175<br/>(replica 2)"]
+        N3["Node C<br/>pos=210<br/>(replica 3)"]
+        N4["Node D<br/>pos=260"]
+    end
+
+    Key -->|"walks clockwise"| N1
+    N1 -->|"replicate"| N2
+    N2 -->|"replicate"| N3
+    N3 -.->|"not replicated here<br/>(N=3 already met)"| N4
+</pre>
+<h3>3. Consistency vs Availability: Tunable Quorums</h3>
+<p>The system uses quorum-based reads and writes with configurable parameters:</p>
+<ul>
+<li><strong>N</strong>: Number of replicas (typically 3).</li>
+<li><strong>W</strong>: Number of replicas that must acknowledge a write for it to succeed.</li>
+<li><strong>R</strong>: Number of replicas that must respond to a read for it to succeed.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Configuration</th>
+<th>W</th>
+<th>R</th>
+<th>Guarantee</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Strong consistency</td>
+<td>2</td>
+<td>2</td>
+<td>R + W &gt; N (2+2=4 &gt; 3): guaranteed overlap</td>
+<td>Financial data, inventory counts</td>
+</tr>
+<tr>
+<td>Favor write availability</td>
+<td>1</td>
+<td>3</td>
+<td>Fast writes, slow reads</td>
+<td>Logging, event ingestion</td>
+</tr>
+<tr>
+<td>Favor read availability</td>
+<td>3</td>
+<td>1</td>
+<td>Slow writes, fast reads</td>
+<td>User profile reads</td>
+</tr>
+<tr>
+<td>Eventual consistency</td>
+<td>1</td>
+<td>1</td>
+<td>Fastest, but may read stale data</td>
+<td>Shopping cart, session data</td>
+</tr>
+</tbody></table>
+<p><strong>The key insight</strong>: When R + W &gt; N, at least one node in the read quorum must have the latest write. This guarantees the read returns the most recent data (assuming the client picks the response with the highest version/timestamp).</p>
+<div class="tip">
+
+<p>In an interview, draw the Venn diagram of R and W overlapping within N. This visual makes the quorum guarantee immediately intuitive. When R + W &gt; N, the read set and write set must overlap, so you are guaranteed to see the latest write.</p>
+</div>
+
+
+<h3>4. Write Path</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant Client
+    participant Coord as Coordinator Node
+    participant R1 as Replica 1
+    participant R2 as Replica 2
+    participant R3 as Replica 3
+
+    Client->>Coord: put(key, value)
+    Note over Coord: Coordinator is one of<br/>the N replicas
+
+    par Parallel writes to all N replicas
+        Coord->>Coord: Write locally (commit log + memtable)
+        Coord->>R2: Replicate (key, value, vector_clock)
+        Coord->>R3: Replicate (key, value, vector_clock)
+    end
+
+    R2-->>Coord: ACK
+    Coord-->>Client: Success (W=2 met: self + R2)
+
+    Note over R3: R3 ACK arrives later<br/>(still written, just not waited for)
+    R3-->>Coord: ACK (async, not blocking)
+</pre>
+<p><strong>Write process on each node</strong>:</p>
+<ol>
+<li><strong>Append to commit log</strong>: Durable write to disk. This survives crashes.</li>
+<li><strong>Write to memtable</strong>: In-memory sorted data structure (e.g., red-black tree or skip list). Fast to read and write.</li>
+<li><strong>Flush to SSTable</strong>: When the memtable exceeds a size threshold, it is flushed to disk as an immutable Sorted String Table (SSTable).</li>
+<li><strong>Compaction</strong>: Background process merges multiple SSTables, removing deleted entries and duplicates.</li>
+</ol>
+<p>This is the LSM-tree (Log-Structured Merge Tree) storage engine design, used by Cassandra, RocksDB, LevelDB, and HBase.</p>
+<h3>5. Read Path</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant Client
+    participant Coord as Coordinator Node
+    participant R1 as Replica 1
+    participant R2 as Replica 2
+    participant R3 as Replica 3
+
+    Client->>Coord: get(key)
+
+    par Parallel reads from R replicas
+        Coord->>R1: Read(key)
+        Coord->>R2: Read(key)
+        Coord->>R3: Read(key)
+    end
+
+    R1-->>Coord: value_v3 (version 3)
+    R2-->>Coord: value_v3 (version 3)
+    Note over Coord: R=2 met with consistent results
+
+    Coord-->>Client: Return value_v3
+
+    R3-->>Coord: value_v2 (stale!)
+    Note over Coord: Read repair: send v3 to R3
+    Coord->>R3: Write(key, value_v3)
+</pre>
+<p><strong>Read process on each node</strong>:</p>
+<ol>
+<li><strong>Check memtable</strong>: If the key is in the current memtable, return immediately.</li>
+<li><strong>Check Bloom filters</strong>: Each SSTable has an associated Bloom filter. Check these to skip SSTables that definitely do not contain the key.</li>
+<li><strong>Search SSTables</strong>: Check SSTables from newest to oldest. Return the first (most recent) match.</li>
+</ol>
+<p><strong>Read repair</strong>: If the coordinator detects that some replicas returned stale data (older version), it asynchronously sends the latest value to those replicas. This is a passive anti-entropy mechanism that gradually heals inconsistencies during normal read traffic.</p>
+<h3>6. Conflict Resolution: Vector Clocks</h3>
+<p>When multiple clients write to the same key concurrently (especially during network partitions), the system must detect and resolve conflicts.</p>
+<p><strong>Vector clocks</strong> track causality. Each node maintains a vector of (node_id, counter) pairs for each key.</p>
+<p><strong>Example</strong>:</p>
+<pre><code>Initial state: key=&quot;cart&quot;, value=&quot;[item_A]&quot;, clock=[(A,1)]
+
+Client 1 (via Node A): add item_B
+  clock becomes [(A,2)]
+  value = &quot;[item_A, item_B]&quot;
+
+Client 2 (via Node B): add item_C (concurrent, based on (A,1))
+  clock becomes [(A,1), (B,1)]
+  value = &quot;[item_A, item_C]&quot;
+
+These clocks are not comparable (neither dominates the other).
+This is a CONFLICT that must be resolved.
+</code></pre>
+<p><strong>Resolution strategies</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>How It Works</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Last-Write-Wins (LWW)</td>
+<td>Use wall-clock timestamp, latest wins</td>
+<td>Simple, no client logic</td>
+<td>Data loss (losing write is silently discarded)</td>
+</tr>
+<tr>
+<td>Application-level merge</td>
+<td>Return both versions to client, client merges</td>
+<td>No data loss</td>
+<td>Complex client logic</td>
+</tr>
+<tr>
+<td>CRDTs</td>
+<td>Use conflict-free data types</td>
+<td>Automatic merge, no data loss</td>
+<td>Limited data type support</td>
+</tr>
+</tbody></table>
+<p><strong>DynamoDB approach</strong>: Uses LWW by default but supports conditional writes (optimistic locking with version numbers) for stronger guarantees.</p>
+<p><strong>Cassandra approach</strong>: Uses LWW with timestamps. Requires NTP-synchronized clocks across all nodes.</p>
+<div class="warning">
+
+<p>Vector clocks can grow unbounded if many nodes coordinate writes to the same key. In practice, systems truncate vector clocks by removing the oldest entries when the clock exceeds a size threshold. This can occasionally cause false conflicts, which is acceptable.</p>
+</div>
+
+
+<h3>7. Failure Detection: Gossip Protocol</h3>
+<p>Nodes must detect when other nodes have failed so they can reroute requests and trigger recovery mechanisms.</p>
+<p><strong>Gossip protocol</strong>:</p>
+<ol>
+<li>Every second, each node picks a random other node and sends its membership list (which nodes it considers alive, with timestamps).</li>
+<li>The receiving node merges the incoming list with its own.</li>
+<li>If a node has not been heard from in T seconds (e.g., 30 seconds), it is suspected failed.</li>
+<li>If the suspicion persists for another T seconds without any node contradicting it, the node is marked as permanently failed.</li>
+</ol>
+<p><strong>Why gossip?</strong> It is decentralized (no single failure detector that is itself a single point of failure), eventually consistent, and scales well. Each node communicates with O(log N) other nodes per gossip round, so information propagates through the entire cluster in O(log N) rounds.</p>
+<pre class="mermaid">
+graph TB
+    subgraph Gossip ["Gossip Protocol: 3 Rounds"]
+        subgraph R1 ["Round 1"]
+            A1["Node A<br/>knows: A,B alive"]
+            B1["Node B<br/>knows: A,B,C alive"]
+            A1 -->|"gossip"| B1
+        end
+
+        subgraph R2 ["Round 2"]
+            B2["Node B<br/>knows: A,B,C alive"]
+            D2["Node D<br/>knows: D,E alive"]
+            B2 -->|"gossip"| D2
+        end
+
+        subgraph R3 ["Round 3"]
+            D3["Node D<br/>knows: A,B,C,D,E alive"]
+            E3["Node E<br/>knows: D,E alive"]
+            D3 -->|"gossip"| E3
+        end
+    end
+
+    R1 -->|"After round 1"| R2 -->|"After round 2"| R3
+    R3 -->|"After round 3"| Result["All nodes converge<br/>to same membership view"]
+</pre>
+<h3>8. Handling Temporary Failures: Hinted Handoff</h3>
+<p>When a node in the preference list is temporarily unavailable (e.g., being restarted), the system uses hinted handoff to maintain write availability.</p>
+<p><strong>How it works</strong>:</p>
+<ol>
+<li>A write is destined for Node A, which is temporarily down.</li>
+<li>The coordinator sends the write to the next healthy node on the ring (e.g., Node D), along with a &quot;hint&quot; indicating that this data belongs to Node A.</li>
+<li>Node D stores the data in a separate hints partition.</li>
+<li>When Node A comes back online, Node D replays all hinted data to Node A.</li>
+<li>After successful replay, Node D deletes the hints.</li>
+</ol>
+<p>This allows the system to maintain its W quorum even when a replica is down, as long as enough other nodes are available.</p>
+<div class="important">
+
+<p>Hinted handoff is a temporary measure. If hints accumulate for too long (e.g., a node is down for hours), the system should fall back to full repair mechanisms (anti-entropy with Merkle trees) rather than relying on an ever-growing hint queue.</p>
+</div>
+
+
+<h3>9. Handling Permanent Failures: Anti-Entropy with Merkle Trees</h3>
+<p>When a node has been down for an extended period or has experienced data corruption, it needs to synchronize its data with other replicas. Comparing every key between two nodes would be extremely expensive. Merkle trees make this efficient.</p>
+<p><strong>How Merkle trees work for replica synchronization</strong>:</p>
+<ol>
+<li>Each node builds a Merkle tree (hash tree) over its key ranges.</li>
+<li>Leaf nodes contain the hash of a key range (e.g., keys from &quot;a&quot; to &quot;azzz&quot;).</li>
+<li>Parent nodes contain the hash of their children&#39;s hashes.</li>
+<li>The root hash summarizes the entire dataset.</li>
+</ol>
+<p><strong>Comparison process</strong>:</p>
+<pre class="mermaid">
+graph TB
+    subgraph NodeA ["Node A's Merkle Tree"]
+        RA["Root: abc123"]
+        LA["Left: xyz789"]
+        RA_right["Right: def456"]
+        LL_A["Range a-m<br/>hash: aaa111"]
+        LR_A["Range m-s<br/>hash: bbb222"]
+        RL_A["Range s-v<br/>hash: ccc333"]
+        RR_A["Range v-z<br/>hash: ddd444"]
+
+        RA --> LA & RA_right
+        LA --> LL_A & LR_A
+        RA_right --> RL_A & RR_A
+    end
+
+    subgraph NodeB ["Node B's Merkle Tree"]
+        RB["Root: abc123"]
+        LB["Left: xyz789"]
+        RB_right["Right: DIFFERENT!"]
+        LL_B["Range a-m<br/>hash: aaa111"]
+        LR_B["Range m-s<br/>hash: bbb222"]
+        RL_B["Range s-v<br/>hash: DIFFERS"]
+        RR_B["Range v-z<br/>hash: ddd444"]
+
+        RB --> LB & RB_right
+        LB --> LL_B & LR_B
+        RB_right --> RL_B & RR_B
+    end
+
+    Compare["Compare roots: same? No.<br/>Compare left children: same.<br/>Compare right children: different.<br/>Drill down: range s-v differs.<br/>Sync only keys in range s-v."]
+
+    NodeA --> Compare
+    NodeB --> Compare
+</pre>
+<p><strong>Efficiency</strong>: By comparing root hashes first and drilling down only where differences exist, Merkle trees reduce the amount of data transferred to just the divergent ranges. If two replicas are 99.99% identical (common case), only a tiny fraction of keys need to be compared and synced.</p>
+<hr>
+<h2>Data Models &amp; Storage</h2>
+<h3>On-Disk Storage: LSM Tree</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Commit log</td>
+<td>Append-only file for durability. Every write is logged before being applied to the memtable.</td>
+</tr>
+<tr>
+<td>Memtable</td>
+<td>In-memory sorted structure. Serves recent reads and accumulates writes.</td>
+</tr>
+<tr>
+<td>SSTables</td>
+<td>Immutable sorted files on disk. Created when memtable flushes.</td>
+</tr>
+<tr>
+<td>Bloom filters</td>
+<td>Per-SSTable probabilistic structure. Quickly rules out SSTables that do not contain a key.</td>
+</tr>
+<tr>
+<td>Index files</td>
+<td>Sparse index into each SSTable for binary search.</td>
+</tr>
+</tbody></table>
+<h3>Key-Value Record Format</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Size</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>key</td>
+<td>bytes</td>
+<td>Variable (max 256 B)</td>
+<td>The lookup key</td>
+</tr>
+<tr>
+<td>value</td>
+<td>bytes</td>
+<td>Variable (max 1 MB)</td>
+<td>The stored value</td>
+</tr>
+<tr>
+<td>version</td>
+<td>vector_clock</td>
+<td>Variable</td>
+<td>Causality tracking</td>
+</tr>
+<tr>
+<td>timestamp</td>
+<td>int64</td>
+<td>8 bytes</td>
+<td>Wall-clock time for LWW</td>
+</tr>
+<tr>
+<td>tombstone</td>
+<td>bool</td>
+<td>1 byte</td>
+<td>True if deleted (soft delete)</td>
+</tr>
+<tr>
+<td>checksum</td>
+<td>uint32</td>
+<td>4 bytes</td>
+<td>CRC32 for data integrity</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>Deletes are handled via tombstones (soft deletes). The key is marked as deleted but not physically removed. Tombstones are cleaned up during compaction after a grace period (e.g., 10 days) to ensure the delete propagates to all replicas.</p>
+</div>
+
+
+<h3>Metadata Store (per cluster)</h3>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Storage</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Ring topology</td>
+<td>Each node (gossip)</td>
+<td>Which virtual nodes map to which physical nodes</td>
+</tr>
+<tr>
+<td>Node health</td>
+<td>Each node (gossip)</td>
+<td>Alive/dead status, suspicion timestamps</td>
+</tr>
+<tr>
+<td>Cluster config</td>
+<td>ZooKeeper or etcd</td>
+<td>Replication factor, consistency defaults, schema</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>System Comparison</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>DynamoDB</th>
+<th>Cassandra</th>
+<th>Riak</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Data model</strong></td>
+<td>Key-value + document (JSON)</td>
+<td>Wide-column (row key + column families)</td>
+<td>Key-value + CRDTs</td>
+</tr>
+<tr>
+<td><strong>Partitioning</strong></td>
+<td>Consistent hashing (managed)</td>
+<td>Consistent hashing (virtual nodes)</td>
+<td>Consistent hashing (virtual nodes)</td>
+</tr>
+<tr>
+<td><strong>Replication</strong></td>
+<td>Synchronous within region, async cross-region</td>
+<td>Tunable (NetworkTopologyStrategy)</td>
+<td>Tunable (N, R, W)</td>
+</tr>
+<tr>
+<td><strong>Consistency</strong></td>
+<td>Strong or eventual (per-request)</td>
+<td>Tunable (ONE, QUORUM, ALL)</td>
+<td>Tunable (N, R, W)</td>
+</tr>
+<tr>
+<td><strong>Conflict resolution</strong></td>
+<td>LWW or conditional writes</td>
+<td>LWW (timestamp-based)</td>
+<td>Vector clocks + CRDT merge</td>
+</tr>
+<tr>
+<td><strong>Failure detection</strong></td>
+<td>Managed (AWS)</td>
+<td>Gossip protocol</td>
+<td>Gossip protocol</td>
+</tr>
+<tr>
+<td><strong>Anti-entropy</strong></td>
+<td>Managed (AWS)</td>
+<td>Merkle tree repair</td>
+<td>Merkle tree + active anti-entropy</td>
+</tr>
+<tr>
+<td><strong>Hinted handoff</strong></td>
+<td>Yes (managed)</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><strong>Transactions</strong></td>
+<td>Single-item ACID; TransactWriteItems for multi-item</td>
+<td>Lightweight transactions (Paxos)</td>
+<td>No transactions</td>
+</tr>
+<tr>
+<td><strong>Deployment</strong></td>
+<td>Fully managed (AWS)</td>
+<td>Self-hosted or managed (DataStax)</td>
+<td>Self-hosted</td>
+</tr>
+<tr>
+<td><strong>Sweet spot</strong></td>
+<td>Serverless, variable workloads</td>
+<td>Time-series, high-write workloads</td>
+<td>High availability, conflict-heavy writes</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>Scalability Strategies</h2>
+<h3>Adding Nodes (Scale Out)</h3>
+<ol>
+<li>New node joins the ring and is assigned virtual nodes.</li>
+<li>Gossip protocol propagates the membership change.</li>
+<li>Keys that now belong to the new node are streamed from existing nodes.</li>
+<li>During streaming, reads for affected keys are forwarded to the old owner.</li>
+<li>Once streaming completes, the new node serves traffic for its ranges.</li>
+</ol>
+<h3>Handling Hot Keys</h3>
+<p>Some keys receive disproportionate traffic (e.g., a viral post, a celebrity&#39;s profile).</p>
+<p><strong>Strategies</strong>:</p>
+<ul>
+<li><strong>Read replicas</strong>: For read-heavy hot keys, replicate to additional nodes beyond the standard N.</li>
+<li><strong>Client-side caching</strong>: Cache hot keys at the application layer with short TTLs.</li>
+<li><strong>Key splitting</strong>: Append a random suffix to the hot key (e.g., <code>hot_key_1</code>, <code>hot_key_2</code>, ... <code>hot_key_10</code>) to spread reads across 10 partitions. The client reads from a random suffix.</li>
+</ul>
+<h3>Compaction Strategy</h3>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Description</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Size-tiered</td>
+<td>Merge SSTables of similar sizes</td>
+<td>Write-heavy workloads</td>
+</tr>
+<tr>
+<td>Leveled</td>
+<td>Organize SSTables into levels with size limits</td>
+<td>Read-heavy workloads (fewer SSTables to search)</td>
+</tr>
+<tr>
+<td>Time-window</td>
+<td>Compact within time windows</td>
+<td>Time-series data (easy to drop old data)</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>Design Trade-offs</h2>
+<h3>Consistency vs Availability (CAP)</h3>
+<p>The CAP theorem states that during a network partition, you must choose between consistency and availability. This system lets the operator choose:</p>
+<table>
+<thead>
+<tr>
+<th>Choice</th>
+<th>Behavior During Partition</th>
+<th>Trade-off</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Choose consistency (CP)</td>
+<td>Reject writes that cannot reach W replicas</td>
+<td>Writes may fail, but no stale reads</td>
+</tr>
+<tr>
+<td>Choose availability (AP)</td>
+<td>Accept writes at any reachable node</td>
+<td>All writes succeed, but reads may be stale</td>
+</tr>
+</tbody></table>
+<p><strong>Decision</strong>: Default to AP with tunable consistency per operation. For most use cases (shopping carts, sessions), availability is more important. For specific operations (inventory decrements), use stronger consistency settings.</p>
+<h3>LSM Tree vs B-Tree</h3>
+<table>
+<thead>
+<tr>
+<th>LSM Tree</th>
+<th>B-Tree</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Write-optimized (sequential writes)</td>
+<td>Read-optimized (in-place updates)</td>
+</tr>
+<tr>
+<td>Higher write throughput</td>
+<td>Lower write throughput</td>
+</tr>
+<tr>
+<td>Read amplification (multiple SSTables)</td>
+<td>Single lookup path</td>
+</tr>
+<tr>
+<td>Space amplification (dead entries until compaction)</td>
+<td>No space amplification</td>
+</tr>
+<tr>
+<td>Used by Cassandra, RocksDB</td>
+<td>Used by PostgreSQL, MySQL InnoDB</td>
+</tr>
+</tbody></table>
+<p><strong>Decision</strong>: LSM tree for write-heavy key-value workloads. The write amplification of B-trees (random I/O for every write) is a bottleneck at high write volumes.</p>
+<h3>Vector Clocks vs Last-Write-Wins</h3>
+<table>
+<thead>
+<tr>
+<th>Vector Clocks</th>
+<th>Last-Write-Wins</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Detects true conflicts</td>
+<td>Silently drops concurrent writes</td>
+</tr>
+<tr>
+<td>Requires application-level merge logic</td>
+<td>No merge logic needed</td>
+</tr>
+<tr>
+<td>Vector grows with number of coordinators</td>
+<td>Constant overhead (single timestamp)</td>
+</tr>
+<tr>
+<td>No data loss</td>
+<td>Potential data loss</td>
+</tr>
+</tbody></table>
+<div class="warning">
+
+<p>LWW depends on synchronized clocks. Even with NTP, clock skew between machines can be tens of milliseconds. In extreme cases, a write with a &quot;later&quot; timestamp might actually be an earlier write. Google&#39;s TrueTime (used in Spanner) addresses this with bounded clock uncertainty, but it requires specialized hardware.</p>
+</div>
+
+
+<hr>
+<h2>Interview Cheat Sheet</h2>
+<h3>Key Points to Mention</h3>
+<ol>
+<li><strong>Consistent hashing with virtual nodes</strong>: Even data distribution, smooth rebalancing.</li>
+<li><strong>Replication to N successor nodes</strong>: Preference list with N distinct physical nodes.</li>
+<li><strong>Quorum reads/writes (R + W &gt; N)</strong>: Guarantees overlap between read and write sets.</li>
+<li><strong>Vector clocks</strong>: Detect concurrent writes and true conflicts.</li>
+<li><strong>Gossip protocol</strong>: Decentralized failure detection and membership management.</li>
+<li><strong>Hinted handoff</strong>: Maintain availability during temporary node failures.</li>
+<li><strong>Merkle trees</strong>: Efficient anti-entropy repair for permanent failures.</li>
+<li><strong>LSM tree storage</strong>: Write-optimized on-disk storage with memtable, SSTables, and compaction.</li>
+</ol>
+<h3>Common Interview Questions and Answers</h3>
+<p><strong>Q: How does the system handle a network partition between two data centers?</strong>
+A: Both sides continue to accept writes independently (AP mode). When the partition heals, Merkle tree-based anti-entropy identifies divergent keys. Vector clocks detect conflicts, which are resolved either by LWW or application-level merge, depending on configuration.</p>
+<p><strong>Q: What happens when a coordinator node fails mid-write?</strong>
+A: The client times out and retries. The retry may hit a different coordinator. Since the write is idempotent (same key, value, and version), the new coordinator processes it correctly. Any partial writes on the failed node are reconciled when it recovers via hinted handoff or anti-entropy.</p>
+<p><strong>Q: How do you handle range queries?</strong>
+A: Basic consistent hashing does not support range queries efficiently because adjacent keys hash to random ring positions. To support range queries, use order-preserving partitioning (keys are assigned to ranges in sorted order). However, this can cause hot spots. Cassandra handles this with compound partition keys where the partition key determines the node and the clustering key determines sort order within a partition.</p>
+<p><strong>Q: Why not just use a relational database?</strong>
+A: Relational databases struggle at this scale because: (1) sharding is complex and often requires application-level logic, (2) cross-shard joins are expensive, (3) schema changes on billions of rows are disruptive, and (4) the ACID guarantees of a relational DB are stronger (and more expensive) than what most key-value workloads need.</p>
+<div class="tip">
+
+<p>The core narrative of this design is the tension between consistency, availability, and partition tolerance. Frame every design decision as a trade-off on this spectrum. The interviewer wants to see that you understand there is no &quot;right&quot; answer -- only trade-offs appropriate for specific use cases.</p>
+</div>
+
+
+</body>
+</html>

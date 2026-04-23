@@ -1,0 +1,1389 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Design Interview: Social Media Feed</title>
+</head>
+<body>
+
+<h1>System Design Interview: Social Media Feed</h1>
+<h3>Twitter / Instagram Scale</h3>
+<div class="note">
+
+<p><strong>Staff Engineer Interview Preparation Guide</strong> — High Level Design Round</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-problem-clarification--requirements">Problem Clarification &amp; Requirements</a></li>
+<li><a href="#2-capacity-estimation--scale">Capacity Estimation &amp; Scale</a></li>
+<li><a href="#3-high-level-architecture">High-Level Architecture</a></li>
+<li><a href="#4-core-components-deep-dive">Core Components Deep Dive</a></li>
+<li><a href="#5-fan-out-strategies">Fan-Out Strategies</a></li>
+<li><a href="#6-feed-ranking--generation">Feed Ranking &amp; Generation</a></li>
+<li><a href="#7-data-models--storage">Data Models &amp; Storage</a></li>
+<li><a href="#8-media-storage--delivery">Media Storage &amp; Delivery</a></li>
+<li><a href="#9-search--trending-topics">Search &amp; Trending Topics</a></li>
+<li><a href="#10-notification-integration">Notification Integration</a></li>
+<li><a href="#11-scalability-strategies">Scalability Strategies</a></li>
+<li><a href="#12-design-trade-offs--justifications">Design Trade-offs &amp; Justifications</a></li>
+<li><a href="#13-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. Problem Clarification &amp; Requirements</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Social media feed design is deceptively complex. The core challenge is not storing posts — it is generating personalized feeds for hundreds of millions of users in under 200ms. Lead with this insight to show you understand the problem deeply.</p>
+</div>
+
+
+<h3>Questions to Ask the Interviewer</h3>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Question</th>
+<th>Why It Matters</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Scale</strong></td>
+<td>How many daily active users?</td>
+<td>Determines fan-out strategy</td>
+</tr>
+<tr>
+<td><strong>Content</strong></td>
+<td>Text only, or text + images + video?</td>
+<td>Affects storage and CDN requirements</td>
+</tr>
+<tr>
+<td><strong>Feed type</strong></td>
+<td>Chronological or ranked?</td>
+<td>Changes the feed generation pipeline entirely</td>
+</tr>
+<tr>
+<td><strong>Social graph</strong></td>
+<td>Follower model (Twitter) or friend model (Facebook)?</td>
+<td>Follower model is asymmetric, more complex fan-out</td>
+</tr>
+<tr>
+<td><strong>Celebrities</strong></td>
+<td>Are there users with millions of followers?</td>
+<td>Drives the hybrid fan-out decision</td>
+</tr>
+<tr>
+<td><strong>Real-time</strong></td>
+<td>Must new posts appear in followers&#39; feeds instantly?</td>
+<td>Latency vs throughput trade-off</td>
+</tr>
+<tr>
+<td><strong>Features</strong></td>
+<td>Likes, comments, retweets, stories?</td>
+<td>Scope affects system complexity</td>
+</tr>
+<tr>
+<td><strong>Consistency</strong></td>
+<td>Is eventual consistency acceptable for feeds?</td>
+<td>Simplifies the architecture significantly</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>Functional Requirements (Agreed Upon)</h3>
+<ul>
+<li>Users can create posts (text, images, video)</li>
+<li>Users can follow/unfollow other users (asymmetric follow model)</li>
+<li>Users see a feed of posts from people they follow</li>
+<li>Posts can be liked, commented on, and reshared</li>
+<li>Users can search for posts and other users</li>
+<li>Trending topics based on hashtags and engagement</li>
+</ul>
+<h3>Non-Functional Requirements</h3>
+<ul>
+<li><strong>Latency:</strong> Feed generation must complete in &lt; 200ms P99</li>
+<li><strong>Availability:</strong> 99.99% uptime</li>
+<li><strong>Scale:</strong> 500 million DAU, 300 million posts per day</li>
+<li><strong>Consistency:</strong> Eventual consistency is acceptable for feeds (a post appearing in a follower&#39;s feed 5-10 seconds after creation is fine)</li>
+<li><strong>Ordering:</strong> Feed should be roughly ordered by relevance or recency</li>
+<li><strong>Durability:</strong> Posts must never be lost once persisted</li>
+</ul>
+<hr>
+<h2>2. Capacity Estimation &amp; Scale</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> For a social media feed, the most important number is not storage — it is the fan-out factor. A single post by a user with 10M followers generates 10M feed entries. This is the number that drives architectural decisions.</p>
+</div>
+
+
+<h3>Traffic Estimation</h3>
+<pre><code>DAU                     = 500 Million
+Posts per day           = 300 Million
+Average follows per user = 200
+Average followers per user = 200 (symmetric in aggregate)
+
+Feed generation reads per day:
+  Each user opens the app ~10 times/day
+  Feed reads = 500M × 10 = 5 Billion reads/day
+
+Write QPS (new posts):
+  300M / 86,400 = ~3,500 posts/sec
+
+Read QPS (feed requests):
+  5B / 86,400 = ~58,000 feed requests/sec
+
+Peak (3x average):
+  Write QPS: ~10,500 posts/sec
+  Read QPS:  ~174,000 feed requests/sec
+</code></pre>
+<h3>Fan-Out Estimation</h3>
+<pre><code>When a user with N followers posts:
+  Fan-out writes = N feed entries created
+
+Average fan-out per post = 200 followers
+Total fan-out writes/day = 300M × 200 = 60 Billion feed entries/day
+Fan-out write QPS = 60B / 86,400 = ~694,000 writes/sec to feed tables
+
+Celebrity problem:
+  A user with 50M followers posts → 50M fan-out writes
+  If they post 10 times/day → 500M fan-out writes from ONE user
+</code></pre>
+<h3>Storage Estimation</h3>
+<pre><code>Post record:
+  - Post ID         = 8 bytes
+  - Author ID       = 8 bytes
+  - Text (280 chars) = 560 bytes (UTF-8)
+  - Media URLs      = 200 bytes
+  - Timestamps      = 16 bytes
+  - Metadata        = 100 bytes
+  Total per post    ≈ 900 bytes
+
+Posts per day: 300M × 900 bytes = 270 GB/day
+Posts per year: 270 GB × 365 = ~100 TB/year
+
+Feed entry (pre-computed feed):
+  - User ID (whose feed) = 8 bytes
+  - Post ID              = 8 bytes
+  - Score/timestamp      = 8 bytes
+  Total per feed entry   ≈ 24 bytes
+
+Feed entries per day: 60B × 24 bytes = 1.44 TB/day (for fan-out-on-write)
+</code></pre>
+<h3>Media Storage</h3>
+<pre><code>Assume 30% of posts have images, 5% have video:
+  Images: 90M × 500 KB avg = 45 TB/day
+  Videos: 15M × 10 MB avg  = 150 TB/day
+  Total media per day       ≈ 195 TB/day
+
+Media is stored on object storage (S3) and served via CDN.
+This is separate from the feed database.
+</code></pre>
+<hr>
+<h2>3. High-Level Architecture</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Draw the architecture as two separate flows: the post creation flow (write path) and the feed generation flow (read path). This makes the fan-out strategy easy to explain.</p>
+</div>
+
+
+<pre class="mermaid">
+graph TB
+    subgraph Clients
+        WEB[Web App]
+        IOS[iOS App]
+        ANDROID[Android App]
+    end
+
+    subgraph API Gateway
+        GW[API Gateway<br/>Rate Limiting<br/>Authentication]
+    end
+
+    subgraph Core Services
+        POST_SVC[Post Service]
+        FEED_SVC[Feed Service]
+        USER_SVC[User Service]
+        FOLLOW_SVC[Follow Service]
+        SEARCH_SVC[Search Service]
+        NOTIF_SVC[Notification Service]
+    end
+
+    subgraph Fan-Out Layer
+        FANOUT[Fan-Out Service]
+        QUEUE[Message Queue<br/>Kafka]
+    end
+
+    subgraph Caching Layer
+        FEED_CACHE[Feed Cache<br/>Redis]
+        POST_CACHE[Post Cache<br/>Redis]
+        USER_CACHE[User Cache<br/>Redis]
+    end
+
+    subgraph Storage Layer
+        POST_DB[(Post DB<br/>Sharded MySQL)]
+        USER_DB[(User DB<br/>MySQL)]
+        GRAPH_DB[(Social Graph<br/>Adjacency List)]
+        FEED_DB[(Feed Store<br/>Redis / Cassandra)]
+        SEARCH_IDX[(Search Index<br/>Elasticsearch)]
+        MEDIA[Object Storage<br/>S3 + CDN]
+    end
+
+    WEB --> GW
+    IOS --> GW
+    ANDROID --> GW
+    GW --> POST_SVC
+    GW --> FEED_SVC
+    GW --> USER_SVC
+    GW --> FOLLOW_SVC
+    GW --> SEARCH_SVC
+
+    POST_SVC --> POST_DB
+    POST_SVC --> QUEUE
+    QUEUE --> FANOUT
+    FANOUT --> FEED_DB
+    FANOUT --> NOTIF_SVC
+
+    FEED_SVC --> FEED_CACHE
+    FEED_CACHE --> FEED_DB
+    FEED_SVC --> POST_CACHE
+
+    USER_SVC --> USER_DB
+    FOLLOW_SVC --> GRAPH_DB
+
+    POST_SVC --> MEDIA
+    POST_SVC --> SEARCH_IDX
+</pre>
+<hr>
+<h2>4. Core Components Deep Dive</h2>
+<h3>4.1 Post Service</h3>
+<p>Responsible for creating, reading, updating, and deleting posts.</p>
+<p><strong>Create Post Flow:</strong></p>
+<ol>
+<li>Client sends post content (text + media references) to the API Gateway</li>
+<li>Post Service validates the content (length limits, profanity filter, spam detection)</li>
+<li>If media is attached, upload to S3 via a pre-signed URL (media upload happens client-side in parallel)</li>
+<li>Persist the post to the Post DB (sharded by author_id)</li>
+<li>Publish a <code>PostCreated</code> event to Kafka with the post ID and author ID</li>
+<li>Return the created post to the client</li>
+</ol>
+<p>The Post Service does NOT fan out the post to followers. That responsibility belongs to the Fan-Out Service, which consumes the Kafka event asynchronously.</p>
+<h3>4.2 Follow Service</h3>
+<p>Manages the social graph — who follows whom.</p>
+<p><strong>Data Structure:</strong>
+The social graph is stored as an adjacency list. For each user, we maintain two lists:</p>
+<ul>
+<li><strong>Following:</strong> Users that this user follows (used to generate their feed)</li>
+<li><strong>Followers:</strong> Users that follow this user (used for fan-out when they post)</li>
+</ul>
+<p><strong>Storage:</strong>
+For 500M users with an average of 200 follows each, the graph has ~100 billion edges. This is too large for a single database. We use a sharded key-value store (Redis or Cassandra) where:</p>
+<ul>
+<li>Key: <code>followers:{user_id}</code> → Set of follower IDs</li>
+<li>Key: <code>following:{user_id}</code> → Set of followed user IDs</li>
+</ul>
+<h3>4.3 Feed Service</h3>
+<p>The Feed Service is responsible for returning a user&#39;s personalized feed. It retrieves pre-computed feed entries from the Feed Cache and hydrates them with full post data.</p>
+<p><strong>Feed Retrieval Flow:</strong></p>
+<ol>
+<li>Client requests feed for user X</li>
+<li>Feed Service reads the pre-computed feed entries from Redis (a sorted set of post IDs, ordered by score/timestamp)</li>
+<li>For each post ID, fetch the full post data from the Post Cache (or Post DB on cache miss)</li>
+<li>For celebrity posts (pull model), merge in recent posts from celebrities that user X follows</li>
+<li>Rank the merged results (see Section 6)</li>
+<li>Return the top N posts (paginated)</li>
+</ol>
+<h3>4.4 Fan-Out Service</h3>
+<p>This is the most architecturally significant component. It receives <code>PostCreated</code> events from Kafka and distributes posts to followers&#39; feeds. The strategy depends on the author&#39;s follower count (see Section 5).</p>
+<hr>
+<h2>5. Fan-Out Strategies</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> The fan-out strategy is the single most important design decision in a social media feed system. It is the question the interviewer is waiting for. Lead with the problem statement: &quot;The fundamental challenge is distributing 300M posts to 500M users&#39; feeds efficiently.&quot;</p>
+</div>
+
+
+<h3>Fan-Out on Write (Push Model)</h3>
+<p>When a user creates a post, immediately write the post reference to every follower&#39;s feed.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User (Author)
+    participant PS as Post Service
+    participant K as Kafka
+    participant FO as Fan-Out Service
+    participant GDB as Social Graph DB
+    participant FC as Feed Cache (Redis)
+
+    U->>PS: Create post
+    PS->>PS: Persist post to Post DB
+    PS->>K: Publish PostCreated event
+
+    K->>FO: Consume PostCreated event
+    FO->>GDB: Get follower list for author
+    GDB-->>FO: Return follower IDs [F1, F2, ..., Fn]
+
+    loop For each follower
+        FO->>FC: ZADD feed:{follower_id} timestamp post_id
+    end
+
+    Note over FO,FC: Fan-out complete. All followers<br/>now have this post in their feed cache.
+</pre>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Post is created and persisted</li>
+<li>Fan-Out Service retrieves the author&#39;s follower list</li>
+<li>For each follower, append the post ID to their pre-computed feed (a Redis sorted set, scored by timestamp or ranking score)</li>
+<li>Each user&#39;s feed is capped at the most recent 800 entries (older entries are evicted)</li>
+</ol>
+<p><strong>Pros:</strong></p>
+<ul>
+<li>Feed reads are extremely fast — just read a pre-computed sorted set from Redis</li>
+<li>Read latency is O(1) — no computation at read time</li>
+<li>Works perfectly for users with moderate follower counts</li>
+</ul>
+<p><strong>Cons:</strong></p>
+<ul>
+<li>Celebrity problem: a user with 50M followers causes 50M writes per post</li>
+<li>Write amplification is enormous at scale</li>
+<li>A post might take minutes to fan out to all 50M followers</li>
+<li>Wastes resources: many followers may never open the app</li>
+</ul>
+<h3>Fan-Out on Read (Pull Model)</h3>
+<p>Do NOT pre-compute feeds. When a user opens their feed, query for recent posts from all users they follow.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User (Reader)
+    participant FS as Feed Service
+    participant GDB as Social Graph DB
+    participant PDB as Post DB
+    participant Cache as Post Cache
+
+    U->>FS: GET /feed
+    FS->>GDB: Get following list for user
+    GDB-->>FS: Return followed user IDs [A1, A2, ..., An]
+
+    loop For each followed user
+        FS->>Cache: Get recent posts by user Ai
+        alt Cache miss
+            FS->>PDB: Query recent posts by user Ai
+            PDB-->>FS: Return posts
+            FS->>Cache: Cache the posts
+        else Cache hit
+            Cache-->>FS: Return cached posts
+        end
+    end
+
+    FS->>FS: Merge and rank all posts
+    FS-->>U: Return top N posts
+</pre>
+<p><strong>Pros:</strong></p>
+<ul>
+<li>No write amplification — posting is instant regardless of follower count</li>
+<li>No wasted computation for inactive users</li>
+<li>Always shows the freshest content</li>
+</ul>
+<p><strong>Cons:</strong></p>
+<ul>
+<li>Feed reads are slow — must query N sources (where N = number of followed users)</li>
+<li>If a user follows 500 people, the feed requires 500 cache/DB lookups</li>
+<li>Read latency can easily exceed 200ms under load</li>
+<li>Puts heavy load on the Post DB/Cache during peak hours</li>
+</ul>
+<h3>Hybrid Approach (Recommended)</h3>
+<div class="important">
+
+<p>The hybrid approach is the correct answer for the interview. Both Twitter and Instagram use variations of this strategy. The key insight is: use push for regular users and pull for celebrities.</p>
+</div>
+
+
+<pre class="mermaid">
+graph TB
+    subgraph Post Created Event
+        EVENT[PostCreated<br/>author_id, post_id]
+    end
+
+    subgraph Decision Logic
+        CHECK{Author has<br/>> 1M followers?}
+    end
+
+    subgraph Push Path - Regular Users
+        PUSH_FO[Fan-Out Workers]
+        PUSH_FEED[Write to each<br/>follower's feed cache]
+    end
+
+    subgraph Pull Path - Celebrities
+        CELEB_CACHE[Celebrity Post Cache<br/>Recent posts per celebrity]
+    end
+
+    subgraph Feed Read Time
+        MERGE[Merge pre-computed feed<br/>+ celebrity posts<br/>+ ranking]
+    end
+
+    EVENT --> CHECK
+    CHECK -->|No: Regular user| PUSH_FO
+    PUSH_FO --> PUSH_FEED
+    CHECK -->|Yes: Celebrity| CELEB_CACHE
+
+    PUSH_FEED --> MERGE
+    CELEB_CACHE --> MERGE
+</pre>
+<p><strong>How the hybrid approach works:</strong></p>
+<ol>
+<li><p><strong>Post creation time:</strong></p>
+<ul>
+<li>If the author has &lt; 1 million followers: use fan-out-on-write (push the post to all followers&#39; feeds)</li>
+<li>If the author has &gt;= 1 million followers: store the post in a &quot;celebrity posts&quot; cache, but do NOT fan out</li>
+</ul>
+</li>
+<li><p><strong>Feed read time:</strong></p>
+<ul>
+<li>Read the user&#39;s pre-computed feed from Redis (contains posts from regular users they follow)</li>
+<li>Check if the user follows any celebrities</li>
+<li>If yes, fetch recent posts from each celebrity&#39;s post cache</li>
+<li>Merge the pre-computed feed with celebrity posts</li>
+<li>Rank the merged results</li>
+<li>Return the top N posts</li>
+</ul>
+</li>
+</ol>
+<p><strong>Why the threshold is ~1 million:</strong></p>
+<ul>
+<li>A fan-out of 1M writes takes approximately 1-2 seconds with a fleet of workers</li>
+<li>Beyond that, the latency and resource cost become prohibitive</li>
+<li>The number of celebrities (users with &gt;1M followers) is small (~0.01% of all users), so the pull at read time only adds a few extra lookups</li>
+</ul>
+<h3>Fan-Out Worker Design</h3>
+<p>The Fan-Out Service runs as a fleet of Kafka consumers, each processing <code>PostCreated</code> events:</p>
+<pre><code>Worker receives PostCreated event:
+  1. Fetch follower list for author (paginated, 5000 per page)
+  2. For each page of followers:
+     a. Pipeline ZADD commands to Redis (batch for efficiency)
+     b. ZADD feed:{follower_id} {timestamp} {post_id}
+  3. Trim each feed to max 800 entries: ZREMRANGEBYRANK feed:{follower_id} 0 -801
+  4. Acknowledge the Kafka offset after all followers are processed
+</code></pre>
+<div class="warning">
+
+<p>If a fan-out worker crashes mid-processing, the Kafka offset is not committed, so the event will be reprocessed. This means some followers may receive duplicate feed entries. This is acceptable — duplicates are idempotent (same post_id with same score in a sorted set is a no-op in Redis).</p>
+</div>
+
+
+<hr>
+<h2>6. Feed Ranking &amp; Generation</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Most candidates only discuss chronological feeds. Showing you understand ranking signals and ML-based feed algorithms demonstrates Staff-level depth.</p>
+</div>
+
+
+<h3>Chronological Feed (Simple)</h3>
+<p>The simplest approach: sort posts by creation timestamp. The pre-computed feed in Redis is a sorted set with timestamps as scores.</p>
+<p><strong>Pros:</strong> Easy to implement, users understand the ordering, no algorithmic bias
+<strong>Cons:</strong> Spam and low-quality content rises to the top if posted frequently; users miss important posts from accounts they care about</p>
+<h3>Ranked Feed (ML-Based)</h3>
+<p>Modern social media platforms use machine learning to rank feed items based on predicted engagement.</p>
+<p><strong>Ranking Signals:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Signal Category</th>
+<th>Examples</th>
+<th>Weight</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Engagement prediction</strong></td>
+<td>P(like), P(comment), P(share), P(click)</td>
+<td>High</td>
+</tr>
+<tr>
+<td><strong>Recency</strong></td>
+<td>Post age, time since last session</td>
+<td>High</td>
+</tr>
+<tr>
+<td><strong>Relationship strength</strong></td>
+<td>How often the reader interacts with the author</td>
+<td>High</td>
+</tr>
+<tr>
+<td><strong>Content type</strong></td>
+<td>Image vs text vs video (user preference)</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td><strong>Author signals</strong></td>
+<td>Author&#39;s overall engagement rate, verified status</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td><strong>Diversity</strong></td>
+<td>Avoid showing 10 posts from the same author in a row</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td><strong>Negative signals</strong></td>
+<td>P(hide), P(report), P(unfollow after seeing)</td>
+<td>High (negative)</td>
+</tr>
+</tbody></table>
+<p><strong>Ranking Formula (Simplified EdgeRank Concept):</strong></p>
+<pre><code>Score = Σ (Affinity × Weight × Decay)
+
+Where:
+  Affinity = Strength of relationship between reader and author
+             (based on historical interactions: likes, comments, profile views, DMs)
+  Weight   = Type of content (video &gt; image &gt; link &gt; text, varies by user)
+  Decay    = Time decay function (posts lose relevance over time)
+</code></pre>
+<p><strong>Implementation at Scale:</strong></p>
+<p>The ranking model runs at feed read time, not at fan-out time. This is because:</p>
+<ol>
+<li>Ranking signals change frequently (the user may have interacted with the author since the last fan-out)</li>
+<li>Ranking is personalized to the reader, not the author</li>
+<li>The model can be updated without re-fanning-out posts</li>
+</ol>
+<p>The pipeline:</p>
+<ol>
+<li>Retrieve candidate posts (pre-computed feed + celebrity posts) — ~800 candidates</li>
+<li>Fetch features for each candidate (author-reader affinity, post engagement stats, content type)</li>
+<li>Run the ranking model on all candidates (batch inference, &lt;50ms)</li>
+<li>Return the top 20 posts (first page)</li>
+</ol>
+<h3>Pagination</h3>
+<p><strong>Cursor-based pagination</strong> is essential for social media feeds. Offset-based pagination breaks when new posts are inserted (posts shift, causing duplicates or missed posts).</p>
+<pre><code>First request:  GET /feed?limit=20
+Response:       {posts: [...], cursor: &quot;post_id_of_last_post&quot;}
+
+Next request:   GET /feed?limit=20&amp;cursor=post_id_of_last_post
+Response:       {posts: [...], cursor: &quot;post_id_of_next_last_post&quot;}
+</code></pre>
+<p>The cursor is the post_id (or timestamp) of the last post returned. The next page returns posts scored below that cursor.</p>
+<hr>
+<h2>7. Data Models &amp; Storage</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Be deliberate about which database you choose for each data model. The social graph, the post store, the feed cache, and the search index all have different access patterns and deserve different storage engines.</p>
+</div>
+
+
+<h3>Core Data Models</h3>
+<p><strong>User Table (MySQL, sharded by user_id)</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>user_id</td>
+<td>BIGINT PK</td>
+<td>Snowflake-style unique ID</td>
+</tr>
+<tr>
+<td>username</td>
+<td>VARCHAR(30)</td>
+<td>Unique handle</td>
+</tr>
+<tr>
+<td>display_name</td>
+<td>VARCHAR(50)</td>
+<td>Display name</td>
+</tr>
+<tr>
+<td>bio</td>
+<td>VARCHAR(160)</td>
+<td>User biography</td>
+</tr>
+<tr>
+<td>profile_image_url</td>
+<td>VARCHAR(512)</td>
+<td>S3 URL</td>
+</tr>
+<tr>
+<td>follower_count</td>
+<td>INT</td>
+<td>Denormalized count</td>
+</tr>
+<tr>
+<td>following_count</td>
+<td>INT</td>
+<td>Denormalized count</td>
+</tr>
+<tr>
+<td>is_celebrity</td>
+<td>BOOLEAN</td>
+<td>True if follower_count &gt; 1M</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>Account creation</td>
+</tr>
+<tr>
+<td>updated_at</td>
+<td>TIMESTAMP</td>
+<td>Last profile update</td>
+</tr>
+</tbody></table>
+<p><strong>Post Table (MySQL, sharded by author_id)</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>post_id</td>
+<td>BIGINT PK</td>
+<td>Snowflake-style unique ID</td>
+</tr>
+<tr>
+<td>author_id</td>
+<td>BIGINT</td>
+<td>Foreign key to User</td>
+</tr>
+<tr>
+<td>content</td>
+<td>VARCHAR(280)</td>
+<td>Text content</td>
+</tr>
+<tr>
+<td>media_urls</td>
+<td>JSON</td>
+<td>Array of S3 media URLs</td>
+</tr>
+<tr>
+<td>media_type</td>
+<td>ENUM</td>
+<td>text, image, video, mixed</td>
+</tr>
+<tr>
+<td>like_count</td>
+<td>INT</td>
+<td>Denormalized (updated via counter service)</td>
+</tr>
+<tr>
+<td>comment_count</td>
+<td>INT</td>
+<td>Denormalized</td>
+</tr>
+<tr>
+<td>reshare_count</td>
+<td>INT</td>
+<td>Denormalized</td>
+</tr>
+<tr>
+<td>is_reshare</td>
+<td>BOOLEAN</td>
+<td>Is this a reshare of another post?</td>
+</tr>
+<tr>
+<td>original_post_id</td>
+<td>BIGINT</td>
+<td>If reshare, reference to original</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>Post creation timestamp</td>
+</tr>
+</tbody></table>
+<p><strong>Follow Table (Social Graph - Redis or Cassandra)</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>follower_id</td>
+<td>BIGINT</td>
+<td>The user who follows</td>
+</tr>
+<tr>
+<td>followee_id</td>
+<td>BIGINT</td>
+<td>The user being followed</td>
+</tr>
+<tr>
+<td>followed_at</td>
+<td>TIMESTAMP</td>
+<td>When the follow happened</td>
+</tr>
+</tbody></table>
+<p>Access patterns:</p>
+<ul>
+<li><code>followers:{user_id}</code> → Set of user IDs who follow this user (for fan-out)</li>
+<li><code>following:{user_id}</code> → Set of user IDs this user follows (for feed generation)</li>
+</ul>
+<p><strong>Feed Entry (Redis Sorted Set)</strong></p>
+<pre><code>Key:    feed:{user_id}
+Member: post_id
+Score:  timestamp (or ranking score)
+
+Example:
+  ZADD feed:12345 1680000000 98765
+  ZADD feed:12345 1680000060 98766
+  ZADD feed:12345 1680000120 98767
+</code></pre>
+<p>Each user&#39;s feed is a sorted set of at most 800 post IDs. To read the feed:</p>
+<pre><code>ZREVRANGE feed:12345 0 19  → Returns the 20 most recent post IDs
+</code></pre>
+<p><strong>Like Table (Cassandra)</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>post_id</td>
+<td>BIGINT</td>
+<td>Partition key</td>
+</tr>
+<tr>
+<td>user_id</td>
+<td>BIGINT</td>
+<td>Clustering key</td>
+</tr>
+<tr>
+<td>liked_at</td>
+<td>TIMESTAMP</td>
+<td>When the like was created</td>
+</tr>
+</tbody></table>
+<p><strong>Comment Table (MySQL, sharded by post_id)</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>comment_id</td>
+<td>BIGINT PK</td>
+<td>Unique comment ID</td>
+</tr>
+<tr>
+<td>post_id</td>
+<td>BIGINT</td>
+<td>Foreign key to Post</td>
+</tr>
+<tr>
+<td>author_id</td>
+<td>BIGINT</td>
+<td>Foreign key to User</td>
+</tr>
+<tr>
+<td>content</td>
+<td>VARCHAR(280)</td>
+<td>Comment text</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>Comment creation</td>
+</tr>
+</tbody></table>
+<h3>Database Choice Summary</h3>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Storage</th>
+<th>Reasoning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Users</td>
+<td>MySQL (sharded)</td>
+<td>Structured data, moderate write volume</td>
+</tr>
+<tr>
+<td>Posts</td>
+<td>MySQL (sharded by author_id)</td>
+<td>Structured, need range queries by author</td>
+</tr>
+<tr>
+<td>Social Graph</td>
+<td>Redis or Cassandra</td>
+<td>High-throughput set operations</td>
+</tr>
+<tr>
+<td>Pre-computed Feeds</td>
+<td>Redis (sorted sets)</td>
+<td>Sub-millisecond reads, natural TTL</td>
+</tr>
+<tr>
+<td>Likes</td>
+<td>Cassandra</td>
+<td>High write throughput, simple key-value</td>
+</tr>
+<tr>
+<td>Comments</td>
+<td>MySQL (sharded by post_id)</td>
+<td>Need ordered retrieval per post</td>
+</tr>
+<tr>
+<td>Media</td>
+<td>S3 + CDN</td>
+<td>Blob storage, globally distributed</td>
+</tr>
+<tr>
+<td>Search</td>
+<td>Elasticsearch</td>
+<td>Full-text search, inverted index</td>
+</tr>
+</tbody></table>
+<div class="warning">
+
+<p>Sharding the Post table by <code>author_id</code> means reading a single user&#39;s posts is fast (single shard), but reading posts across many authors (for feed generation) requires scatter-gather. This is fine because the feed is pre-computed — we only scatter-gather during fan-out (write path), not during feed reads.</p>
+</div>
+
+
+<hr>
+<h2>8. Media Storage &amp; Delivery</h2>
+<h3>Upload Flow</h3>
+<p>Media uploads are handled separately from post creation to avoid blocking the API:</p>
+<ol>
+<li>Client requests a pre-signed S3 URL from the Media Service</li>
+<li>Client uploads the media file directly to S3 using the pre-signed URL</li>
+<li>S3 triggers a Lambda function (or notification) that:<ul>
+<li>Generates thumbnails (multiple sizes)</li>
+<li>Transcodes video if applicable</li>
+<li>Runs content moderation (NSFW detection, copyright check)</li>
+<li>Updates the post record with the final media URLs</li>
+</ul>
+</li>
+<li>The CDN is configured to serve from the S3 bucket as origin</li>
+</ol>
+<h3>CDN Strategy</h3>
+<pre class="mermaid">
+graph LR
+    subgraph Origin
+        S3[S3 Bucket<br/>Original Media]
+        THUMB[Thumbnail Service<br/>On-the-fly resizing]
+    end
+
+    subgraph CDN Edge - Americas
+        CDN_US[CDN PoP US]
+    end
+
+    subgraph CDN Edge - Europe
+        CDN_EU[CDN PoP EU]
+    end
+
+    subgraph CDN Edge - Asia
+        CDN_ASIA[CDN PoP Asia]
+    end
+
+    CLIENT_US[US Users] --> CDN_US
+    CLIENT_EU[EU Users] --> CDN_EU
+    CLIENT_ASIA[Asia Users] --> CDN_ASIA
+
+    CDN_US --> S3
+    CDN_EU --> S3
+    CDN_ASIA --> S3
+    CDN_US --> THUMB
+</pre>
+<p><strong>Image Optimization:</strong></p>
+<ul>
+<li>Store original images on S3</li>
+<li>Generate responsive variants (thumbnail, small, medium, large) on upload</li>
+<li>Serve WebP format to supported clients (30% smaller than JPEG)</li>
+<li>Use progressive JPEG for slow connections</li>
+<li>Set long cache TTL on CDN (images are immutable once uploaded)</li>
+</ul>
+<p><strong>Video Delivery:</strong></p>
+<ul>
+<li>Transcode to multiple resolutions (360p, 480p, 720p, 1080p)</li>
+<li>Use HLS (HTTP Live Streaming) for adaptive bitrate streaming</li>
+<li>Store video segments on S3, serve via CDN</li>
+<li>Auto-play previews use low-resolution, short-duration clips</li>
+</ul>
+<hr>
+<h2>9. Search &amp; Trending Topics</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Search and trending are often treated as follow-up questions. Having a prepared answer shows you have thought about the full product, not just the core feed.</p>
+</div>
+
+
+<h3>Post Search</h3>
+<p>We use <strong>Elasticsearch</strong> with an inverted index on post content. When a post is created, it is indexed asynchronously (via the same Kafka pipeline used for fan-out).</p>
+<p><strong>Search Index Fields:</strong></p>
+<ul>
+<li>Post content (full-text, analyzed)</li>
+<li>Hashtags (keyword, exact match)</li>
+<li>Author username (keyword)</li>
+<li>Author display name (full-text)</li>
+<li>Created timestamp (date, for recency boost)</li>
+<li>Engagement score (numeric, for popularity boost)</li>
+</ul>
+<p><strong>Search Query Flow:</strong></p>
+<ol>
+<li>User submits search query</li>
+<li>Search Service sends query to Elasticsearch</li>
+<li>Elasticsearch returns matching post IDs, ranked by relevance + recency + engagement</li>
+<li>Hydrate post IDs with full post data from Post Cache / Post DB</li>
+<li>Return results to client</li>
+</ol>
+<h3>Hashtag Tracking</h3>
+<p>Every post is parsed for hashtags at creation time. Hashtags are stored as a separate field in the post record and in Elasticsearch for exact-match filtering.</p>
+<h3>Trending Topics</h3>
+<p>Trending topics are computed using a <strong>sliding window counter</strong>:</p>
+<ol>
+<li>Each hashtag mention is published to a Kafka topic</li>
+<li>A Flink streaming job maintains a sliding window (e.g., last 5 minutes, last 1 hour, last 24 hours)</li>
+<li>For each window, count hashtag occurrences</li>
+<li>Rank by velocity (rate of increase, not just absolute count) — this surfaces emerging trends, not perpetually popular topics</li>
+<li>Store the top 50 trending topics in Redis, refreshed every 30 seconds</li>
+<li>Trending topics are personalized by region (GeoDNS-based or user locale)</li>
+</ol>
+<p><strong>Velocity Formula:</strong></p>
+<pre><code>trend_score = (count_last_5min / count_last_1hour) × log(count_last_1hour)
+
+This rewards hashtags with:
+  - High recent activity relative to their historical baseline (the ratio)
+  - Sufficient overall volume (the log term prevents tiny spikes from trending)
+</code></pre>
+<h3>Autocomplete</h3>
+<p>For search-as-you-type, we maintain a prefix trie in Redis (or use Elasticsearch&#39;s completion suggester):</p>
+<ul>
+<li>Top searched queries of the last 24 hours</li>
+<li>Usernames matching the prefix</li>
+<li>Hashtags matching the prefix</li>
+</ul>
+<hr>
+<h2>10. Notification Integration</h2>
+<p>When a post is created and fanned out, the Fan-Out Service also triggers notifications:</p>
+<p><strong>Notification Types:</strong></p>
+<ul>
+<li>&quot;User X posted for the first time in a while&quot; (re-engagement)</li>
+<li>&quot;User X who you have notifications enabled for just posted&quot; (per-user notification setting)</li>
+<li>Mentions: &quot;@username&quot; in post content triggers a push notification to that user</li>
+<li>Likes/comments on your post (batched: &quot;User X and 5 others liked your post&quot;)</li>
+</ul>
+<p><strong>Architecture:</strong>
+Notifications are handled by a separate Notification Service that:</p>
+<ol>
+<li>Consumes events from Kafka (PostCreated, PostLiked, CommentCreated, UserMentioned)</li>
+<li>Checks user notification preferences (push enabled? Email digest? In-app only?)</li>
+<li>Batches rapid-fire notifications (e.g., 100 likes in 1 minute become a single notification)</li>
+<li>Sends push notifications via APNs (iOS) and FCM (Android)</li>
+<li>Stores notification history in a per-user sorted set in Redis (for the in-app notification tab)</li>
+</ol>
+<div class="note">
+
+<p>Notification fanout is different from feed fanout. Feed fanout targets all followers (potentially millions). Notification fanout is targeted — only users who have explicitly opted into notifications for a specific author, or users who are mentioned.</p>
+</div>
+
+
+<hr>
+<h2>11. Scalability Strategies</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> At Staff level, you should be able to discuss not just &quot;add more servers&quot; but specific bottlenecks and their targeted solutions.</p>
+</div>
+
+
+<h3>Bottleneck Analysis</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Bottleneck</th>
+<th>Solution</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Fan-Out Workers</td>
+<td>Celebrity posts cause massive write spikes</td>
+<td>Hybrid fan-out (pull for celebrities)</td>
+</tr>
+<tr>
+<td>Redis Feed Cache</td>
+<td>Memory for 500M users × 800 entries</td>
+<td>Evict feeds for inactive users; only cache active users</td>
+</tr>
+<tr>
+<td>Post DB</td>
+<td>3,500 writes/sec across shards</td>
+<td>Shard by author_id; each shard handles ~100 writes/sec</td>
+</tr>
+<tr>
+<td>Social Graph</td>
+<td>Large follower lists (50M entries)</td>
+<td>Paginate follower reads; pre-partition large lists</td>
+</tr>
+<tr>
+<td>Search Index</td>
+<td>Indexing 300M posts/day</td>
+<td>Multiple Elasticsearch clusters; time-based indices</td>
+</tr>
+</tbody></table>
+<h3>Sharding Strategy</h3>
+<p><strong>Posts: Shard by author_id</strong></p>
+<ul>
+<li>All posts by the same author are on the same shard</li>
+<li>Querying &quot;all posts by user X&quot; hits a single shard</li>
+<li>Trade-off: celebrity accounts create hot shards (mitigate with dedicated shards for top 1000 accounts)</li>
+</ul>
+<p><strong>Users: Shard by user_id</strong></p>
+<ul>
+<li>Even distribution since user IDs are random</li>
+</ul>
+<p><strong>Social Graph: Shard by user_id</strong></p>
+<ul>
+<li><code>followers:{user_id}</code> and <code>following:{user_id}</code> are co-located on the same shard</li>
+<li>This is critical because fan-out reads the full follower list — it must be a single-shard read</li>
+</ul>
+<p><strong>Feed Cache: Shard by user_id</strong></p>
+<ul>
+<li>Redis Cluster handles this automatically via hash slots</li>
+</ul>
+<h3>Feed Cache Memory Optimization</h3>
+<p>Not all 500M users need a cached feed. Many users are inactive (haven&#39;t opened the app in weeks). We only maintain cached feeds for active users:</p>
+<pre><code>Active users (opened app in last 7 days) ≈ 200M
+Feed entries per user = 800
+Bytes per entry = 24
+
+Memory = 200M × 800 × 24 = 3.84 TB
+
+With a Redis cluster of 128 nodes, each with 32 GB:
+Total capacity = 4 TB → fits.
+</code></pre>
+<p>For inactive users, the feed is computed on-demand when they return (fan-out-on-read for their first session, then switched to push model).</p>
+<h3>Geographic Distribution</h3>
+<pre class="mermaid">
+graph TB
+    subgraph US Region
+        US_LB[Load Balancer]
+        US_APP[App Servers]
+        US_CACHE[Redis Cache]
+        US_DB[(DB Replicas)]
+    end
+
+    subgraph EU Region
+        EU_LB[Load Balancer]
+        EU_APP[App Servers]
+        EU_CACHE[Redis Cache]
+        EU_DB[(DB Replicas)]
+    end
+
+    subgraph Asia Region
+        ASIA_LB[Load Balancer]
+        ASIA_APP[App Servers]
+        ASIA_CACHE[Redis Cache]
+        ASIA_DB[(DB Replicas)]
+    end
+
+    subgraph Primary Region
+        PRIMARY_DB[(Primary Database<br/>US-East)]
+        KAFKA_PRIMARY[Kafka<br/>Primary Cluster]
+    end
+
+    US_DB --> PRIMARY_DB
+    EU_DB --> PRIMARY_DB
+    ASIA_DB --> PRIMARY_DB
+
+    US_APP --> KAFKA_PRIMARY
+    EU_APP --> KAFKA_PRIMARY
+    ASIA_APP --> KAFKA_PRIMARY
+
+    GEODNS[GeoDNS] --> US_LB
+    GEODNS --> EU_LB
+    GEODNS --> ASIA_LB
+</pre>
+<p>Writes always go to the primary region. Cross-region replication ensures read replicas are available in each region. Feed caches are populated locally in each region via the fan-out pipeline (Kafka events are replicated cross-region).</p>
+<hr>
+<h2>12. Design Trade-offs &amp; Justifications</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> The hybrid fan-out approach is the signature trade-off of this design. Be ready to explain the threshold (1M followers) and how you would tune it in production.</p>
+</div>
+
+
+<h3>Trade-off 1: Fan-Out Strategy</h3>
+<table>
+<thead>
+<tr>
+<th>Consideration</th>
+<th>Our Decision</th>
+<th>Alternative</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Regular users (&lt;1M followers)</td>
+<td>Push (fan-out on write)</td>
+<td>Pull (too slow at read time)</td>
+</tr>
+<tr>
+<td>Celebrities (&gt;1M followers)</td>
+<td>Pull (fan-out on read)</td>
+<td>Push (too expensive to write 50M entries)</td>
+</tr>
+<tr>
+<td>Threshold</td>
+<td>1M followers</td>
+<td>Could be 500K or 5M — tunable</td>
+</tr>
+<tr>
+<td>Feed freshness</td>
+<td>Near-real-time for push, eventual for pull</td>
+<td>Full push would be fresher but unscalable</td>
+</tr>
+</tbody></table>
+<p><strong>Justification:</strong> The hybrid approach limits the maximum fan-out per post to ~1M writes while ensuring 99.99% of posts are pre-computed in followers&#39; feeds. The small number of celebrities (perhaps 50,000 users globally) adds only 5-10 pull lookups per feed read, well within the 200ms latency budget.</p>
+<h3>Trade-off 2: Chronological vs Ranked Feed</h3>
+<table>
+<thead>
+<tr>
+<th>Consideration</th>
+<th>Our Decision</th>
+<th>Alternative</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>User experience</td>
+<td>Ranked (higher engagement)</td>
+<td>Chronological (simpler, more transparent)</td>
+</tr>
+<tr>
+<td>Implementation complexity</td>
+<td>Higher (ML model)</td>
+<td>Lower (sort by timestamp)</td>
+</tr>
+<tr>
+<td>Infrastructure cost</td>
+<td>Higher (feature store, model serving)</td>
+<td>Lower</td>
+</tr>
+<tr>
+<td>User trust</td>
+<td>Lower (algorithmic bias concerns)</td>
+<td>Higher (deterministic ordering)</td>
+</tr>
+</tbody></table>
+<p><strong>Justification:</strong> Ranked feeds significantly improve engagement metrics (time spent, interactions) because users see the most relevant content first. We offer chronological as an opt-in setting for users who prefer it.</p>
+<h3>Trade-off 3: Eventual Consistency for Feeds</h3>
+<table>
+<thead>
+<tr>
+<th>Consideration</th>
+<th>Our Decision</th>
+<th>Alternative</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Consistency</td>
+<td>Eventual (5-10 second delay OK)</td>
+<td>Strong (post appears instantly in all feeds)</td>
+</tr>
+<tr>
+<td>Complexity</td>
+<td>Simpler (async fan-out via Kafka)</td>
+<td>Harder (synchronous fan-out, distributed transactions)</td>
+</tr>
+<tr>
+<td>Latency</td>
+<td>Post creation is fast (no fan-out in the request path)</td>
+<td>Post creation blocks until fan-out completes</td>
+</tr>
+<tr>
+<td>User perception</td>
+<td>Acceptable (users rarely notice a few seconds delay)</td>
+<td>Slightly better but not worth the cost</td>
+</tr>
+</tbody></table>
+<p><strong>Justification:</strong> Social media feeds are inherently eventually consistent. Users do not expect a post to appear in every follower&#39;s feed within milliseconds. The async pipeline via Kafka provides durability (events are not lost) and scalability (fan-out workers scale independently of the API servers).</p>
+<h3>Trade-off 4: Feed Cache Size (800 entries per user)</h3>
+<table>
+<thead>
+<tr>
+<th>Consideration</th>
+<th>Our Decision</th>
+<th>Alternative</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Entries per feed</td>
+<td>800</td>
+<td>200 (less memory) or 5000 (more history)</td>
+</tr>
+<tr>
+<td>Memory per user</td>
+<td>19.2 KB</td>
+<td>4.8 KB or 120 KB</td>
+</tr>
+<tr>
+<td>Total memory (200M users)</td>
+<td>3.84 TB</td>
+<td>960 GB or 24 TB</td>
+</tr>
+<tr>
+<td>User experience</td>
+<td>Covers ~3 days of content for active users</td>
+<td>Depends on how far back users scroll</td>
+</tr>
+</tbody></table>
+<p><strong>Justification:</strong> 800 entries covers approximately 3-4 days of content for a user following 200 accounts that each post once per day. Most users do not scroll beyond 1-2 days, so this provides ample buffer. The 3.84 TB fits within our Redis cluster budget.</p>
+<hr>
+<h2>13. Interview Cheat Sheet</h2>
+<div class="important">
+
+<p>Use this as a quick reference during your interview preparation. Memorize the key numbers, the hybrid fan-out approach, and the three main trade-offs.</p>
+</div>
+
+
+<h3>Key Numbers to Remember</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>DAU</td>
+<td>500 Million</td>
+</tr>
+<tr>
+<td>Posts per day</td>
+<td>300 Million</td>
+</tr>
+<tr>
+<td>Feed reads per day</td>
+<td>5 Billion</td>
+</tr>
+<tr>
+<td>Post write QPS</td>
+<td>~3,500/sec</td>
+</tr>
+<tr>
+<td>Feed read QPS</td>
+<td>~58,000/sec</td>
+</tr>
+<tr>
+<td>Fan-out writes/day</td>
+<td>60 Billion</td>
+</tr>
+<tr>
+<td>Average followers per user</td>
+<td>200</td>
+</tr>
+<tr>
+<td>Celebrity threshold</td>
+<td>1 Million followers</td>
+</tr>
+<tr>
+<td>Feed cache size per user</td>
+<td>800 entries (~19 KB)</td>
+</tr>
+<tr>
+<td>Total feed cache</td>
+<td>~3.84 TB (200M active users)</td>
+</tr>
+<tr>
+<td>Post storage per year</td>
+<td>~100 TB</td>
+</tr>
+<tr>
+<td>Media storage per day</td>
+<td>~195 TB</td>
+</tr>
+</tbody></table>
+<h3>Decision Summary</h3>
+<table>
+<thead>
+<tr>
+<th>Decision Point</th>
+<th>Choice</th>
+<th>Key Reason</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Fan-out strategy</td>
+<td>Hybrid (push + pull)</td>
+<td>Handles both regular users and celebrities</td>
+</tr>
+<tr>
+<td>Celebrity threshold</td>
+<td>1M followers</td>
+<td>Limits max fan-out per post</td>
+</tr>
+<tr>
+<td>Feed ordering</td>
+<td>ML-ranked with chronological opt-in</td>
+<td>Higher engagement</td>
+</tr>
+<tr>
+<td>Post DB sharding</td>
+<td>By author_id</td>
+<td>All posts by one user on same shard</td>
+</tr>
+<tr>
+<td>Feed storage</td>
+<td>Redis sorted sets</td>
+<td>Sub-millisecond reads</td>
+</tr>
+<tr>
+<td>Media storage</td>
+<td>S3 + CDN</td>
+<td>Globally distributed, cost-effective</td>
+</tr>
+<tr>
+<td>Search</td>
+<td>Elasticsearch</td>
+<td>Full-text + hashtag indexing</td>
+</tr>
+<tr>
+<td>Consistency model</td>
+<td>Eventual</td>
+<td>Acceptable for feeds</td>
+</tr>
+<tr>
+<td>Pagination</td>
+<td>Cursor-based</td>
+<td>Handles real-time feed insertions</td>
+</tr>
+</tbody></table>
+<h3>Common Follow-Up Questions</h3>
+<p><strong>Q: How do you handle a user unfollowing someone? Their posts are already in the feed.</strong>
+A: We do NOT retroactively remove posts from the feed cache. The unfollowed user&#39;s posts naturally age out (they are no longer replenished). For immediate effect, the Feed Service can filter out posts from unfollowed users at read time — this is a lightweight in-memory filter on ~20 posts per page.</p>
+<p><strong>Q: How do you handle post deletions?</strong>
+A: The post is soft-deleted in the Post DB (marked as deleted, not physically removed). When the Feed Service hydrates post IDs from the feed cache, it skips deleted posts. Periodically, a cleanup job removes deleted post IDs from feed caches. The CDN cache for media is invalidated.</p>
+<p><strong>Q: What if a user follows 10,000 accounts?</strong>
+A: The pull portion of the feed (celebrity posts) is capped at following a maximum of ~50 celebrities. For the push portion, following 10,000 accounts means their feed receives more updates, but the fan-out cost is on the followed accounts, not on the follower. The feed cache (800 entries) naturally caps the visible content.</p>
+<p><strong>Q: How do you prevent spam accounts from polluting feeds?</strong>
+A: Multiple layers: (1) Rate limit post creation per account, (2) ML-based spam detection on post content before persisting, (3) Account-level spam scoring based on behavior patterns (mass following/unfollowing, identical content posting), (4) User reports trigger manual review.</p>
+<p><strong>Q: How do you handle a flash mob — millions of users posting at the same time (e.g., New Year&#39;s)?</strong>
+A: Kafka absorbs the write spike as a buffer. Fan-out workers scale horizontally based on Kafka consumer lag. The key insight is that feed reads (which are latency-sensitive) are served from cache and are unaffected by the write spike. The fan-out pipeline may fall behind by a few minutes during extreme spikes, but it catches up as the spike subsides.</p>
+<h3>Whiteboard Summary</h3>
+<p>If you have limited whiteboard space, draw this:</p>
+<pre><code>Post → Kafka → Fan-Out Workers → Redis Feed Cache (push for &lt;1M followers)
+                                → Celebrity Post Cache (pull for &gt;1M followers)
+
+Feed Read → Merge(Redis feed + Celebrity posts) → Rank → Return top 20
+
+Key insight: Hybrid fan-out solves the celebrity problem.
+</code></pre>
+<hr>
+<div class="note">
+
+<p><strong>Final Thought:</strong> The social media feed is arguably the most important system design question because it forces you to reason about asymmetric fan-out, read/write trade-offs, and ranking algorithms simultaneously. Master the hybrid approach and you will handle this question confidently at any level.</p>
+</div>
+
+
+</body>
+</html>

@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Design a Real-Time Collaboration System</title>
+</head>
+<body>
+
+<h1>Design a Real-Time Collaboration System</h1>
+<h2>Introduction</h2>
+<p>Real-time collaborative editing, as seen in Google Docs, Figma, and Notion, allows multiple users to simultaneously edit the same document and see each other&#39;s changes instantly. What appears seamless to the user is actually one of the hardest problems in distributed systems: maintaining a consistent document state when multiple users make concurrent, potentially conflicting edits across unreliable networks.</p>
+<p>In a Staff/Senior-level interview, this topic tests your understanding of concurrency control algorithms (Operational Transformation and CRDTs), real-time communication (WebSockets), conflict resolution, offline support, and the subtlety of making distributed state feel like a single shared document.</p>
+<hr>
+<h2>Requirements</h2>
+<h3>Functional Requirements</h3>
+<ol>
+<li><strong>Concurrent editing</strong>: Multiple users can edit the same document simultaneously.</li>
+<li><strong>Real-time sync</strong>: Changes from one user appear on all other users&#39; screens within sub-second latency.</li>
+<li><strong>Cursor and presence tracking</strong>: Show where each collaborator&#39;s cursor is and who is currently viewing the document.</li>
+<li><strong>Version history</strong>: Maintain a complete edit history with the ability to view or restore previous versions.</li>
+<li><strong>Sharing and permissions</strong>: Owner can share with specific users as editor or viewer, or via public link.</li>
+<li><strong>Rich text support</strong>: Bold, italic, headings, lists, tables, images, and other formatting.</li>
+</ol>
+<h3>Non-Functional Requirements</h3>
+<ol>
+<li><strong>Conflict resolution without data loss</strong>: No user&#39;s edits should be silently dropped.</li>
+<li><strong>Sub-second sync latency</strong>: In normal network conditions, changes should propagate in under 500 ms.</li>
+<li><strong>Offline support</strong>: Users can edit while disconnected and sync when they reconnect.</li>
+<li><strong>Convergence</strong>: All users must eventually see the same document state, regardless of the order in which they receive operations.</li>
+<li><strong>Scalability</strong>: Support documents with hundreds of concurrent editors and millions of total documents.</li>
+</ol>
+<hr>
+<h2>Capacity Estimation</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Total documents</td>
+<td>500 million</td>
+</tr>
+<tr>
+<td>Documents actively edited concurrently</td>
+<td>1 million</td>
+</tr>
+<tr>
+<td>Average concurrent editors per document</td>
+<td>3-5</td>
+</tr>
+<tr>
+<td>Total concurrent WebSocket connections</td>
+<td>5 million</td>
+</tr>
+<tr>
+<td>Operations per second (all users)</td>
+<td>500,000</td>
+</tr>
+<tr>
+<td>Average operation size</td>
+<td>100-500 bytes</td>
+</tr>
+<tr>
+<td>Operation throughput</td>
+<td>~100 MB/s</td>
+</tr>
+<tr>
+<td>Average document size</td>
+<td>50 KB</td>
+</tr>
+<tr>
+<td>Total document storage</td>
+<td>500M x 50 KB = ~25 TB</td>
+</tr>
+<tr>
+<td>Version history storage multiplier</td>
+<td>5x (snapshots + operation logs)</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>The operations-per-second figure may seem high, but consider that every keystroke, cursor movement, and formatting change generates an operation. A single fast typist produces 5-10 operations per second.</p>
+</div>
+
+
+<hr>
+<h2>High-Level Architecture</h2>
+<pre class="mermaid">
+graph TB
+    subgraph Clients ["Client Applications"]
+        C1["User A<br/>(Browser)"]
+        C2["User B<br/>(Browser)"]
+        C3["User C<br/>(Mobile)"]
+    end
+
+    subgraph Edge ["Connection Layer"]
+        LB["Load Balancer<br/>(sticky sessions)"]
+        WS1["WebSocket Server 1"]
+        WS2["WebSocket Server 2"]
+        WS3["WebSocket Server N"]
+    end
+
+    subgraph Core ["Collaboration Core"]
+        DS["Document Session<br/>Manager"]
+        OT["OT / CRDT<br/>Engine"]
+        Presence["Presence &<br/>Cursor Service"]
+    end
+
+    subgraph Messaging ["Pub/Sub Layer"]
+        Redis["Redis Pub/Sub<br/>(cross-server broadcast)"]
+    end
+
+    subgraph Storage ["Storage Layer"]
+        DocDB[("Document Store<br/>(PostgreSQL)")]
+        OpLog[("Operation Log<br/>(append-only)")]
+        BlobStore[("Blob Store<br/>(images, files)")]
+        SnapStore[("Snapshot Store")]
+    end
+
+    C1 & C2 & C3 -->|WebSocket| LB
+    LB --> WS1 & WS2 & WS3
+    WS1 & WS2 & WS3 --> DS
+    DS --> OT
+    DS --> Presence
+    WS1 & WS2 & WS3 <--> Redis
+    OT --> OpLog
+    OT --> DocDB
+    DS --> SnapStore
+    DS --> BlobStore
+</pre>
+<h3>Collaboration Flow</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as User A
+    participant WSA as WS Server (A's connection)
+    participant Engine as OT/CRDT Engine
+    participant WSB as WS Server (B's connection)
+    participant B as User B
+
+    Note over A,B: Both users have document version 5
+
+    A->>WSA: Insert "Hello" at position 10
+    WSA->>Engine: Operation: insert("Hello", pos=10, base_version=5)
+    Engine->>Engine: Apply operation, increment to version 6
+    Engine-->>WSA: ACK (version=6)
+    WSA-->>A: Confirm operation (version=6)
+
+    B->>WSB: Delete char at position 3
+    WSB->>Engine: Operation: delete(pos=3, base_version=5)
+    Engine->>Engine: Transform against version 6 operations
+    Note over Engine: Position 3 is before position 10<br/>Adjust insert position: 10 -> 9<br/>Delete still at position 3
+    Engine->>Engine: Apply transformed operation, version 7
+    Engine-->>WSB: ACK (version=7)
+    WSB-->>B: Confirm operation
+
+    Engine->>WSA: Broadcast: delete(pos=3, version=7)
+    WSA-->>A: Apply remote operation
+    Engine->>WSB: Broadcast: insert("Hello", pos=9, version=6)
+    WSB-->>B: Apply remote operation
+
+    Note over A,B: Both documents converge to same state
+</pre>
+<hr>
+<h2>Core Components Deep Dive</h2>
+<h3>1. Operational Transformation (OT)</h3>
+<p>OT is the algorithm used by Google Docs. Its core idea is: when two users make concurrent edits, transform one operation against the other so that applying both in any order produces the same result.</p>
+<p><strong>The fundamental problem</strong>: User A inserts &quot;X&quot; at position 5, and User B simultaneously deletes the character at position 3. These operations were created independently against the same document state.</p>
+<p>If we naively apply both:</p>
+<ul>
+<li>A&#39;s view: insert &quot;X&quot; at 5, then delete at 3 -&gt; X is at position 4</li>
+<li>B&#39;s view: delete at 3, then insert &quot;X&quot; at 5 -&gt; X is at position 5</li>
+</ul>
+<p>The documents have diverged. OT fixes this by transforming operations.</p>
+<p><strong>Transformation example</strong>:</p>
+<pre class="mermaid">
+graph TB
+    subgraph Before ["Initial Document State (version 0)"]
+        Doc0["H E L L O W O R L D<br/>0 1 2 3 4 5 6 7 8 9"]
+    end
+
+    subgraph Concurrent ["Concurrent Operations (both based on version 0)"]
+        OpA["User A: insert('X', position=5)<br/>Intent: insert X between O and W"]
+        OpB["User B: delete(position=3)<br/>Intent: delete second L"]
+    end
+
+    subgraph Transform ["OT Transformation"]
+        T1["Transform A against B:<br/>A's position 5 > B's position 3<br/>So A's position becomes 5-1 = 4"]
+        T2["Transform B against A:<br/>B's position 3 < A's position 5<br/>So B's position stays 3"]
+    end
+
+    subgraph After ["Both Users Apply Both Ops"]
+        UserA["User A applies: insert(X,5) then delete(3)<br/>= H E L O X W O R L D<br/>then delete pos 3 -> H E L X W O R L D"]
+        UserB["User B applies: delete(3) then insert(X,4)<br/>= H E L O W O R L D<br/>then insert X at 4 -> H E L X W O R L D"]
+        Same["Both arrive at: H E L X W O R L D"]
+    end
+
+    Before --> Concurrent
+    Concurrent --> Transform
+    Transform --> After
+    UserA --> Same
+    UserB --> Same
+</pre>
+<p><strong>OT with a central server</strong>: Google Docs uses a server-centric OT model:</p>
+<ol>
+<li>The server is the single source of truth and assigns sequential version numbers.</li>
+<li>Each client sends operations to the server along with the version they were based on.</li>
+<li>The server transforms incoming operations against all operations that have been applied since the client&#39;s base version.</li>
+<li>The server applies the transformed operation and broadcasts it to all other clients.</li>
+<li>Each client transforms incoming remote operations against any of its own pending (unacknowledged) operations.</li>
+</ol>
+<p><strong>OT operation types</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Parameters</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Insert</td>
+<td>position, text</td>
+<td>Insert text at a position</td>
+</tr>
+<tr>
+<td>Delete</td>
+<td>position, length</td>
+<td>Delete characters starting at position</td>
+</tr>
+<tr>
+<td>Retain</td>
+<td>count</td>
+<td>Skip forward (no change)</td>
+</tr>
+<tr>
+<td>Format</td>
+<td>position, length, attributes</td>
+<td>Apply formatting (bold, italic, etc.)</td>
+</tr>
+</tbody></table>
+<p><strong>Composition</strong>: Operations can be composed (combined) for efficiency. Instead of sending 5 individual character insertions, they are composed into a single &quot;insert 5 characters&quot; operation.</p>
+<h3>2. CRDTs (Conflict-free Replicated Data Types)</h3>
+<p>CRDTs take a fundamentally different approach. Instead of transforming operations, they use data structures that are mathematically guaranteed to converge when merged, regardless of the order of operations.</p>
+<p><strong>How it works for text</strong>:</p>
+<p>Each character in the document is assigned a unique, globally ordered identifier. When a user inserts a character, it gets an ID that positions it between its neighbors. Because IDs are unique and the ordering is deterministic, any replica can apply operations in any order and arrive at the same state.</p>
+<p><strong>Popular CRDT approaches</strong>:</p>
+<ul>
+<li><strong>RGA (Replicated Growable Array)</strong>: Characters have unique timestamps. Insertions reference the character they follow. Concurrent insertions after the same character are ordered by timestamp.</li>
+<li><strong>Yjs</strong>: A popular open-source CRDT library. Uses a linked list of items with unique IDs. Handles insertions, deletions, and formatting. Used by many collaboration products.</li>
+<li><strong>Automerge</strong>: Another CRDT library focused on JSON-like data structures. Good for structured documents.</li>
+</ul>
+<p><strong>CRDT character addressing example</strong>:</p>
+<pre><code>Document: &quot;HELLO&quot;
+IDs:       (1,A) (2,A) (3,A) (4,A) (5,A)
+
+User A inserts &quot;X&quot; between position 3 and 4:
+  New char: (6,A) placed between (3,A) and (4,A)
+  Document: &quot;HELXLO&quot;
+
+User B concurrently inserts &quot;Y&quot; between position 3 and 4:
+  New char: (1,B) placed between (3,A) and (4,A)
+  Document: &quot;HELYLO&quot;
+
+When merging: both X and Y go between (3,A) and (4,A).
+Tie-breaking by user ID: A &lt; B, so X comes before Y.
+Final document: &quot;HELXYLO&quot; (deterministic, both users converge)
+</code></pre>
+<h3>3. OT vs CRDT Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>OT</th>
+<th>CRDT</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Central server required</strong></td>
+<td>Yes (typical)</td>
+<td>No (peer-to-peer possible)</td>
+</tr>
+<tr>
+<td><strong>Convergence guarantee</strong></td>
+<td>Relies on correct transformation functions</td>
+<td>Mathematically guaranteed</td>
+</tr>
+<tr>
+<td><strong>Complexity</strong></td>
+<td>Transform functions are tricky to implement correctly</td>
+<td>Data structure is complex, but merge is simple</td>
+</tr>
+<tr>
+<td><strong>Performance</strong></td>
+<td>Lightweight operations</td>
+<td>Higher memory (unique IDs per character)</td>
+</tr>
+<tr>
+<td><strong>Offline support</strong></td>
+<td>Difficult (server is authority)</td>
+<td>Natural (merge when reconnected)</td>
+</tr>
+<tr>
+<td><strong>History/undo</strong></td>
+<td>Invert operations</td>
+<td>More complex (need to track causality)</td>
+</tr>
+<tr>
+<td><strong>Adopted by</strong></td>
+<td>Google Docs, Microsoft Office Online</td>
+<td>Figma, Notion (partially), Yjs-based apps</td>
+</tr>
+<tr>
+<td><strong>Scalability</strong></td>
+<td>Server can bottleneck</td>
+<td>Each replica independent</td>
+</tr>
+<tr>
+<td><strong>Implementation maturity</strong></td>
+<td>Well-understood, many battle-tested implementations</td>
+<td>Newer, rapidly improving (Yjs, Automerge)</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>In an interview, you do not need to implement OT or CRDT from scratch. What matters is explaining the core idea of each, their trade-offs, and why you would choose one over the other. Saying &quot;OT needs a central server but is lighter weight; CRDTs support peer-to-peer and offline but use more memory&quot; demonstrates solid understanding.</p>
+</div>
+
+
+<h3>4. WebSocket for Real-Time Sync</h3>
+<p>WebSockets provide the bidirectional, persistent connection needed for real-time collaboration.</p>
+<p><strong>Why not HTTP polling or Server-Sent Events?</strong></p>
+<table>
+<thead>
+<tr>
+<th>Transport</th>
+<th>Direction</th>
+<th>Latency</th>
+<th>Connection Overhead</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>HTTP polling</td>
+<td>Client -&gt; Server</td>
+<td>High (poll interval)</td>
+<td>New connection each time</td>
+<td>Not suitable for real-time</td>
+</tr>
+<tr>
+<td>Long polling</td>
+<td>Bidirectional (awkward)</td>
+<td>Medium</td>
+<td>Hold connection open</td>
+<td>Acceptable but wasteful</td>
+</tr>
+<tr>
+<td>SSE</td>
+<td>Server -&gt; Client only</td>
+<td>Low</td>
+<td>One persistent connection</td>
+<td>Good for one-way updates</td>
+</tr>
+<tr>
+<td>WebSocket</td>
+<td>Bidirectional</td>
+<td>Very low</td>
+<td>One persistent connection</td>
+<td>Ideal for collaboration</td>
+</tr>
+</tbody></table>
+<p><strong>WebSocket connection management</strong>:</p>
+<ul>
+<li><strong>Sticky sessions</strong>: A user&#39;s WebSocket connection must stay on the same server for the duration of their editing session. Use consistent hashing on user_id or session_id at the load balancer.</li>
+<li><strong>Heartbeats</strong>: Send ping/pong frames every 30 seconds to detect dead connections.</li>
+<li><strong>Reconnection</strong>: When a connection drops, the client reconnects and requests all operations since its last known version. The server replays missed operations.</li>
+<li><strong>Cross-server communication</strong>: When collaborators are connected to different WebSocket servers, use Redis Pub/Sub or a message bus to broadcast operations across servers.</li>
+</ul>
+<pre class="mermaid">
+graph TB
+    subgraph ServerA ["WebSocket Server A"]
+        UserA["User A connection"]
+        UserB["User B connection"]
+    end
+
+    subgraph ServerB ["WebSocket Server B"]
+        UserC["User C connection"]
+    end
+
+    subgraph PubSub ["Redis Pub/Sub"]
+        Channel["Channel: doc_12345"]
+    end
+
+    UserA -->|"sends op"| ServerA
+    ServerA -->|"publish op"| Channel
+    Channel -->|"subscribe"| ServerA
+    Channel -->|"subscribe"| ServerB
+    ServerA -->|"broadcast to"| UserB
+    ServerB -->|"broadcast to"| UserC
+</pre>
+<h3>5. Document Model</h3>
+<p>A collaborative document is not just a string of characters. It is a tree of blocks with rich formatting.</p>
+<p><strong>Block-based structure</strong>:</p>
+<pre><code>Document
+  +-- Paragraph Block
+  |     +-- Text Run (&quot;Hello &quot;, bold=false)
+  |     +-- Text Run (&quot;world&quot;, bold=true)
+  |
+  +-- Heading Block (level=2)
+  |     +-- Text Run (&quot;Introduction&quot;)
+  |
+  +-- List Block (type=ordered)
+  |     +-- List Item
+  |     |     +-- Text Run (&quot;First point&quot;)
+  |     +-- List Item
+  |           +-- Text Run (&quot;Second point&quot;)
+  |
+  +-- Table Block
+  |     +-- Row
+  |           +-- Cell +-- Cell +-- Cell
+  |
+  +-- Image Block (src=&quot;...&quot;, alt=&quot;...&quot;)
+</code></pre>
+<p><strong>Why tree structure?</strong></p>
+<ul>
+<li>Enables block-level operations (move a paragraph, delete a list).</li>
+<li>Formatting is represented as attributes on text runs, not as separate characters.</li>
+<li>Embeds (images, tables, code blocks) are first-class nodes, not hacks.</li>
+</ul>
+<p><strong>Character-level addressing</strong>: For OT/CRDT, each character needs a stable address that survives concurrent edits. In a flat string, positions shift when others insert or delete. In a tree-based model, each block has an ID, and positions are relative to the block. This localizes the impact of concurrent edits.</p>
+<h3>6. Versioning and History</h3>
+<p><strong>Operation log</strong>: Every operation is stored in an append-only log with a monotonically increasing version number.</p>
+<pre><code>Version 1: insert(&quot;H&quot;, pos=0, user=A, timestamp=T1)
+Version 2: insert(&quot;e&quot;, pos=1, user=A, timestamp=T2)
+Version 3: insert(&quot;l&quot;, pos=2, user=A, timestamp=T3)
+...
+Version 1000: format(pos=0, len=5, bold=true, user=B, timestamp=T1000)
+</code></pre>
+<p><strong>Snapshots</strong>: Replaying thousands of operations to reconstruct a document is slow. Periodically (e.g., every 100 operations or when a user explicitly creates a version), the system saves a snapshot of the full document state.</p>
+<p><strong>Loading a document</strong>:</p>
+<ol>
+<li>Find the most recent snapshot before the desired version.</li>
+<li>Replay operations from that snapshot forward to the target version.</li>
+<li>This bounds the replay to at most ~100 operations.</li>
+</ol>
+<p><strong>Viewing history</strong>: Users can browse a timeline of changes, see who made each change, and restore to any previous version. Restoring creates a new version (it does not rewrite history).</p>
+<div class="note">
+
+<p>The operation log is the source of truth, not the snapshots. Snapshots are an optimization for fast loading. If a snapshot is corrupted, it can be rebuilt from the operation log.</p>
+</div>
+
+
+<h3>7. Cursor and Presence Tracking</h3>
+<p>Seeing other users&#39; cursors and selections is essential for the &quot;collaborative&quot; feel.</p>
+<p><strong>Implementation</strong>:</p>
+<ol>
+<li>Each user periodically sends their cursor position and selection range to the server (throttled to every 50-100 ms).</li>
+<li>The server broadcasts cursor positions to all other users in the same document session.</li>
+<li>Cursor positions must be transformed when remote operations change the document. If User B inserts text before User A&#39;s cursor position, A&#39;s cursor display on B&#39;s screen must shift accordingly.</li>
+</ol>
+<p><strong>Presence information</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>User ID and name</td>
+<td>Show who is editing</td>
+</tr>
+<tr>
+<td>Avatar/color</td>
+<td>Visual identification</td>
+</tr>
+<tr>
+<td>Cursor position</td>
+<td>Show where they are typing</td>
+</tr>
+<tr>
+<td>Selection range</td>
+<td>Show what they have selected</td>
+</tr>
+<tr>
+<td>Last active timestamp</td>
+<td>Show idle/active status</td>
+</tr>
+<tr>
+<td>Current viewport</td>
+<td>Optionally show what part of the document they are viewing</td>
+</tr>
+</tbody></table>
+<p><strong>Scalability</strong>: For documents with many editors (50+), sending every cursor update to every user creates O(N^2) traffic. Strategies:</p>
+<ul>
+<li>Only send cursor updates for users visible in the recipient&#39;s viewport.</li>
+<li>Batch and throttle cursor updates.</li>
+<li>Use a separate, lossy channel for cursor data (missing an update is fine since the next one replaces it).</li>
+</ul>
+<h3>8. Permission and Sharing Model</h3>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Can View</th>
+<th>Can Edit</th>
+<th>Can Share</th>
+<th>Can Delete</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Owner</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Editor</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>No (or limited)</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Commenter</td>
+<td>Yes</td>
+<td>Comments only</td>
+<td>No</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Viewer</td>
+<td>Yes</td>
+<td>No</td>
+<td>No</td>
+<td>No</td>
+</tr>
+</tbody></table>
+<p><strong>Sharing mechanisms</strong>:</p>
+<ul>
+<li><strong>Direct sharing</strong>: Share with specific users by email. Permission stored in an ACL table.</li>
+<li><strong>Link sharing</strong>: Generate a shareable link with a specific permission level. Anyone with the link can access at that level.</li>
+<li><strong>Organization sharing</strong>: Share with all users in a workspace or organization.</li>
+</ul>
+<p><strong>Permission enforcement</strong>: Permissions are checked at:</p>
+<ol>
+<li><strong>Document load</strong>: Verify the user has at least view access.</li>
+<li><strong>Every operation</strong>: The server validates that the user has edit permissions before applying any operation. This is critical for server-authoritative OT.</li>
+<li><strong>WebSocket connection</strong>: Downgrade or terminate connections if permissions change mid-session.</li>
+</ol>
+<h3>9. Offline Editing and Sync</h3>
+<p>Offline support is one of the strongest arguments for CRDTs over OT.</p>
+<p><strong>CRDT offline flow</strong>:</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant User as User (offline)
+    participant Local as Local CRDT State
+    participant Queue as Operation Queue
+    participant Server as Server
+
+    Note over User,Server: User goes offline
+
+    User->>Local: Edit document
+    Local->>Local: Apply CRDT operation locally
+    Local->>Queue: Queue operation for sync
+
+    User->>Local: More edits...
+    Local->>Queue: Queue more operations
+
+    Note over User,Server: User comes back online
+
+    Queue->>Server: Send all queued operations
+    Server->>Server: Merge with server CRDT state
+    Server-->>Local: Send operations from other users<br/>that happened during offline period
+    Local->>Local: Merge remote operations
+    Note over Local,Server: CRDTs guarantee convergence<br/>No conflicts, automatic merge
+</pre>
+<p><strong>OT offline flow</strong> (more complex):</p>
+<ol>
+<li>While offline, the client records operations against its local document state.</li>
+<li>On reconnect, the client sends its base version and all pending operations to the server.</li>
+<li>The server identifies all operations that occurred since the client&#39;s base version.</li>
+<li>The server transforms the client&#39;s pending operations against the server&#39;s operations.</li>
+<li>The server applies the transformed operations and broadcasts them.</li>
+<li>The client receives the server&#39;s operations and transforms them against its pending operations.</li>
+</ol>
+<div class="warning">
+
+<p>OT offline sync is fragile and error-prone. The transformation chain can become very long if the user was offline for an extended period, and bugs in transformation logic compound. This is the primary reason many newer collaboration tools choose CRDTs for their conflict resolution layer.</p>
+</div>
+
+
+<hr>
+<h2>Data Models &amp; Storage</h2>
+<h3>Core Tables</h3>
+<p><strong>documents</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>id</td>
+<td>UUID</td>
+<td>Primary key</td>
+</tr>
+<tr>
+<td>title</td>
+<td>VARCHAR(500)</td>
+<td>Document title</td>
+</tr>
+<tr>
+<td>owner_id</td>
+<td>UUID</td>
+<td>FK to users</td>
+</tr>
+<tr>
+<td>current_version</td>
+<td>BIGINT</td>
+<td>Latest version number</td>
+</tr>
+<tr>
+<td>current_snapshot_version</td>
+<td>BIGINT</td>
+<td>Version of most recent snapshot</td>
+</tr>
+<tr>
+<td>content_type</td>
+<td>ENUM</td>
+<td>doc, spreadsheet, presentation</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>Creation time</td>
+</tr>
+<tr>
+<td>updated_at</td>
+<td>TIMESTAMP</td>
+<td>Last edit time</td>
+</tr>
+</tbody></table>
+<p><strong>operations</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>id</td>
+<td>BIGINT</td>
+<td>Auto-increment</td>
+</tr>
+<tr>
+<td>document_id</td>
+<td>UUID</td>
+<td>FK to documents</td>
+</tr>
+<tr>
+<td>version</td>
+<td>BIGINT</td>
+<td>Sequential within document</td>
+</tr>
+<tr>
+<td>user_id</td>
+<td>UUID</td>
+<td>Who made the edit</td>
+</tr>
+<tr>
+<td>operation_data</td>
+<td>JSONB</td>
+<td>Serialized operation (insert, delete, format)</td>
+</tr>
+<tr>
+<td>base_version</td>
+<td>BIGINT</td>
+<td>What version this was based on</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>When applied</td>
+</tr>
+</tbody></table>
+<p><strong>snapshots</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>id</td>
+<td>UUID</td>
+<td>Primary key</td>
+</tr>
+<tr>
+<td>document_id</td>
+<td>UUID</td>
+<td>FK to documents</td>
+</tr>
+<tr>
+<td>version</td>
+<td>BIGINT</td>
+<td>Document version at snapshot time</td>
+</tr>
+<tr>
+<td>content</td>
+<td>JSONB or BLOB</td>
+<td>Full document state</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>When snapshot was taken</td>
+</tr>
+</tbody></table>
+<p><strong>document_permissions</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>document_id</td>
+<td>UUID</td>
+<td>FK to documents</td>
+</tr>
+<tr>
+<td>user_id</td>
+<td>UUID</td>
+<td>FK to users (null for link-based sharing)</td>
+</tr>
+<tr>
+<td>role</td>
+<td>ENUM</td>
+<td>owner, editor, commenter, viewer</td>
+</tr>
+<tr>
+<td>share_token</td>
+<td>VARCHAR(64)</td>
+<td>For link-based sharing</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>When permission was granted</td>
+</tr>
+</tbody></table>
+<h3>Storage Choices</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Technology</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Document metadata</td>
+<td>PostgreSQL</td>
+<td>Relational queries, ACL joins</td>
+</tr>
+<tr>
+<td>Operation log</td>
+<td>PostgreSQL or Cassandra</td>
+<td>Append-only writes, sequential reads by doc+version</td>
+</tr>
+<tr>
+<td>Snapshots</td>
+<td>Object storage (S3)</td>
+<td>Large blobs, infrequent access</td>
+</tr>
+<tr>
+<td>Active document state</td>
+<td>Redis</td>
+<td>In-memory for active editing sessions</td>
+</tr>
+<tr>
+<td>Presence/cursor data</td>
+<td>Redis Pub/Sub</td>
+<td>Ephemeral, real-time broadcast</td>
+</tr>
+<tr>
+<td>Images and attachments</td>
+<td>S3 + CDN</td>
+<td>Large binary files</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>Scalability Strategies</h2>
+<h3>Document Session Scaling</h3>
+<p>Each actively edited document runs as a &quot;session&quot; on a server. Scaling strategies:</p>
+<ol>
+<li><strong>Session affinity</strong>: All users editing the same document connect to the same WebSocket server (or server group). This avoids cross-server coordination for every operation.</li>
+<li><strong>Session migration</strong>: If a server is overloaded, migrate a document session to another server. Pause editing briefly, transfer state, resume.</li>
+<li><strong>Horizontal scaling by document</strong>: Different documents live on different servers. The routing layer maps document_id to server.</li>
+</ol>
+<h3>Hot Documents</h3>
+<p>A viral document with 100+ concurrent editors creates load concentration.</p>
+<p><strong>Strategies</strong>:</p>
+<ul>
+<li><strong>Operation batching</strong>: Batch and compress operations over 50 ms windows before broadcasting.</li>
+<li><strong>Tiered broadcast</strong>: For very large sessions, use a tree of relay servers. The OT/CRDT engine sends to 3 relay servers, each of which broadcasts to a subset of users.</li>
+<li><strong>Read-only mode overflow</strong>: If concurrent editors exceed a threshold (e.g., 200), new users join in view-only mode.</li>
+</ul>
+<h3>Global Distribution</h3>
+<p>For users across continents, latency to a single central server can be significant.</p>
+<ul>
+<li><strong>Regional WebSocket servers</strong>: Users connect to the nearest region.</li>
+<li><strong>Central OT server per document</strong>: Operations still route through a single authoritative server (for OT). This means users far from the document&#39;s home region experience higher operation latency.</li>
+<li><strong>CRDT advantage</strong>: With CRDTs, there is no central authority. Regional servers can accept and apply operations locally, syncing with other regions asynchronously. This provides much lower latency for geographically distributed teams.</li>
+</ul>
+<hr>
+<h2>Design Trade-offs</h2>
+<h3>OT vs CRDT: Which to Choose?</h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Recommendation</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>New product, small team</td>
+<td>CRDT (Yjs)</td>
+<td>Simpler to integrate, offline support built-in</td>
+</tr>
+<tr>
+<td>Google-scale, server infrastructure</td>
+<td>OT</td>
+<td>Battle-tested, lower memory overhead</td>
+</tr>
+<tr>
+<td>Offline-first requirement</td>
+<td>CRDT</td>
+<td>Natural merge on reconnect</td>
+</tr>
+<tr>
+<td>Need for central authority (permissions, validation)</td>
+<td>OT</td>
+<td>Server processes every operation</td>
+</tr>
+<tr>
+<td>Peer-to-peer architecture</td>
+<td>CRDT</td>
+<td>No central server needed</td>
+</tr>
+</tbody></table>
+<h3>Consistency Model</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Latency</th>
+<th>Consistency</th>
+<th>Complexity</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Synchronous OT (server processes every op)</td>
+<td>Higher (1 round trip)</td>
+<td>Strong (server is authority)</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Optimistic local apply + async OT</td>
+<td>Lower (instant local)</td>
+<td>Eventual (may reorder)</td>
+<td>High</td>
+</tr>
+<tr>
+<td>CRDT (local apply + background sync)</td>
+<td>Lowest (instant local)</td>
+<td>Eventual (guaranteed convergence)</td>
+<td>Medium</td>
+</tr>
+</tbody></table>
+<p><strong>Decision</strong>: Optimistic local apply with server-authoritative OT. Users see their own edits instantly (applied locally before server confirmation). The server transforms and orders operations, broadcasting the authoritative sequence to all clients. Clients may need to rebase their pending operations, but this is invisible to the user in practice.</p>
+<h3>Operation Log: Bounded vs Unbounded</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Keep all operations forever</td>
+<td>Complete history, any version restorable</td>
+<td>Storage grows unbounded</td>
+</tr>
+<tr>
+<td>Compact old operations into snapshots</td>
+<td>Bounded storage</td>
+<td>Lose fine-grained history beyond compaction point</td>
+</tr>
+</tbody></table>
+<p><strong>Decision</strong>: Keep detailed operations for 90 days, then compact into daily snapshots. Users can see detailed edit-by-edit history for recent changes and daily summaries for older history.</p>
+<div class="important">
+
+<p>The choice between OT and CRDT is not just technical -- it is architectural. OT assumes a central server (which simplifies permissions and validation but creates a bottleneck). CRDTs assume decentralization (which enables offline and peer-to-peer but makes server-side validation harder). Choose based on your product&#39;s requirements, not just the algorithm&#39;s properties.</p>
+</div>
+
+
+<hr>
+<h2>Interview Cheat Sheet</h2>
+<h3>Key Points to Mention</h3>
+<ol>
+<li><strong>OT transforms concurrent operations</strong> so they converge regardless of application order. Server is the central authority.</li>
+<li><strong>CRDTs guarantee convergence mathematically</strong> without a central server. Better for offline and peer-to-peer.</li>
+<li><strong>WebSockets</strong> for bidirectional real-time communication. Use Redis Pub/Sub for cross-server broadcast.</li>
+<li><strong>Optimistic local application</strong>: Apply edits locally for instant feedback, reconcile with server asynchronously.</li>
+<li><strong>Operation log + periodic snapshots</strong>: Full history via log; fast loading via snapshots.</li>
+<li><strong>Cursor positions must be transformed</strong> when remote operations change the document.</li>
+<li><strong>Session affinity</strong>: All editors of a document connect to the same server group.</li>
+<li><strong>Offline sync</strong>: Queue operations locally, replay on reconnect, resolve conflicts via OT/CRDT.</li>
+</ol>
+<h3>Common Interview Questions and Answers</h3>
+<p><strong>Q: What happens when two users type at the exact same position?</strong>
+A: With OT, the server orders the operations (first-received goes first) and transforms the second against the first. Both users see both insertions in a deterministic order. With CRDTs, unique character IDs and a deterministic tie-breaking rule (e.g., lower user ID goes first) ensure the same ordering on all replicas.</p>
+<p><strong>Q: How do you handle a user who was offline for hours making extensive edits?</strong>
+A: With CRDTs, merge their local state with the server state. Convergence is guaranteed. With OT, transform all their offline operations against all server operations since their base version. The transformation chain can be long but is correct if the transformation functions are implemented correctly. Show the user a diff of remote changes after sync.</p>
+<p><strong>Q: How do you prevent a viewer from editing?</strong>
+A: In a server-authoritative model, the server rejects any operation from a user without edit permissions. The client UI also disables editing controls for viewers, but the server-side check is the actual enforcement.</p>
+<p><strong>Q: How do you scale to 1000 concurrent editors on one document?</strong>
+A: This is unusual and stresses any architecture. Strategies: batch operations in 100ms windows, use relay servers for broadcast (tree topology instead of flat), limit the editor count (new users join as viewers), and consider partitioning the document into sections that can be edited independently.</p>
+<p><strong>Q: What is the biggest risk with OT?</strong>
+A: Correctness of transformation functions. OT requires that transformation functions satisfy certain mathematical properties (convergence, or &quot;TP1/TP2&quot; properties). Bugs in these functions cause documents to diverge silently. This is why CRDTs, despite higher memory overhead, are increasingly preferred -- their convergence is guaranteed by construction.</p>
+<div class="tip">
+
+<p>The key insight for the interviewer is that real-time collaboration is fundamentally a distributed consensus problem with a twist: instead of choosing one value (like in Paxos), you need to merge all concurrent values in a way that preserves every user&#39;s intent. This is what makes OT and CRDTs so interesting and so hard.</p>
+</div>
+
+
+</body>
+</html>

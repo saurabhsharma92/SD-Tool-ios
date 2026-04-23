@@ -30,6 +30,13 @@ struct DesignCanvasView: View {
     @State private var showHistory:        Bool            = false
     @State private var showSolution:       Bool            = false
     @State private var failedAttempts:     Int             = 0
+    @State private var renameNodeId:       UUID?           = nil
+    @State private var renameDraft:        String          = ""
+    @State private var showRename:         Bool            = false
+    @State private var nodeToDelete:       UUID?           = nil
+    @State private var showDeleteAlert:    Bool            = false
+    @State private var showHelp:           Bool            = false
+    @State private var showUnnamedAlert:   Bool            = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -68,12 +75,21 @@ struct DesignCanvasView: View {
                     // 4. Node layer
                     ForEach(canvasStore.nodes) { node in
                         BlockNodeView(
-                            node:           node,
-                            isSelected:     canvasStore.selectedNodeId  == node.id,
+                            node:            node,
+                            isSelected:      canvasStore.selectedNodeId  == node.id,
                             isConnectSource: canvasStore.connectSourceId == node.id,
-                            onTap:          { canvasStore.handleNodeTap(node.id) },
-                            onDelete:       { canvasStore.deleteNode(id: node.id) },
-                            onSetScaling:   { mode in canvasStore.setScaling(id: node.id, mode: mode) }
+                            onTap:           { canvasStore.handleNodeTap(node.id) },
+                            onDelete:        {
+                                nodeToDelete    = node.id
+                                showDeleteAlert = true
+                            },
+                            onSetScaling:    { mode in canvasStore.setScaling(id: node.id, mode: mode) },
+                            onRename:        { draft in
+                                renameNodeId = node.id
+                                renameDraft  = draft
+                                showRename   = true
+                            },
+                            onResize:        { height in canvasStore.resizeNode(id: node.id, height: height) }
                         )
                         .position(node.position)
                         .gesture(
@@ -109,6 +125,11 @@ struct DesignCanvasView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 14) {
                     Button {
+                        showHelp = true
+                    } label: {
+                        Image(systemName: "questionmark.circle")
+                    }
+                    Button {
                         showHistory = true
                     } label: {
                         Image(systemName: "clock.arrow.circlepath")
@@ -143,6 +164,55 @@ struct DesignCanvasView: View {
                 showPalette = false
             }
             .presentationDetents([.medium])
+        }
+        // Rename node sheet
+        .sheet(isPresented: $showRename) {
+            NavigationStack {
+                Form {
+                    Section("Component Name") {
+                        TextField("e.g. Tweet Server", text: $renameDraft)
+                            .autocorrectionDisabled()
+                    }
+                }
+                .navigationTitle("Rename Block")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showRename = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            if let id = renameNodeId {
+                                canvasStore.renameNode(id: id, label: renameDraft)
+                            }
+                            showRename = false
+                        }
+                    }
+                }
+            }
+            .presentationDetents([.height(200)])
+        }
+        // Delete confirmation
+        .alert("Delete Block", isPresented: $showDeleteAlert) {
+            Button("Delete", role: .destructive) {
+                if let id = nodeToDelete { canvasStore.deleteNode(id: id) }
+                nodeToDelete = nil
+            }
+            Button("Cancel", role: .cancel) { nodeToDelete = nil }
+        } message: {
+            Text("Are you sure you want to remove this block?")
+        }
+        // Unnamed server warning
+        .alert("Name Your Servers", isPresented: $showUnnamedAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Please give each Server a meaningful name (e.g. \"Tweet Server\", \"Feed Server\") before submitting. Long-press a block and tap Rename.")
+        }
+        // Help sheet
+        .sheet(isPresented: $showHelp) {
+            CanvasHelpView()
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
         // Validation result sheet
         .sheet(isPresented: $showValidation, onDismiss: {
@@ -229,17 +299,26 @@ struct DesignCanvasView: View {
 
     private func submit() async {
         guard !canvasStore.nodes.isEmpty, !isValidating else { return }
+
+        // Require meaningful names on all Server nodes
+        let unnamedServers = canvasStore.nodes.filter { $0.type == .server && $0.label == nil }
+        if !unnamedServers.isEmpty {
+            showUnnamedAlert = true
+            return
+        }
+
         isValidating = true
 
         let graph   = canvasStore.exportGraph()
         let isGuest = authStore.isGuest
 
         let result = await SDValidationService.shared.validate(
-            graph:     graph,
-            level:     level,
-            isGuest:   isGuest,
-            userId:    authStore.user?.uid,
-            problemId: problem.id
+            graph:        graph,
+            level:        level,
+            isGuest:      isGuest,
+            userId:       authStore.user?.uid,
+            problemId:    problem.id,
+            problemTitle: problem.title
         )
 
         if !result.passed { failedAttempts += 1 }

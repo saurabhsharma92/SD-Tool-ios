@@ -1,6 +1,7 @@
 # 🧠 AI & LLM Concepts — Complete Staff Engineer Reference
 ### Explained in Plain English with Diagrams
 
+> [!TIP]
 > **Who this is for:** Staff AI Engineers preparing for system design and concept interviews at FANG companies. Every concept is explained from first principles, then connected to real systems.
 
 ---
@@ -39,6 +40,7 @@
 
 Imagine reading every book, website, Wikipedia article, and code repository ever written. You've absorbed so much language that you can predict what word comes next in almost any sentence, with uncanny accuracy. That's what an LLM is — a system so deeply trained on human language that it can generate coherent, contextually relevant text.
 
+> [!NOTE]
 > **The core task:** Given a sequence of words, predict the next most likely word. Repeated millions of times = fluent language generation.
 
 ### Anatomy of an LLM
@@ -75,6 +77,7 @@ graph TD
 
 ### Key Insight for Interviews
 
+> [!IMPORTANT]
 > LLMs are **stateless** — they don't "remember" between conversations unless you explicitly put previous conversation in the context. Every call is independent. This drives architecture decisions around memory, sessions, and RAG.
 
 ---
@@ -154,6 +157,7 @@ Cost of processing 1M documents:
 
 Imagine placing every word in a giant 3D space. Words that mean similar things are placed *close together*. "King" and "Queen" are nearby. "Dog" and "Cat" are nearby. "Dog" and "Democracy" are far apart. Vectorization converts text into coordinates in this meaning-space — we call these coordinates **embeddings**.
 
+> [!IMPORTANT]
 > **Key insight:** Similarity in vector space = similarity in meaning. This is the foundation of semantic search, RAG, and recommendation systems.
 
 ### The Famous Word2Vec Example
@@ -547,6 +551,7 @@ graph TD
 
 LLMs have a knowledge cutoff — they don't know what happened last week. And they can't know *your* company's internal documents, your product specs, or your customer database. RAG solves this by giving the model a search engine: before answering, the system *retrieves* relevant documents from your data, then *augments* the prompt with those documents, so the model can *generate* an informed answer.
 
+> [!TIP]
 > **Analogy:** Open-book exam vs. closed-book. RAG = open book. The model can look things up before answering.
 
 ### RAG Architecture
@@ -861,6 +866,7 @@ Context window budget allocation (typical RAG chatbot):
 
 A regular LLM answers questions. An **AI Agent** takes *actions* in the world — it can search the web, run code, query databases, send emails, click on web pages, and call APIs. More importantly, it can do this in a **loop** — observe the result, decide the next action, act, observe again — until a goal is reached.
 
+> [!TIP]
 > **Analogy:** LLM = a brilliant advisor sitting in a room answering questions. Agent = that same advisor, but with a computer, phone, and ability to leave the room and do things.
 
 ### The Agent Loop
@@ -1086,6 +1092,7 @@ graph LR
     POLICY --> REASON["Reasoning Model\nSelf-discovers CoT,\nbacktracking, verification"]
 ```
 
+> [!NOTE]
 > **Key insight:** DeepSeek-R1 showed that pure RL (without human-labeled reasoning chains) can teach a model to develop complex reasoning behaviors from scratch — including self-correction and "aha moments."
 
 ---
@@ -1198,6 +1205,7 @@ Phi-3-mini fine-tuned on medical data > GPT-4 on medical QA
 
 Training a large, expensive model and then "teaching" a small, cheap model to mimic it. The large model (Teacher) has learned rich internal representations. Instead of training the student from scratch, we use the teacher's **soft predictions** (confidence scores across all possibilities) as richer training signals — the student learns not just "the answer is cat" but "it's 70% cat, 25% leopard, 5% other feline."
 
+> [!TIP]
 > **Analogy:** A senior engineer writes detailed code reviews with explanations. A junior engineer learns faster from those detailed reviews than from just reading "approved" or "rejected."
 
 ```mermaid

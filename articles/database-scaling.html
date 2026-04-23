@@ -1,0 +1,1200 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Database Scaling -- Complete System Design Reference</title>
+</head>
+<body>
+
+<h1>Database Scaling -- Complete System Design Reference</h1>
+<h3>Staff Engineer Interview Preparation Guide</h3>
+<div class="tip">
+
+<p><strong>Why database scaling matters in interviews:</strong> &quot;How would you handle 10x growth?&quot; is one of the most common follow-up questions in system design interviews. The answer always involves database scaling. Interviewers expect you to reason about replication, sharding, and partitioning tradeoffs -- not just name-drop technologies.</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-vertical-vs-horizontal-scaling">Vertical vs Horizontal Scaling</a></li>
+<li><a href="#2-replication-patterns">Replication Patterns</a></li>
+<li><a href="#3-synchronous-vs-asynchronous-replication">Synchronous vs Asynchronous Replication</a></li>
+<li><a href="#4-sharding-strategies">Sharding Strategies</a></li>
+<li><a href="#5-shard-key-selection">Shard Key Selection</a></li>
+<li><a href="#6-cross-shard-queries-and-joins">Cross-Shard Queries and Joins</a></li>
+<li><a href="#7-database-federation">Database Federation</a></li>
+<li><a href="#8-read-replicas-and-write-replicas">Read Replicas and Write Replicas</a></li>
+<li><a href="#9-connection-pooling">Connection Pooling</a></li>
+<li><a href="#10-horizontal-vs-vertical-partitioning">Horizontal vs Vertical Partitioning</a></li>
+<li><a href="#11-sql-tuning-basics">SQL Tuning Basics</a></li>
+<li><a href="#12-change-data-capture-cdc">Change Data Capture (CDC)</a></li>
+<li><a href="#13-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. Vertical vs Horizontal Scaling</h2>
+<p>When a single database server cannot handle the load, you have two fundamental choices: make the machine bigger (vertical) or add more machines (horizontal).</p>
+<h3>Vertical Scaling (Scale Up)</h3>
+<p>Upgrade the hardware of your existing server: more CPU cores, more RAM, faster SSDs, better network cards.</p>
+<p><strong>Example progression:</strong></p>
+<pre><code>Stage 1: 4 cores,  16 GB RAM,  500 GB SSD    ($200/month)
+Stage 2: 16 cores, 64 GB RAM,  2 TB SSD      ($800/month)
+Stage 3: 64 cores, 256 GB RAM, 8 TB NVMe     ($3,200/month)
+Stage 4: 128 cores, 1 TB RAM,  32 TB NVMe    ($12,000/month)
+... eventually, you hit the ceiling
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Simple -- no application changes needed</td>
+<td>Hardware has an upper limit</td>
+</tr>
+<tr>
+<td>No distributed system complexity</td>
+<td>Single point of failure</td>
+</tr>
+<tr>
+<td>Transactions work normally</td>
+<td>Cost grows non-linearly (2x CPU is not 2x price -- it is 3-4x)</td>
+</tr>
+<tr>
+<td>Strong consistency is easy</td>
+<td>Downtime required for hardware upgrades</td>
+</tr>
+</tbody></table>
+<h3>Horizontal Scaling (Scale Out)</h3>
+<p>Add more database servers and distribute data across them.</p>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Nearly unlimited scaling potential</td>
+<td>Distributed system complexity (network failures, consistency)</td>
+</tr>
+<tr>
+<td>No single point of failure (with proper replication)</td>
+<td>Cross-node queries are expensive</td>
+</tr>
+<tr>
+<td>Can use commodity hardware</td>
+<td>Application must be aware of data distribution</td>
+</tr>
+<tr>
+<td>Cost grows linearly</td>
+<td>Distributed transactions are complex</td>
+</tr>
+</tbody></table>
+<h3>The Practical Scaling Path</h3>
+<p>In interviews, the typical progression is:</p>
+<ol>
+<li><strong>Start with a single database.</strong> Optimize queries, add indexes.</li>
+<li><strong>Vertical scale</strong> when load increases. Bigger machine.</li>
+<li><strong>Add read replicas</strong> when reads are the bottleneck.</li>
+<li><strong>Add caching</strong> (Redis) to reduce database load.</li>
+<li><strong>Shard</strong> when a single machine cannot handle writes or store all data.</li>
+<li><strong>Consider NewSQL</strong> (CockroachDB, Spanner) if you need horizontal scaling with strong consistency.</li>
+</ol>
+<div class="important">
+
+<p>Always exhaust simpler options before sharding. Sharding adds permanent complexity to your application. Many companies run successfully on a single PostgreSQL instance with read replicas for years before needing to shard.</p>
+</div>
+
+
+<hr>
+<h2>2. Replication Patterns</h2>
+<p>Replication means keeping copies of the same data on multiple servers. The primary goals are high availability (if one server dies, others continue serving), read scalability (distribute reads across replicas), and disaster recovery.</p>
+<h3>Single-Leader (Master-Slave) Replication</h3>
+<p>One server (the leader/master) handles all writes. One or more servers (followers/slaves/replicas) receive a copy of every write and serve read queries.</p>
+<pre class="mermaid">
+graph TD
+    subgraph Clients
+        W["Write Requests"]
+        R1["Read Request 1"]
+        R2["Read Request 2"]
+        R3["Read Request 3"]
+    end
+
+    subgraph Database_Cluster["Database Cluster"]
+        LEADER["Leader\n(Primary)\nHandles ALL writes"]
+        REPLICA1["Replica 1\n(Read-only)"]
+        REPLICA2["Replica 2\n(Read-only)"]
+        REPLICA3["Replica 3\n(Read-only)"]
+    end
+
+    W -->|writes| LEADER
+    LEADER -->|"replication\nstream"| REPLICA1
+    LEADER -->|"replication\nstream"| REPLICA2
+    LEADER -->|"replication\nstream"| REPLICA3
+
+    R1 -->|reads| REPLICA1
+    R2 -->|reads| REPLICA2
+    R3 -->|reads| REPLICA3
+</pre>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>All writes go to the leader</li>
+<li>The leader writes to its local storage and WAL</li>
+<li>The WAL records are shipped to each replica</li>
+<li>Replicas apply the WAL records to update their local copies</li>
+<li>Reads can go to any replica (or the leader)</li>
+</ol>
+<p><strong>Failover:</strong> If the leader fails, one replica is promoted to become the new leader. This can be automatic (using a consensus protocol or a watchdog) or manual.</p>
+<p><strong>Problems with failover:</strong></p>
+<ul>
+<li><strong>Data loss:</strong> If using async replication, the new leader may be behind -- uncommitted writes on the old leader are lost.</li>
+<li><strong>Split brain:</strong> If the old leader comes back and both think they are the leader, you get conflicting writes.</li>
+<li><strong>Replication lag:</strong> Replicas may be seconds behind the leader, causing stale reads.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Simple model -- one source of truth</td>
+<td>Leader is a write bottleneck</td>
+</tr>
+<tr>
+<td>Read scalability (add more replicas)</td>
+<td>Failover is complex</td>
+</tr>
+<tr>
+<td>Well-understood, battle-tested</td>
+<td>Replication lag causes stale reads</td>
+</tr>
+<tr>
+<td>Used by: PostgreSQL, MySQL, MongoDB</td>
+<td>Single point of failure for writes</td>
+</tr>
+</tbody></table>
+<h3>Multi-Leader (Master-Master) Replication</h3>
+<p>Multiple servers can accept writes. Each leader replicates its writes to all other leaders.</p>
+<p><strong>When to use:</strong></p>
+<ul>
+<li>Multi-datacenter deployments (one leader per datacenter)</li>
+<li>Offline-capable applications (each device is a &quot;leader&quot;)</li>
+<li>Collaborative editing (each user&#39;s changes are written to a local leader)</li>
+</ul>
+<p><strong>The fundamental problem: write conflicts.</strong></p>
+<p>If User A updates a record on Leader 1 and User B updates the same record on Leader 2 at the same time, the system must resolve the conflict.</p>
+<p><strong>Conflict Resolution Strategies:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>How It Works</th>
+<th>Tradeoff</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Last Write Wins (LWW)</strong></td>
+<td>Use timestamps; latest write wins</td>
+<td>Simple but can lose data silently</td>
+</tr>
+<tr>
+<td><strong>Merge values</strong></td>
+<td>Combine both changes</td>
+<td>Only works for specific data types (e.g., CRDT counters)</td>
+</tr>
+<tr>
+<td><strong>Custom resolution</strong></td>
+<td>Application-specific logic (e.g., prompt user)</td>
+<td>Most correct but most complex</td>
+</tr>
+<tr>
+<td><strong>Conflict-free Replicated Data Types (CRDTs)</strong></td>
+<td>Data structures that mathematically guarantee convergence</td>
+<td>Limited to specific operations (counters, sets, maps)</td>
+</tr>
+</tbody></table>
+<div class="warning">
+
+<p>Multi-leader replication looks attractive but the conflict resolution complexity is enormous. Avoid it unless you have a genuine multi-datacenter requirement. Most systems are better served by single-leader replication with fast failover.</p>
+</div>
+
+
+<h3>Leaderless Replication</h3>
+<p>There is no leader. Any node can accept reads and writes. The client writes to multiple nodes simultaneously and reads from multiple nodes simultaneously.</p>
+<p><strong>Quorum reads and writes:</strong></p>
+<p>With N total replicas, W write nodes, and R read nodes:</p>
+<ul>
+<li><strong>W + R &gt; N</strong> guarantees that at least one read node has the latest write</li>
+<li>Common configuration: N=3, W=2, R=2</li>
+</ul>
+<pre><code>Write: Client sends write to all 3 replicas.
+       Wait for 2 acknowledgments (W=2). 
+       Write succeeds.
+
+Read:  Client sends read to all 3 replicas.
+       Wait for 2 responses (R=2).
+       Return the value with the latest timestamp.
+</code></pre>
+<p><strong>Repair mechanisms:</strong></p>
+<ul>
+<li><strong>Read repair:</strong> When a client reads from multiple replicas and detects a stale value, it writes the latest value back to the stale replica.</li>
+<li><strong>Anti-entropy process:</strong> Background process that compares data across replicas and fixes inconsistencies.</li>
+</ul>
+<p><strong>Used by:</strong> Cassandra, DynamoDB, Riak.</p>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>No single point of failure at all</td>
+<td>Conflict resolution is required</td>
+</tr>
+<tr>
+<td>High availability (survives multiple node failures)</td>
+<td>Quorum operations are slower (wait for multiple nodes)</td>
+</tr>
+<tr>
+<td>No failover needed</td>
+<td>Harder to provide strong consistency</td>
+</tr>
+<tr>
+<td>Good for multi-datacenter</td>
+<td>Sloppy quorums can lead to stale reads</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> When discussing leaderless replication, always mention the quorum formula W + R &gt; N. Then explain the tradeoff: if you set W=1, R=N, you get fast writes but slow reads. If you set W=N, R=1, you get slow writes but fast reads. The choice depends on your read/write ratio.</p>
+</div>
+
+
+<hr>
+<h2>3. Synchronous vs Asynchronous Replication</h2>
+<h3>Synchronous Replication</h3>
+<p>The leader waits for the replica to confirm it has received and written the data before acknowledging the write to the client.</p>
+<pre><code>Client -&gt; Leader: Write X=5
+Leader -&gt; Replica: Replicate X=5
+Replica -&gt; Leader: ACK (written to disk)
+Leader -&gt; Client: Write confirmed
+</code></pre>
+<p><strong>Guarantee:</strong> If the leader crashes after acknowledging the write, the data is safe on the replica.</p>
+<p><strong>Downside:</strong> Every write is as slow as the slowest replica. If a replica is down or slow, writes are blocked.</p>
+<h3>Asynchronous Replication</h3>
+<p>The leader acknowledges the write immediately after writing to its own storage. Replication happens in the background.</p>
+<pre><code>Client -&gt; Leader: Write X=5
+Leader -&gt; Client: Write confirmed (immediately)
+Leader -&gt; Replica: Replicate X=5 (background, later)
+</code></pre>
+<p><strong>Guarantee:</strong> Fast writes. But if the leader crashes before replicating, the data is lost.</p>
+<p><strong>Downside:</strong> Replication lag means replicas may serve stale data.</p>
+<h3>Semi-Synchronous Replication</h3>
+<p>A compromise. The leader waits for at least one replica to confirm before acknowledging. The remaining replicas are asynchronous.</p>
+<pre><code>Client -&gt; Leader: Write X=5
+Leader -&gt; Replica 1: Replicate X=5 (synchronous)
+Leader -&gt; Replica 2: Replicate X=5 (asynchronous)
+Replica 1 -&gt; Leader: ACK
+Leader -&gt; Client: Write confirmed
+</code></pre>
+<p><strong>This is the most common production setup.</strong> PostgreSQL calls this &quot;synchronous_standby_names&quot; -- you configure which replicas must be synchronous.</p>
+<h3>Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Synchronous</th>
+<th>Asynchronous</th>
+<th>Semi-Synchronous</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Write latency</td>
+<td>Highest</td>
+<td>Lowest</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Data loss risk</td>
+<td>None (if replica is up)</td>
+<td>Possible (during lag window)</td>
+<td>Minimal (1 sync replica)</td>
+</tr>
+<tr>
+<td>Availability</td>
+<td>Lower (blocked by slow replica)</td>
+<td>Highest</td>
+<td>Good balance</td>
+</tr>
+<tr>
+<td>Consistency</td>
+<td>Strong</td>
+<td>Eventual</td>
+<td>Strong for 1 replica</td>
+</tr>
+<tr>
+<td>Production use</td>
+<td>Rare (for all replicas)</td>
+<td>Common</td>
+<td>Most common</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>&quot;Replication lag&quot; is the delay between a write on the leader and the write becoming visible on replicas. With async replication, this can range from milliseconds to seconds. Techniques like &quot;read-your-writes&quot; consistency (always read from leader after writing) can mitigate user-visible staleness.</p>
+</div>
+
+
+<hr>
+<h2>4. Sharding Strategies</h2>
+<p>Sharding (also called horizontal partitioning) splits data across multiple database servers, so each server holds only a fraction of the total data.</p>
+<h3>Hash-Based Sharding</h3>
+<p>Apply a hash function to the shard key and use the result to determine which shard holds the data.</p>
+<pre><code>shard_number = hash(shard_key) % number_of_shards
+</code></pre>
+<p><strong>Example:</strong></p>
+<pre><code>hash(&quot;user_123&quot;) % 4 = 2  --&gt; Shard 2
+hash(&quot;user_456&quot;) % 4 = 0  --&gt; Shard 0
+hash(&quot;user_789&quot;) % 4 = 3  --&gt; Shard 3
+</code></pre>
+<pre class="mermaid">
+graph TD
+    APP["Application"] --> ROUTER["Shard Router\nhash(key) % N"]
+    
+    ROUTER -->|"hash = 0"| S0["Shard 0\nUsers A-chunk"]
+    ROUTER -->|"hash = 1"| S1["Shard 1\nUsers B-chunk"]
+    ROUTER -->|"hash = 2"| S2["Shard 2\nUsers C-chunk"]
+    ROUTER -->|"hash = 3"| S3["Shard 3\nUsers D-chunk"]
+</pre>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Even data distribution (with a good hash function)</td>
+<td>Range queries require hitting all shards</td>
+</tr>
+<tr>
+<td>Simple to implement</td>
+<td>Adding/removing shards requires rehashing (use consistent hashing to mitigate)</td>
+</tr>
+<tr>
+<td>No hot spots (assuming even hash distribution)</td>
+<td>Cannot exploit data locality</td>
+</tr>
+</tbody></table>
+<h3>Range-Based Sharding</h3>
+<p>Divide data into contiguous ranges based on the shard key value.</p>
+<pre><code>Shard 0: user_id 1 - 1,000,000
+Shard 1: user_id 1,000,001 - 2,000,000
+Shard 2: user_id 2,000,001 - 3,000,000
+Shard 3: user_id 3,000,001 - 4,000,000
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Range queries are efficient (only hit relevant shards)</td>
+<td>Can cause hot spots (new users all go to the latest shard)</td>
+</tr>
+<tr>
+<td>Simple to understand</td>
+<td>Uneven distribution if data is not uniformly distributed</td>
+</tr>
+<tr>
+<td>Good for time-series data (shard by date range)</td>
+<td>May need to split ranges as data grows</td>
+</tr>
+</tbody></table>
+<h3>Geographic (Directory-Based) Sharding</h3>
+<p>Data is routed to shards based on a lookup table or geographic rules. A directory service maps each key to its shard.</p>
+<pre><code>Europe users  --&gt; EU Shard (Frankfurt)
+US users      --&gt; US Shard (Virginia)
+Asia users    --&gt; Asia Shard (Tokyo)
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Data locality (users access nearby shard)</td>
+<td>Directory is a single point of failure</td>
+</tr>
+<tr>
+<td>Compliance (data residency requirements)</td>
+<td>Directory lookup adds latency</td>
+</tr>
+<tr>
+<td>Flexible -- any routing logic</td>
+<td>Uneven distribution (some regions have more users)</td>
+</tr>
+<tr>
+<td>Good for global applications</td>
+<td>Cross-region queries are expensive</td>
+</tr>
+</tbody></table>
+<h3>Sharding Strategy Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Distribution</th>
+<th>Range Queries</th>
+<th>Hot Spots</th>
+<th>Resharding</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Hash-based</td>
+<td>Even</td>
+<td>Expensive (all shards)</td>
+<td>Rare</td>
+<td>Hard (use consistent hashing)</td>
+</tr>
+<tr>
+<td>Range-based</td>
+<td>Can be uneven</td>
+<td>Efficient</td>
+<td>Possible</td>
+<td>Easier (split ranges)</td>
+</tr>
+<tr>
+<td>Directory-based</td>
+<td>Configurable</td>
+<td>Depends on mapping</td>
+<td>Configurable</td>
+<td>Flexible (update directory)</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> When discussing sharding, always mention consistent hashing as a way to handle hash-based sharding with node additions/removals. Regular hash-based sharding with modulo requires rehashing all keys when you add a shard. Consistent hashing only moves a fraction of keys.</p>
+</div>
+
+
+<hr>
+<h2>5. Shard Key Selection</h2>
+<p>Choosing the right shard key is the most critical decision in a sharding strategy. A bad shard key leads to hot spots, uneven data distribution, and expensive cross-shard queries.</p>
+<h3>Selection Criteria</h3>
+<h4>1. High Cardinality</h4>
+<p>The shard key must have many distinct values. If the shard key has only 10 unique values and you have 20 shards, 10 shards will be empty.</p>
+<pre><code>Bad:  country (only ~200 values, USA dominates)
+Good: user_id (millions of distinct values)
+</code></pre>
+<h4>2. Even Distribution</h4>
+<p>Data should be evenly distributed across the key&#39;s value space. If 80% of data has the same shard key value, one shard holds 80% of the data.</p>
+<pre><code>Bad:  status (&quot;active&quot; has 95% of users)
+Good: user_id (uniformly distributed)
+</code></pre>
+<h4>3. Query Pattern Alignment</h4>
+<p>The shard key should match your most common query patterns. If most queries filter by user_id, shard by user_id so each query hits only one shard.</p>
+<pre><code>Most common query: SELECT * FROM orders WHERE user_id = ?
+Best shard key: user_id (query hits exactly one shard)
+
+Most common query: SELECT * FROM orders WHERE created_at BETWEEN ? AND ?
+Best shard key: created_at range (query hits one or few shards)
+</code></pre>
+<h4>4. Write Distribution</h4>
+<p>Writes should be distributed across shards. If all new writes go to one shard (e.g., sharding by auto-incrementing ID with range-based sharding), that shard becomes a write hot spot.</p>
+<h3>Shard Key Examples by Use Case</h3>
+<table>
+<thead>
+<tr>
+<th>Use Case</th>
+<th>Good Shard Key</th>
+<th>Why</th>
+<th>Bad Shard Key</th>
+<th>Why Bad</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Social media posts</td>
+<td>user_id</td>
+<td>Even distribution, queries by user</td>
+<td>post_id</td>
+<td>Cross-shard for user timelines</td>
+</tr>
+<tr>
+<td>E-commerce orders</td>
+<td>customer_id</td>
+<td>Queries by customer, even distribution</td>
+<td>order_date</td>
+<td>Hot spot on current date shard</td>
+</tr>
+<tr>
+<td>Chat messages</td>
+<td>channel_id</td>
+<td>All messages for a chat in one shard</td>
+<td>message_id</td>
+<td>Cross-shard for channel history</td>
+</tr>
+<tr>
+<td>IoT sensor data</td>
+<td>device_id + date</td>
+<td>Time + device isolation</td>
+<td>timestamp alone</td>
+<td>All writes to one shard</td>
+</tr>
+<tr>
+<td>Multi-tenant SaaS</td>
+<td>tenant_id</td>
+<td>Data isolation per tenant</td>
+<td>user_id</td>
+<td>Cross-shard for tenant queries</td>
+</tr>
+</tbody></table>
+<div class="warning">
+
+<p>There is no universally perfect shard key. The best shard key depends entirely on your query patterns. Analyze your top 5 most frequent queries before choosing a shard key. If your access patterns change significantly, you may need to reshard -- which is an expensive, complex migration.</p>
+</div>
+
+
+<h3>Compound Shard Keys</h3>
+<p>Sometimes a single field is not sufficient. A compound shard key combines multiple fields.</p>
+<pre><code>Shard key: (tenant_id, created_at)
+
+Benefits:
+- Tenant data is co-located (queries by tenant hit fewer shards)
+- Time-based range queries within a tenant hit one shard
+- Better distribution than tenant_id alone (if some tenants are much larger)
+</code></pre>
+<hr>
+<h2>6. Cross-Shard Queries and Joins</h2>
+<p>The biggest pain point of sharding. When a query needs data from multiple shards, the system must coordinate across shards, merge results, and handle failures.</p>
+<h3>The Problem</h3>
+<pre><code class="language-sql">-- This is easy with a single database:
+SELECT u.name, COUNT(o.id) as order_count
+FROM users u
+JOIN orders o ON u.id = o.user_id
+GROUP BY u.name
+ORDER BY order_count DESC
+LIMIT 10;
+
+-- With users sharded by user_id and orders sharded by user_id,
+-- this query must:
+-- 1. Send the query to ALL shards
+-- 2. Each shard returns its local top 10
+-- 3. The coordinator merges all results
+-- 4. Re-sort and return the global top 10
+</code></pre>
+<h3>Strategies for Cross-Shard Queries</h3>
+<p><strong>1. Scatter-Gather</strong></p>
+<p>Send the query to all relevant shards in parallel, collect results, and merge at the application layer.</p>
+<ul>
+<li>Simple to implement</li>
+<li>Performance degrades linearly with shard count</li>
+<li>Aggregations (COUNT, SUM, AVG) must be carefully combined</li>
+</ul>
+<p><strong>2. Denormalization</strong></p>
+<p>Store redundant data so that queries can be served from a single shard. For example, store user name directly in the orders table, so you do not need to join across shards.</p>
+<ul>
+<li>Eliminates cross-shard joins</li>
+<li>Increases write complexity (must update denormalized data in multiple places)</li>
+<li>Storage cost increases</li>
+</ul>
+<p><strong>3. Global Tables (Reference Tables)</strong></p>
+<p>Small, rarely changing tables (countries, currencies, categories) can be replicated to every shard. Joins with these tables are always local.</p>
+<p><strong>4. Separate Analytics Database</strong></p>
+<p>For complex analytical queries, replicate data into a separate analytical database (data warehouse) that is not sharded. Use CDC to keep it in sync.</p>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> When sharding comes up, proactively mention cross-shard query challenges. &quot;Sharding by user_id means that any query that does not filter by user_id will need to scatter-gather across all shards, which is expensive. For analytics queries, I would use a separate data warehouse fed by CDC.&quot;</p>
+</div>
+
+
+<hr>
+<h2>7. Database Federation</h2>
+<p>Federation (or functional partitioning) splits databases by function rather than by data. Each service or domain gets its own database.</p>
+<pre><code>User Service      --&gt; Users Database (PostgreSQL)
+Order Service     --&gt; Orders Database (PostgreSQL)
+Product Service   --&gt; Products Database (MongoDB)
+Analytics Service --&gt; Analytics Database (ClickHouse)
+</code></pre>
+<h3>How It Differs from Sharding</h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Federation</th>
+<th>Sharding</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Split criterion</td>
+<td>By function/domain</td>
+<td>By data range/hash</td>
+</tr>
+<tr>
+<td>Data model</td>
+<td>Different schemas per DB</td>
+<td>Same schema across shards</td>
+</tr>
+<tr>
+<td>Cross-DB queries</td>
+<td>Rare (by design)</td>
+<td>Common problem</td>
+</tr>
+<tr>
+<td>Alignment</td>
+<td>Maps to microservices</td>
+<td>Maps to data volume</td>
+</tr>
+<tr>
+<td>Independence</td>
+<td>Each DB independently sized</td>
+<td>All shards must handle similar load</td>
+</tr>
+</tbody></table>
+<h3>Benefits</h3>
+<ul>
+<li>Each database can be independently scaled and tuned for its workload</li>
+<li>Reduces read/write volume per database</li>
+<li>Natural fit for microservice architectures</li>
+<li>Different database types for different services (polyglot persistence)</li>
+</ul>
+<h3>Challenges</h3>
+<ul>
+<li>No cross-database joins (must join in application code or use an API)</li>
+<li>No cross-database transactions (must use sagas or eventual consistency)</li>
+<li>Increased operational complexity</li>
+</ul>
+<div class="note">
+
+<p>Federation is typically the first step before sharding. Split by function first (each microservice owns its data). If a single service&#39;s database grows too large, then shard that specific database.</p>
+</div>
+
+
+<hr>
+<h2>8. Read Replicas and Write Replicas</h2>
+<h3>Read Replicas</h3>
+<p>Read replicas are copies of the primary database that handle read-only queries. The primary handles all writes and streams changes to the replicas.</p>
+<p><strong>When to add read replicas:</strong></p>
+<ul>
+<li>Read-to-write ratio is high (90%+ reads)</li>
+<li>Read queries are slow due to load on the primary</li>
+<li>You want to isolate analytical queries from transactional queries</li>
+<li>You need geographic distribution for read latency</li>
+</ul>
+<p><strong>Architecture:</strong></p>
+<pre><code>Write -&gt; Primary (single server)
+Read  -&gt; Load balancer -&gt; [Replica 1, Replica 2, Replica 3]
+</code></pre>
+<p><strong>Replication lag considerations:</strong></p>
+<ul>
+<li>User writes a comment, then refreshes the page and does not see it (read hit a stale replica)</li>
+<li>Solution: &quot;Read-your-writes consistency&quot; -- after a write, route the user&#39;s subsequent reads to the primary for a short window</li>
+</ul>
+<h3>Write Scaling</h3>
+<p>Read replicas do not help with write scaling. For write-heavy workloads:</p>
+<ol>
+<li><strong>Optimize writes</strong> -- batch inserts, async processing, queue writes</li>
+<li><strong>Shard the database</strong> -- distribute writes across multiple primaries</li>
+<li><strong>Use a write-optimized database</strong> -- Cassandra, ScyllaDB for high write throughput</li>
+<li><strong>Buffer writes</strong> -- use a message queue (Kafka) to absorb write bursts and write to the database at a controlled rate</li>
+</ol>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> Always distinguish between read scaling and write scaling. Adding read replicas is a read scaling strategy. It does nothing for write throughput. If the bottleneck is writes, you need sharding or a write-optimized database.</p>
+</div>
+
+
+<hr>
+<h2>9. Connection Pooling</h2>
+<p>Database connections are expensive to create. Each connection requires a TCP handshake, authentication, memory allocation on the server (typically 5-10 MB per connection in PostgreSQL), and process/thread creation.</p>
+<h3>The Problem</h3>
+<p>A web application with 100 server instances, each opening 10 connections, requires 1,000 concurrent database connections. PostgreSQL defaults to a max of 100 connections. Even with a higher limit, each connection consumes memory.</p>
+<h3>Connection Poolers</h3>
+<p>A connection pooler sits between your application and the database, maintaining a pool of database connections that are shared across application requests.</p>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Application requests a connection from the pooler</li>
+<li>Pooler assigns an idle connection from the pool</li>
+<li>Application uses the connection for its query</li>
+<li>Application returns the connection to the pool</li>
+<li>Pooler makes the connection available for the next request</li>
+</ol>
+<h3>PgBouncer (PostgreSQL)</h3>
+<p>The most popular connection pooler for PostgreSQL. Lightweight, single-process, handles thousands of client connections with a small number of database connections.</p>
+<p><strong>Pooling modes:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Description</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Session</strong></td>
+<td>Connection assigned for the entire client session</td>
+<td>Long-lived connections, prepared statements</td>
+</tr>
+<tr>
+<td><strong>Transaction</strong></td>
+<td>Connection assigned for one transaction, then returned</td>
+<td>Most common, best utilization</td>
+</tr>
+<tr>
+<td><strong>Statement</strong></td>
+<td>Connection assigned for one statement</td>
+<td>Multi-statement transactions not supported</td>
+</tr>
+</tbody></table>
+<p><strong>Typical configuration:</strong></p>
+<pre><code>Application (1000 connections) --&gt; PgBouncer (pool of 50 connections) --&gt; PostgreSQL
+</code></pre>
+<p>The database sees only 50 connections instead of 1,000.</p>
+<h3>ProxySQL (MySQL)</h3>
+<p>Similar to PgBouncer but for MySQL. Additional features include:</p>
+<ul>
+<li>Query routing (send reads to replicas, writes to primary)</li>
+<li>Query caching</li>
+<li>Query rewriting</li>
+<li>Connection multiplexing</li>
+</ul>
+<h3>Application-Level Pooling</h3>
+<p>Most programming languages and frameworks have built-in connection pooling:</p>
+<ul>
+<li>Java: HikariCP</li>
+<li>Python: SQLAlchemy connection pool</li>
+<li>Node.js: pg-pool, knex.js</li>
+<li>Go: database/sql has built-in pooling</li>
+</ul>
+<div class="note">
+
+<p>Application-level pooling and external poolers like PgBouncer serve different purposes. Application-level pools manage connections within one application instance. PgBouncer aggregates connections across many application instances, which is essential in environments with many short-lived connections (serverless, Kubernetes pods).</p>
+</div>
+
+
+<hr>
+<h2>10. Horizontal vs Vertical Partitioning</h2>
+<h3>Horizontal Partitioning (Sharding)</h3>
+<p>Split rows across multiple tables or servers. Each partition has the same schema but different rows.</p>
+<pre><code>orders_2023: [all orders from 2023]
+orders_2024: [all orders from 2024]
+orders_2025: [all orders from 2025]
+</code></pre>
+<p>This is what we have been discussing as &quot;sharding&quot; throughout this article. Each partition can live on a different server.</p>
+<h3>Vertical Partitioning</h3>
+<p>Split columns across multiple tables. Each partition has different columns for the same entity.</p>
+<pre><code>users_core:     | user_id | name     | email           |
+users_profile:  | user_id | bio      | avatar_url      | preferences_json |
+users_activity: | user_id | last_login | login_count    | last_ip          |
+</code></pre>
+<p><strong>When to use vertical partitioning:</strong></p>
+<ul>
+<li>Some columns are accessed much more frequently than others</li>
+<li>Some columns are very large (text blobs, JSON) and slow down queries on small columns</li>
+<li>You want to apply different storage or caching strategies to different column groups</li>
+<li>Security: sensitive columns (SSN, credit card) in a separate, more protected partition</li>
+</ul>
+<p><strong>Example:</strong> A user profile table has a small <code>name</code> and <code>email</code> that are queried on every page load, and a large <code>bio</code> text and <code>avatar_url</code> that are only needed on the profile page. Vertically partitioning separates the hot, small columns from the cold, large columns.</p>
+<h3>Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Horizontal Partitioning</th>
+<th>Vertical Partitioning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Splits by</td>
+<td>Rows</td>
+<td>Columns</td>
+</tr>
+<tr>
+<td>Each partition has</td>
+<td>Same columns, different rows</td>
+<td>Different columns, same rows</td>
+</tr>
+<tr>
+<td>Scales</td>
+<td>Write and read throughput</td>
+<td>Query performance for specific column sets</td>
+</tr>
+<tr>
+<td>Common use</td>
+<td>Sharding at scale</td>
+<td>Separating hot/cold data, large columns</td>
+</tr>
+<tr>
+<td>Complexity</td>
+<td>High (distributed queries)</td>
+<td>Medium (joins across partitions)</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>11. SQL Tuning Basics</h2>
+<p>Before scaling out, make sure you have squeezed all possible performance from your existing database. SQL tuning is the first line of defense.</p>
+<h3>EXPLAIN -- Understanding Query Plans</h3>
+<p>Every relational database has an EXPLAIN command that shows how the database plans to execute a query. This is the single most important tool for debugging slow queries.</p>
+<pre><code class="language-sql">EXPLAIN ANALYZE SELECT * FROM orders WHERE customer_id = 42;
+</code></pre>
+<p><strong>Key things to look for in the EXPLAIN output:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Indicator</th>
+<th>Good</th>
+<th>Bad</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Scan type</strong></td>
+<td>Index Scan, Index Only Scan</td>
+<td>Sequential Scan (Seq Scan) on large tables</td>
+</tr>
+<tr>
+<td><strong>Rows estimated</strong></td>
+<td>Close to actual rows</td>
+<td>Wildly off (statistics need updating)</td>
+</tr>
+<tr>
+<td><strong>Sort</strong></td>
+<td>Using index for sort order</td>
+<td>External sort (disk sort on large datasets)</td>
+</tr>
+<tr>
+<td><strong>Join type</strong></td>
+<td>Nested Loop (small datasets), Hash Join</td>
+<td>Nested Loop on large datasets without index</td>
+</tr>
+<tr>
+<td><strong>Buffers</strong></td>
+<td>Low shared hit count</td>
+<td>High shared read (disk I/O)</td>
+</tr>
+</tbody></table>
+<h3>Common Query Optimization Patterns</h3>
+<p><strong>1. Add missing indexes</strong></p>
+<pre><code class="language-sql">-- Slow: Sequential scan on 10 million rows
+SELECT * FROM orders WHERE customer_id = 42;
+
+-- Fix: Add an index
+CREATE INDEX idx_orders_customer ON orders (customer_id);
+-- Now: Index scan, sub-millisecond
+</code></pre>
+<p>**2. Avoid SELECT ***</p>
+<pre><code class="language-sql">-- Bad: Fetches all columns, including large blobs
+SELECT * FROM products WHERE category = &#39;electronics&#39;;
+
+-- Good: Fetch only what you need
+SELECT id, name, price FROM products WHERE category = &#39;electronics&#39;;
+-- If there is a covering index on (category, id, name, price), no table lookup needed
+</code></pre>
+<p><strong>3. Use EXISTS instead of COUNT for existence checks</strong></p>
+<pre><code class="language-sql">-- Bad: Counts all matching rows, then checks if &gt; 0
+SELECT COUNT(*) FROM orders WHERE user_id = 42;
+-- Then in application: if count &gt; 0 ...
+
+-- Good: Stops as soon as one row is found
+SELECT EXISTS (SELECT 1 FROM orders WHERE user_id = 42);
+</code></pre>
+<p><strong>4. Avoid functions on indexed columns</strong></p>
+<pre><code class="language-sql">-- Bad: Index on created_at is not used (function wraps the column)
+SELECT * FROM orders WHERE YEAR(created_at) = 2024;
+
+-- Good: Use a range instead
+SELECT * FROM orders WHERE created_at &gt;= &#39;2024-01-01&#39; AND created_at &lt; &#39;2025-01-01&#39;;
+</code></pre>
+<p><strong>5. Use LIMIT for paginated queries</strong></p>
+<pre><code class="language-sql">-- Bad: Fetches all rows, application discards most
+SELECT * FROM products ORDER BY created_at DESC;
+
+-- Good: Fetch only what you need
+SELECT * FROM products ORDER BY created_at DESC LIMIT 20;
+</code></pre>
+<p><strong>6. Optimize JOIN order and types</strong></p>
+<pre><code class="language-sql">-- Let the query planner handle join order (usually it does a good job)
+-- But ensure join columns are indexed
+
+-- Ensure foreign keys have indexes:
+CREATE INDEX idx_orders_user_id ON orders (user_id);
+CREATE INDEX idx_order_items_order_id ON order_items (order_id);
+</code></pre>
+<h3>Index Optimization Tips</h3>
+<ol>
+<li><strong>Create indexes for WHERE, JOIN, and ORDER BY columns</strong></li>
+<li><strong>Composite indexes:</strong> Put equality conditions first, range conditions last</li>
+<li><strong>Do not over-index:</strong> Each index slows down writes and uses storage</li>
+<li><strong>Monitor unused indexes:</strong> Drop indexes that queries never use</li>
+<li><strong>Update statistics regularly:</strong> <code>ANALYZE</code> in PostgreSQL, <code>ANALYZE TABLE</code> in MySQL</li>
+</ol>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> When asked about performance optimization, start with &quot;I would run EXPLAIN ANALYZE on the slow queries to identify whether the issue is missing indexes, sequential scans, or expensive joins.&quot; This shows you follow a data-driven approach rather than guessing.</p>
+</div>
+
+
+<hr>
+<h2>12. Change Data Capture (CDC)</h2>
+<p>CDC is a pattern for tracking changes (inserts, updates, deletes) in a database and streaming them to other systems in real time.</p>
+<h3>Why CDC Matters</h3>
+<p>In a microservice architecture, different services need to react to database changes:</p>
+<ul>
+<li>Search index needs to update when a product is modified</li>
+<li>Analytics warehouse needs a copy of transactional data</li>
+<li>Cache needs to be invalidated when source data changes</li>
+<li>Another service needs to react to events (e.g., send email when order status changes)</li>
+</ul>
+<h3>How CDC Works</h3>
+<p>CDC reads the database&#39;s WAL (write-ahead log) or transaction log and converts each change into an event that is published to a message broker.</p>
+<pre class="mermaid">
+graph LR
+    subgraph Source
+        DB["Source Database\n(PostgreSQL)"]
+        WAL["WAL / Binlog"]
+    end
+
+    subgraph CDC_Engine["CDC Engine"]
+        DEB["Debezium\nConnector"]
+    end
+
+    subgraph Message_Broker
+        KAFKA["Apache Kafka\nChange Events Topic"]
+    end
+
+    subgraph Consumers
+        ES["Elasticsearch\n(Search Index)"]
+        DW["Data Warehouse\n(Analytics)"]
+        CACHE["Redis Cache\n(Invalidation)"]
+        SVC["Other Service\n(React to changes)"]
+    end
+
+    DB --> WAL
+    WAL -->|"reads changes"| DEB
+    DEB -->|"publishes events"| KAFKA
+    KAFKA --> ES
+    KAFKA --> DW
+    KAFKA --> CACHE
+    KAFKA --> SVC
+</pre>
+<h3>CDC Approaches</h3>
+<p><strong>1. Log-Based CDC (Recommended)</strong></p>
+<p>Read the database&#39;s internal transaction log (WAL in PostgreSQL, binlog in MySQL). This is the most reliable approach because it captures all changes without modifying the application.</p>
+<ul>
+<li>No application code changes needed</li>
+<li>Captures all changes (even those made by direct SQL)</li>
+<li>Minimal performance impact on the source database</li>
+<li>Preserves the exact order of changes</li>
+</ul>
+<p><strong>2. Trigger-Based CDC</strong></p>
+<p>Database triggers fire on INSERT/UPDATE/DELETE and write changes to an outbox table. A separate process reads the outbox and publishes events.</p>
+<ul>
+<li>Works with any database</li>
+<li>Adds overhead to every write (trigger execution)</li>
+<li>Can miss changes made outside the application</li>
+</ul>
+<p><strong>3. Polling-Based CDC</strong></p>
+<p>Periodically query the source table for changes using a timestamp or version column.</p>
+<pre><code class="language-sql">SELECT * FROM orders WHERE updated_at &gt; :last_poll_time;
+</code></pre>
+<ul>
+<li>Simplest to implement</li>
+<li>Cannot capture deletes (the row is gone)</li>
+<li>Polling interval creates a latency floor</li>
+<li>Misses changes if clock skew occurs</li>
+</ul>
+<h3>Debezium</h3>
+<p>Debezium is the most widely used open-source CDC platform. It connects to your database&#39;s transaction log and streams changes to Kafka.</p>
+<p><strong>Supported databases:</strong> PostgreSQL, MySQL, MongoDB, Oracle, SQL Server, Cassandra, Db2.</p>
+<p><strong>Event format (simplified):</strong></p>
+<pre><code class="language-json">{
+  &quot;op&quot;: &quot;u&quot;,
+  &quot;before&quot;: { &quot;id&quot;: 42, &quot;name&quot;: &quot;Old Name&quot;, &quot;price&quot;: 29.99 },
+  &quot;after&quot;:  { &quot;id&quot;: 42, &quot;name&quot;: &quot;New Name&quot;, &quot;price&quot;: 34.99 },
+  &quot;source&quot;: {
+    &quot;db&quot;: &quot;products_db&quot;,
+    &quot;table&quot;: &quot;products&quot;,
+    &quot;ts_ms&quot;: 1700000000000
+  }
+}
+</code></pre>
+<ul>
+<li><code>op</code>: &quot;c&quot; (create), &quot;u&quot; (update), &quot;d&quot; (delete), &quot;r&quot; (read/snapshot)</li>
+<li><code>before</code>: The state before the change (null for inserts)</li>
+<li><code>after</code>: The state after the change (null for deletes)</li>
+</ul>
+<h3>CDC Use Cases</h3>
+<table>
+<thead>
+<tr>
+<th>Use Case</th>
+<th>How CDC Helps</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Search index sync</strong></td>
+<td>Update Elasticsearch when source data changes</td>
+</tr>
+<tr>
+<td><strong>Cache invalidation</strong></td>
+<td>Invalidate Redis cache when source data changes</td>
+</tr>
+<tr>
+<td><strong>Data warehouse loading</strong></td>
+<td>Stream changes to analytics warehouse in near-real-time</td>
+</tr>
+<tr>
+<td><strong>Microservice event sourcing</strong></td>
+<td>Other services react to database changes as events</td>
+</tr>
+<tr>
+<td><strong>Audit logging</strong></td>
+<td>Capture every change for compliance</td>
+</tr>
+<tr>
+<td><strong>Database migration</strong></td>
+<td>Replicate data to a new database with zero downtime</td>
+</tr>
+</tbody></table>
+<h3>The Outbox Pattern</h3>
+<p>A common pattern that combines CDC with reliable event publishing. Instead of publishing events directly from application code (which can fail independently of the database transaction), write events to an outbox table within the same database transaction. CDC then reads the outbox table and publishes to Kafka.</p>
+<pre><code>Application:
+  BEGIN TRANSACTION
+    INSERT INTO orders (...) VALUES (...);
+    INSERT INTO outbox (event_type, payload) VALUES (&#39;order_created&#39;, &#39;...&#39;);
+  COMMIT;
+
+CDC reads outbox table -&gt; Publishes to Kafka -&gt; Consumers process events
+</code></pre>
+<p><strong>Why this matters:</strong> The event and the data change are in the same transaction, guaranteeing they are consistent. You never have a situation where the order was created but the event was not published (or vice versa).</p>
+<div class="important">
+
+<p>The Outbox Pattern solves one of the hardest problems in distributed systems: ensuring that a database write and an event publication happen atomically. It is the correct answer when an interviewer asks &quot;How do you ensure events are published reliably?&quot;</p>
+</div>
+
+
+<hr>
+<h2>13. Interview Cheat Sheet</h2>
+<h3>Quick Reference Card</h3>
+<table>
+<thead>
+<tr>
+<th>Topic</th>
+<th>Key Point</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Scale up first</strong></td>
+<td>Exhaust vertical scaling and optimization before sharding</td>
+</tr>
+<tr>
+<td><strong>Single-leader</strong></td>
+<td>One writer, many readers. Simple. Leader is write bottleneck</td>
+</tr>
+<tr>
+<td><strong>Multi-leader</strong></td>
+<td>Multiple writers. Conflict resolution is the hard problem</td>
+</tr>
+<tr>
+<td><strong>Leaderless</strong></td>
+<td>Quorum: W + R &gt; N guarantees reading latest write</td>
+</tr>
+<tr>
+<td><strong>Sync replication</strong></td>
+<td>No data loss, but slower writes and blocked by slow replicas</td>
+</tr>
+<tr>
+<td><strong>Async replication</strong></td>
+<td>Fast writes, but possible data loss during failover</td>
+</tr>
+<tr>
+<td><strong>Hash sharding</strong></td>
+<td>Even distribution, but range queries hit all shards</td>
+</tr>
+<tr>
+<td><strong>Range sharding</strong></td>
+<td>Good for range queries, but hot spots on recent data</td>
+</tr>
+<tr>
+<td><strong>Shard key</strong></td>
+<td>High cardinality, even distribution, matches query patterns</td>
+</tr>
+<tr>
+<td><strong>Cross-shard queries</strong></td>
+<td>Expensive. Use denormalization, global tables, or analytics DB</td>
+</tr>
+<tr>
+<td><strong>Federation</strong></td>
+<td>Split by function (per microservice), not by data</td>
+</tr>
+<tr>
+<td><strong>Connection pooling</strong></td>
+<td>PgBouncer for PostgreSQL, ProxySQL for MySQL</td>
+</tr>
+<tr>
+<td><strong>EXPLAIN ANALYZE</strong></td>
+<td>First step in any query optimization</td>
+</tr>
+<tr>
+<td><strong>CDC</strong></td>
+<td>Read WAL, stream changes to Kafka. Debezium is the standard tool</td>
+</tr>
+<tr>
+<td><strong>Outbox pattern</strong></td>
+<td>Event + data in same transaction. CDC reads outbox. Guarantees consistency</td>
+</tr>
+</tbody></table>
+<h3>Scaling Decision Flowchart</h3>
+<pre><code>Is the database slow?
+  |
+  +-- Are queries slow? --&gt; Run EXPLAIN, add indexes, optimize SQL
+  |
+  +-- Is CPU/RAM maxed? --&gt; Vertical scaling (bigger machine)
+  |
+  +-- Are reads the bottleneck? --&gt; Add read replicas + caching (Redis)
+  |
+  +-- Are writes the bottleneck? --&gt; 
+  |     +-- Can you batch/async writes? --&gt; Queue writes through Kafka
+  |     +-- Still too many writes? --&gt; Shard the database
+  |
+  +-- Is the data too large for one machine? --&gt; Shard the database
+  |
+  +-- Need multi-region? --&gt; 
+        +-- Reads only? --&gt; Read replicas in each region
+        +-- Reads + writes? --&gt; Multi-leader or leaderless replication
+</code></pre>
+<h3>Common Mistakes to Avoid</h3>
+<ol>
+<li>Sharding before optimizing queries and indexes</li>
+<li>Choosing a shard key without analyzing query patterns</li>
+<li>Ignoring cross-shard query costs when designing the sharding strategy</li>
+<li>Using synchronous replication for all replicas (one slow replica blocks all writes)</li>
+<li>Not having a connection pooler in front of PostgreSQL</li>
+<li>Using <code>SELECT *</code> in production queries</li>
+<li>Forgetting that read replicas do not help with write scaling</li>
+<li>Dual-writing to database and Kafka separately (use Outbox Pattern instead)</li>
+<li>Not considering replication lag when reading from replicas</li>
+<li>Over-sharding -- starting with too many shards when the data does not justify it</li>
+</ol>
+<h3>Talking Points That Impress Interviewers</h3>
+<ul>
+<li>&quot;Before sharding, I would check if query optimization and adding read replicas can handle the load. Sharding adds permanent complexity that is hard to undo.&quot;</li>
+<li>&quot;I would use semi-synchronous replication -- synchronous to one replica for durability, asynchronous to the rest for performance. This gives us a good balance between data safety and write latency.&quot;</li>
+<li>&quot;The shard key should be customer_id because our most common query filters by customer. This means 95% of queries hit exactly one shard. For the 5% that need cross-shard data, I would use a separate analytics database fed by CDC.&quot;</li>
+<li>&quot;I would implement the Outbox Pattern to ensure reliable event publishing. The event is written to an outbox table in the same transaction as the data change, and Debezium reads the outbox and publishes to Kafka.&quot;</li>
+<li>&quot;Connection pooling with PgBouncer in transaction mode lets us support 10,000 application connections with only 100 actual database connections, dramatically reducing memory pressure on PostgreSQL.&quot;</li>
+<li>&quot;For this read-heavy workload with a 95:5 read-write ratio, I would start with one primary and three read replicas behind a load balancer, with read-your-writes consistency for the writing user.&quot;</li>
+</ul>
+
+</body>
+</html>

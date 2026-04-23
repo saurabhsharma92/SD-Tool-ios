@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Design a Payment System</title>
+</head>
+<body>
+
+<h1>Design a Payment System</h1>
+<h2>Introduction</h2>
+<p>Payment systems sit at the intersection of distributed systems engineering and financial regulation. Unlike most backend services where a brief period of inconsistency is tolerable, a payment system cannot afford to lose money, double-charge a customer, or misreport balances. Every transaction must be accounted for with perfect accuracy, and the system must integrate with a patchwork of banks, card networks, and payment processors, each with their own protocols and failure modes.</p>
+<p>In a Staff/Senior-level interview, this topic tests your ability to reason about exactly-once semantics, financial data modeling (double-entry bookkeeping), idempotency, reconciliation, and regulatory compliance. This article walks through the complete design from payment flow to settlement.</p>
+<hr>
+<h2>Requirements</h2>
+<h3>Functional Requirements</h3>
+<ol>
+<li><strong>Process payments</strong>: Accept credit card, debit card, and digital wallet payments.</li>
+<li><strong>Refunds</strong>: Support full and partial refunds with proper accounting.</li>
+<li><strong>Ledger</strong>: Maintain a complete, auditable financial ledger using double-entry bookkeeping.</li>
+<li><strong>Payment status tracking</strong>: Provide real-time status updates (pending, authorized, captured, settled, refunded, failed).</li>
+<li><strong>Multi-currency support</strong>: Handle payments in multiple currencies with exchange rate management.</li>
+<li><strong>Reconciliation</strong>: Reconcile internal records with bank statements and processor reports.</li>
+</ol>
+<h3>Non-Functional Requirements</h3>
+<ol>
+<li><strong>Exactly-once processing</strong>: A payment must never be processed twice, even under retries or failures.</li>
+<li><strong>High reliability</strong>: 99.99% availability for the payment path.</li>
+<li><strong>Regulatory compliance</strong>: PCI DSS for card data, SOX for financial reporting.</li>
+<li><strong>Auditability</strong>: Every state change must be logged immutably.</li>
+<li><strong>Consistency</strong>: Strong consistency for payment state; no eventual consistency for money movement.</li>
+</ol>
+<hr>
+<h2>Capacity Estimation</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Calculation</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Transactions/day</td>
+<td>Given</td>
+<td>10,000,000</td>
+</tr>
+<tr>
+<td>Transactions/second (avg)</td>
+<td>10M / 86,400</td>
+<td>~116 TPS</td>
+</tr>
+<tr>
+<td>Peak TPS (10x, e.g., Black Friday)</td>
+<td>116 x 10</td>
+<td>~1,160 TPS</td>
+</tr>
+<tr>
+<td>Avg transaction payload</td>
+<td>Estimated</td>
+<td>~5 KB</td>
+</tr>
+<tr>
+<td>Daily data volume</td>
+<td>10M x 5 KB</td>
+<td>~50 GB/day</td>
+</tr>
+<tr>
+<td>Ledger entries/day</td>
+<td>10M x 2 (debit + credit)</td>
+<td>20M entries</td>
+</tr>
+<tr>
+<td>Ledger growth/year</td>
+<td>20M x 365 x 0.5 KB</td>
+<td>~3.6 TB/year</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>Payment systems have extreme peak-to-average ratios. Black Friday, Cyber Monday, and flash sales can spike traffic 10-50x above normal. The system must be provisioned for peak, not average.</p>
+</div>
+
+
+<hr>
+<h2>High-Level Architecture</h2>
+<pre class="mermaid">
+graph TB
+    subgraph Clients ["Client Applications"]
+        Web["Web App"]
+        Mobile["Mobile App"]
+        API["Partner API"]
+    end
+
+    subgraph Gateway ["Payment Gateway Layer"]
+        PG["Payment API Gateway"]
+        Auth["Authentication &<br/>Authorization"]
+        RL["Rate Limiter"]
+    end
+
+    subgraph Core ["Payment Core"]
+        PS["Payment Service"]
+        IK["Idempotency<br/>Service"]
+        RS["Risk / Fraud<br/>Engine"]
+        LS["Ledger Service"]
+        WS["Wallet Service"]
+    end
+
+    subgraph Integration ["Payment Processor Integration"]
+        PA["Payment Adapter<br/>(Stripe/Adyen/etc.)"]
+        TR["Token Resolver<br/>(PCI Vault)"]
+    end
+
+    subgraph Async ["Async Processing"]
+        WH["Webhook Handler"]
+        Recon["Reconciliation<br/>Service"]
+        Settle["Settlement<br/>Service"]
+    end
+
+    subgraph Storage ["Data Stores"]
+        PayDB[("Payment DB<br/>(PostgreSQL)")]
+        LedgerDB[("Ledger DB<br/>(Append-only)")]
+        EventLog[("Event Store<br/>(Kafka)")]
+    end
+
+    Web & Mobile & API --> PG
+    PG --> Auth --> RL --> PS
+    PS --> IK
+    PS --> RS
+    PS --> PA
+    PA --> TR
+    PS --> LS
+    PS --> WS
+    PA -->|Async callbacks| WH
+    WH --> PS
+    LS --> LedgerDB
+    PS --> PayDB
+    PS --> EventLog
+    Recon --> LedgerDB
+    Settle --> LedgerDB
+</pre>
+<h3>Payment Flow: Authorization to Settlement</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant User
+    participant App as Client App
+    participant PS as Payment Service
+    participant Fraud as Fraud Engine
+    participant Vault as Token Vault
+    participant PP as Payment Processor
+    participant Ledger as Ledger Service
+    participant DB as Payment DB
+
+    User->>App: Click "Pay $99.99"
+    App->>PS: POST /payments (amount, currency, payment_method_token)
+    PS->>PS: Check idempotency key
+    PS->>DB: Create payment record (status=INITIATED)
+    PS->>Fraud: Risk assessment
+    Fraud-->>PS: APPROVED (score=12, threshold=80)
+    PS->>Vault: Resolve payment token to PAN
+    Vault-->>PS: Tokenized card details
+
+    Note over PS,PP: Authorization Phase
+    PS->>PP: Authorize $99.99
+    PP-->>PS: Authorization approved (auth_code=XYZ)
+    PS->>DB: Update status=AUTHORIZED
+    PS->>Ledger: Record authorization hold
+
+    Note over PS,PP: Capture Phase (may be immediate or delayed)
+    PS->>PP: Capture $99.99 (auth_code=XYZ)
+    PP-->>PS: Capture confirmed
+    PS->>DB: Update status=CAPTURED
+    PS->>Ledger: Record capture (debit buyer, credit merchant)
+
+    Note over PP,PS: Settlement (async, batch)
+    PP-->>PS: Settlement webhook (funds transferred)
+    PS->>DB: Update status=SETTLED
+    PS->>Ledger: Record settlement
+    PS-->>App: Payment complete
+</pre>
+<div class="tip">
+
+<p>The authorization-capture two-phase flow is important to explain. Authorization reserves funds on the customer&#39;s card (no money moves yet). Capture actually moves the money. Some merchants authorize immediately and capture when the order ships. This distinction shows financial domain knowledge.</p>
+</div>
+
+
+<hr>
+<h2>Core Components Deep Dive</h2>
+<h3>1. Payment Service</h3>
+<p>The payment service is the orchestrator. It coordinates the flow between fraud checking, processor integration, and ledger recording. Critically, it manages the payment state machine:</p>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> INITIATED: Payment created
+    INITIATED --> AUTHORIZED: Auth approved
+    INITIATED --> FAILED: Auth declined / fraud block
+    AUTHORIZED --> CAPTURED: Capture successful
+    AUTHORIZED --> VOIDED: Merchant cancels before capture
+    AUTHORIZED --> FAILED: Capture failed
+    CAPTURED --> SETTLED: Funds received
+    CAPTURED --> PARTIALLY_REFUNDED: Partial refund
+    CAPTURED --> FULLY_REFUNDED: Full refund
+    SETTLED --> PARTIALLY_REFUNDED: Partial refund
+    SETTLED --> FULLY_REFUNDED: Full refund
+    PARTIALLY_REFUNDED --> FULLY_REFUNDED: Remaining refunded
+    FAILED --> [*]
+    VOIDED --> [*]
+    FULLY_REFUNDED --> [*]
+</pre>
+<p>Every state transition is:</p>
+<ol>
+<li>Written to the database within a transaction.</li>
+<li>Published as an event to Kafka.</li>
+<li>Recorded in the ledger with corresponding debit/credit entries.</li>
+</ol>
+<h3>2. Idempotency Service</h3>
+<p>Idempotency is the most critical aspect of payment system design. A network timeout during a payment request must not result in a double charge.</p>
+<p><strong>How it works</strong>:</p>
+<ol>
+<li>The client sends a unique <code>idempotency_key</code> with every payment request (e.g., <code>checkout-session-abc123</code>).</li>
+<li>The payment service checks a dedup table before processing.</li>
+<li>If the key exists and the payment succeeded, return the original response.</li>
+<li>If the key exists and the payment is still processing, return a &quot;processing&quot; status.</li>
+<li>If the key does not exist, insert it atomically and proceed.</li>
+</ol>
+<p><strong>Implementation with database</strong>:</p>
+<pre><code class="language-sql">-- Atomic insert-or-find
+INSERT INTO idempotency_keys (key, payment_id, request_hash, response, status)
+VALUES (&#39;checkout-abc123&#39;, &#39;pay_xyz&#39;, &#39;sha256_of_request&#39;, NULL, &#39;processing&#39;)
+ON CONFLICT (key) DO NOTHING
+RETURNING *;
+</code></pre>
+<p>The <code>request_hash</code> ensures that if someone reuses an idempotency key with different parameters, the system detects the mismatch and returns an error.</p>
+<div class="warning">
+
+<p>Never rely solely on the payment processor for idempotency. Your own system must be idempotent at the API boundary. If the network fails between your system and the processor, you must be able to safely retry without knowing whether the processor received the first attempt.</p>
+</div>
+
+
+<p><strong>Handling the &quot;unknown&quot; state</strong>: The most dangerous scenario is when you send a payment to the processor and never get a response (network partition, timeout). You do not know if the payment went through. The solution:</p>
+<ol>
+<li>Record the attempt as &quot;pending_confirmation&quot; in your database.</li>
+<li>Use the processor&#39;s API to query the payment status by your reference ID.</li>
+<li>If the processor has no record, it is safe to retry (with the same idempotency key).</li>
+<li>If the processor confirms the payment, update your records accordingly.</li>
+</ol>
+<h3>3. Double-Entry Bookkeeping</h3>
+<p>Every financial transaction creates at least two ledger entries: a debit and a credit. The sum of all debits must always equal the sum of all credits. This invariant is the foundation of financial accounting and makes the system self-auditing.</p>
+<p><strong>Example: Customer pays $100 for an order</strong></p>
+<table>
+<thead>
+<tr>
+<th>Entry</th>
+<th>Account</th>
+<th>Direction</th>
+<th>Amount</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>Customer Liability (what we owe the payment processor)</td>
+<td>Debit</td>
+<td>$100</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Merchant Revenue (what we owe the merchant)</td>
+<td>Credit</td>
+<td>$100</td>
+</tr>
+</tbody></table>
+<p>If the merchant refunds $30:</p>
+<table>
+<thead>
+<tr>
+<th>Entry</th>
+<th>Account</th>
+<th>Direction</th>
+<th>Amount</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>3</td>
+<td>Merchant Revenue</td>
+<td>Debit</td>
+<td>$30</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Customer Liability</td>
+<td>Credit</td>
+<td>$30</td>
+</tr>
+</tbody></table>
+<p><strong>Why double-entry?</strong></p>
+<ul>
+<li><strong>Self-auditing</strong>: If debits do not equal credits, there is a bug. This can be checked at any time.</li>
+<li><strong>Complete history</strong>: Every money movement is traceable to specific entries.</li>
+<li><strong>Regulatory compliance</strong>: Required for financial reporting (SOX, tax reporting).</li>
+</ul>
+<pre class="mermaid">
+graph LR
+    subgraph Ledger ["Double-Entry Ledger"]
+        subgraph Payment ["Payment: $100"]
+            D1["DEBIT<br/>Customer Liability<br/>$100"]
+            C1["CREDIT<br/>Merchant Revenue<br/>$100"]
+        end
+        subgraph Refund ["Refund: $30"]
+            D2["DEBIT<br/>Merchant Revenue<br/>$30"]
+            C2["CREDIT<br/>Customer Liability<br/>$30"]
+        end
+        subgraph Balance ["Net Balance"]
+            B1["Customer Liability<br/>$100 - $30 = $70 DR"]
+            B2["Merchant Revenue<br/>$100 - $30 = $70 CR"]
+        end
+    end
+    D1 & C1 --> B1 & B2
+    D2 & C2 --> B1 & B2
+</pre>
+<div class="important">
+
+<p>In a payment system, the ledger is the source of truth, not the payment status table. If there is ever a discrepancy between the payment record and the ledger, the ledger is authoritative. Payment records are for operational convenience; the ledger is for financial truth.</p>
+</div>
+
+
+<h3>4. Currency Handling</h3>
+<p><strong>Store amounts in minor units</strong> (cents, pence, paisa). Never use floating-point numbers for money.</p>
+<table>
+<thead>
+<tr>
+<th>Currency</th>
+<th>Amount Display</th>
+<th>Stored Value</th>
+<th>Minor Unit</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>USD</td>
+<td>$99.99</td>
+<td>9999</td>
+<td>cent (1/100)</td>
+</tr>
+<tr>
+<td>JPY</td>
+<td>1000</td>
+<td>1000</td>
+<td>yen (no subdivision)</td>
+</tr>
+<tr>
+<td>BHD</td>
+<td>1.234</td>
+<td>1234</td>
+<td>fils (1/1000)</td>
+</tr>
+</tbody></table>
+<p><strong>Multi-currency considerations</strong>:</p>
+<ul>
+<li>Store the original currency and amount alongside any converted amounts.</li>
+<li>Lock the exchange rate at the time of authorization and record it.</li>
+<li>Never re-convert using a new exchange rate after the fact.</li>
+<li>Use a trusted exchange rate feed (e.g., from your bank or a service like Open Exchange Rates).</li>
+</ul>
+<h3>5. Fraud Detection</h3>
+<p>The fraud engine evaluates every payment before authorization.</p>
+<p><strong>Layers of fraud detection</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Method</th>
+<th>Latency</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Rules engine</td>
+<td>Deterministic rules</td>
+<td>&lt; 10 ms</td>
+<td>Block transactions &gt; $10K, block cards from sanctioned countries</td>
+</tr>
+<tr>
+<td>Velocity checks</td>
+<td>Rate-based analysis</td>
+<td>&lt; 20 ms</td>
+<td>More than 5 transactions in 1 minute from same card</td>
+</tr>
+<tr>
+<td>ML scoring</td>
+<td>Feature-based model</td>
+<td>&lt; 50 ms</td>
+<td>Model trained on historical fraud patterns</td>
+</tr>
+<tr>
+<td>3D Secure</td>
+<td>Cardholder authentication</td>
+<td>Seconds</td>
+<td>Redirect to bank for verification</td>
+</tr>
+</tbody></table>
+<p><strong>Risk score</strong>: The fraud engine returns a risk score (0-100). The payment service uses configurable thresholds:</p>
+<ul>
+<li>Score 0-30: Approve automatically.</li>
+<li>Score 31-70: Approve but flag for review.</li>
+<li>Score 71-100: Decline and alert the fraud team.</li>
+</ul>
+<h3>6. PCI DSS Compliance</h3>
+<p>PCI DSS (Payment Card Industry Data Security Standard) governs how card data is handled.</p>
+<p><strong>Key rules</strong>:</p>
+<ul>
+<li><strong>Never store CVV/CVC</strong>: Not even encrypted. Ever. After authorization, it must be discarded.</li>
+<li><strong>Tokenize PAN</strong>: Replace the Primary Account Number with a token immediately upon receipt. The raw PAN is stored only in a PCI-compliant vault.</li>
+<li><strong>Encrypt in transit and at rest</strong>: TLS 1.2+ for all network communication. AES-256 for stored data.</li>
+<li><strong>Network segmentation</strong>: Systems that handle card data must be isolated from the rest of the network.</li>
+</ul>
+<p><strong>Tokenization flow</strong>: The client-side SDK (e.g., Stripe.js) sends card details directly to the PCI vault, which returns a token. Your servers never see the raw card number.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant User
+    participant ClientSDK as Client SDK
+    participant Vault as PCI Vault
+    participant Server as Your Server
+    participant Processor as Payment Processor
+
+    User->>ClientSDK: Enter card details
+    ClientSDK->>Vault: Send card details directly
+    Vault-->>ClientSDK: Return payment_method_token
+    ClientSDK->>Server: Send token (not card number)
+    Server->>Processor: Authorize using token
+    Note over Server: Server never sees raw card data
+</pre>
+<h3>7. Webhooks for Async Payment Status</h3>
+<p>Payment processors communicate asynchronous events (settlement, chargebacks, disputes) via webhooks.</p>
+<p><strong>Webhook handling best practices</strong>:</p>
+<ol>
+<li><p><strong>Signature verification</strong>: Every webhook includes a signature (HMAC-SHA256 of the payload with a shared secret). Verify it before processing. This prevents replay attacks and spoofed webhooks.</p>
+</li>
+<li><p><strong>Idempotent processing</strong>: Webhooks can be delivered multiple times. Use the event ID from the processor as a dedup key.</p>
+</li>
+<li><p><strong>Acknowledge quickly</strong>: Return 200 within 5 seconds. If processing takes longer, acknowledge first and process asynchronously. If you return an error or time out, the processor will retry.</p>
+</li>
+<li><p><strong>Event ordering</strong>: Webhooks may arrive out of order. A settlement event might arrive before a capture confirmation. Handle this with state machine validation -- only process events that are valid transitions from the current state.</p>
+</li>
+</ol>
+<h3>8. Reconciliation</h3>
+<p>Reconciliation is the process of matching your internal ledger with external bank statements and processor reports.</p>
+<pre class="mermaid">
+graph TB
+    subgraph Internal ["Internal Records"]
+        Ledger["Ledger Entries"]
+        PayRec["Payment Records"]
+    end
+
+    subgraph External ["External Reports"]
+        ProcReport["Processor Settlement<br/>Report (daily)"]
+        BankStmt["Bank Statement<br/>(daily)"]
+    end
+
+    Ledger & PayRec --> Matcher["Reconciliation<br/>Matcher"]
+    ProcReport & BankStmt --> Matcher
+
+    Matcher --> Match["Matched<br/>(everything lines up)"]
+    Matcher --> Mismatch["Mismatches<br/>(amount differences)"]
+    Matcher --> Missing["Missing<br/>(in ledger but not bank,<br/>or vice versa)"]
+
+    Mismatch & Missing --> Alert["Alert + Manual<br/>Investigation Queue"]
+</pre>
+<p><strong>Types of reconciliation</strong>:</p>
+<ul>
+<li><strong>T+0 reconciliation</strong>: Match your payment records against processor confirmations same-day. Catches authorization/capture mismatches immediately.</li>
+<li><strong>T+1 reconciliation</strong>: Match your ledger against the processor&#39;s settlement file. Catches amount discrepancies, missing settlements, and extra charges.</li>
+<li><strong>Monthly reconciliation</strong>: Match cumulative balances against bank statements. The final checkpoint.</li>
+</ul>
+<p><strong>Common mismatch causes</strong>:</p>
+<ul>
+<li>Currency conversion rounding differences.</li>
+<li>Processor fees deducted from settlement.</li>
+<li>Chargebacks processed by the bank but not yet received as webhooks.</li>
+<li>Timing differences (payment captured on day 1, settled on day 2).</li>
+</ul>
+<hr>
+<h2>Data Models &amp; Storage</h2>
+<h3>Core Tables</h3>
+<p><strong>payments</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>id</td>
+<td>UUID</td>
+<td>Primary key</td>
+</tr>
+<tr>
+<td>idempotency_key</td>
+<td>VARCHAR(255)</td>
+<td>Unique, for dedup</td>
+</tr>
+<tr>
+<td>merchant_id</td>
+<td>UUID</td>
+<td>Which merchant</td>
+</tr>
+<tr>
+<td>customer_id</td>
+<td>UUID</td>
+<td>Which customer</td>
+</tr>
+<tr>
+<td>amount</td>
+<td>BIGINT</td>
+<td>Amount in minor units</td>
+</tr>
+<tr>
+<td>currency</td>
+<td>CHAR(3)</td>
+<td>ISO 4217 code (USD, EUR)</td>
+</tr>
+<tr>
+<td>status</td>
+<td>ENUM</td>
+<td>See state machine above</td>
+</tr>
+<tr>
+<td>payment_method_token</td>
+<td>VARCHAR(255)</td>
+<td>Tokenized card reference</td>
+</tr>
+<tr>
+<td>processor_reference</td>
+<td>VARCHAR(255)</td>
+<td>External processor&#39;s transaction ID</td>
+</tr>
+<tr>
+<td>auth_code</td>
+<td>VARCHAR(50)</td>
+<td>Authorization code from issuer</td>
+</tr>
+<tr>
+<td>risk_score</td>
+<td>INT</td>
+<td>Fraud engine score</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>When payment was initiated</td>
+</tr>
+<tr>
+<td>updated_at</td>
+<td>TIMESTAMP</td>
+<td>Last state change</td>
+</tr>
+<tr>
+<td>version</td>
+<td>INT</td>
+<td>Optimistic locking</td>
+</tr>
+</tbody></table>
+<p><strong>ledger_entries</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>id</td>
+<td>BIGINT</td>
+<td>Auto-increment, append-only</td>
+</tr>
+<tr>
+<td>transaction_id</td>
+<td>UUID</td>
+<td>Groups related debit/credit entries</td>
+</tr>
+<tr>
+<td>payment_id</td>
+<td>UUID</td>
+<td>FK to payments</td>
+</tr>
+<tr>
+<td>account_id</td>
+<td>UUID</td>
+<td>Which account</td>
+</tr>
+<tr>
+<td>entry_type</td>
+<td>ENUM</td>
+<td>debit, credit</td>
+</tr>
+<tr>
+<td>amount</td>
+<td>BIGINT</td>
+<td>Amount in minor units</td>
+</tr>
+<tr>
+<td>currency</td>
+<td>CHAR(3)</td>
+<td>ISO 4217</td>
+</tr>
+<tr>
+<td>description</td>
+<td>VARCHAR(500)</td>
+<td>Human-readable description</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>Immutable timestamp</td>
+</tr>
+</tbody></table>
+<div class="warning">
+
+<p>Ledger entries are append-only. Never update or delete a ledger entry. To correct a mistake, create a reversal entry. This maintains a complete audit trail.</p>
+</div>
+
+
+<p><strong>refunds</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>id</td>
+<td>UUID</td>
+<td>Primary key</td>
+</tr>
+<tr>
+<td>payment_id</td>
+<td>UUID</td>
+<td>FK to original payment</td>
+</tr>
+<tr>
+<td>amount</td>
+<td>BIGINT</td>
+<td>Refund amount in minor units</td>
+</tr>
+<tr>
+<td>currency</td>
+<td>CHAR(3)</td>
+<td>Must match original payment</td>
+</tr>
+<tr>
+<td>reason</td>
+<td>VARCHAR(500)</td>
+<td>Refund reason</td>
+</tr>
+<tr>
+<td>status</td>
+<td>ENUM</td>
+<td>initiated, processing, completed, failed</td>
+</tr>
+<tr>
+<td>processor_reference</td>
+<td>VARCHAR(255)</td>
+<td>External refund reference</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>When refund was initiated</td>
+</tr>
+</tbody></table>
+<h3>Storage Choices</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Technology</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Payment records</td>
+<td>PostgreSQL (primary-replica)</td>
+<td>ACID transactions, strong consistency</td>
+</tr>
+<tr>
+<td>Ledger</td>
+<td>PostgreSQL (append-only) or purpose-built ledger DB</td>
+<td>Immutable, auditable, sequential writes</td>
+</tr>
+<tr>
+<td>Idempotency keys</td>
+<td>PostgreSQL (same DB as payments)</td>
+<td>Atomic with payment creation</td>
+</tr>
+<tr>
+<td>Event log</td>
+<td>Kafka</td>
+<td>Durable event stream for async processing</td>
+</tr>
+<tr>
+<td>PCI vault</td>
+<td>HSM-backed vault (e.g., Stripe Vault, AWS CloudHSM)</td>
+<td>Regulatory requirement for card storage</td>
+</tr>
+<tr>
+<td>Analytics</td>
+<td>ClickHouse / BigQuery</td>
+<td>Fast aggregation over transaction data</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>Scalability Strategies</h2>
+<h3>Database Scaling</h3>
+<p>Payment databases need strong consistency, which limits horizontal scaling options. Strategies:</p>
+<ol>
+<li><p><strong>Vertical scaling first</strong>: PostgreSQL on a large instance handles 1,000+ TPS easily. For 10M transactions/day (~116 TPS average), a single primary with read replicas is sufficient.</p>
+</li>
+<li><p><strong>Read replicas</strong>: Payment history queries, reporting, and analytics hit read replicas. The primary handles only writes.</p>
+</li>
+<li><p><strong>Sharding by merchant_id</strong>: When a single database is insufficient, shard by merchant. Each merchant&#39;s payments live on a specific shard. Cross-merchant queries (rare in practice) go through an aggregation layer.</p>
+</li>
+<li><p><strong>Separate ledger database</strong>: The ledger is append-only with sequential writes, which is a different access pattern from the payment table&#39;s read-modify-write pattern. Separating them allows independent optimization.</p>
+</li>
+</ol>
+<h3>Payment Processing Scaling</h3>
+<ul>
+<li><strong>Horizontal scaling of payment service</strong>: Stateless payment service instances behind a load balancer. The idempotency key prevents issues with request retries across different instances.</li>
+<li><strong>Multiple processor integrations</strong>: Route traffic across multiple processors (Stripe, Adyen, Braintree) for redundancy and to negotiate better rates.</li>
+<li><strong>Queue-based settlement</strong>: Settlement and reconciliation are batch processes that run asynchronously, decoupled from the real-time payment path.</li>
+</ul>
+<h3>Handling Peak Traffic</h3>
+<ul>
+<li><strong>Graceful degradation</strong>: During extreme spikes, non-critical features (detailed analytics, recommendation-based upsells) can be disabled to preserve capacity for the payment path.</li>
+<li><strong>Pre-authorization</strong>: For anticipated events (flash sales), pre-authorize cards before the event starts.</li>
+<li><strong>Circuit breakers on processors</strong>: If a processor is slow or failing, route traffic to a backup processor immediately.</li>
+</ul>
+<hr>
+<h2>Design Trade-offs</h2>
+<h3>Synchronous vs Asynchronous Payment Processing</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Synchronous</td>
+<td>Immediate result, simpler client logic</td>
+<td>Blocks user, processor latency visible</td>
+</tr>
+<tr>
+<td>Asynchronous</td>
+<td>Faster response, handles slow processors</td>
+<td>Complex status tracking, polling needed</td>
+</tr>
+</tbody></table>
+<p><strong>Decision</strong>: Synchronous for authorization (user expects immediate feedback), asynchronous for capture and settlement (no user waiting). The authorization call takes 1-3 seconds and the user is watching a loading spinner, so synchronous is acceptable.</p>
+<h3>Single vs Multiple Payment Processors</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Single processor</td>
+<td>Simple integration, one contract</td>
+<td>Single point of failure, no negotiating leverage</td>
+</tr>
+<tr>
+<td>Multiple processors</td>
+<td>Redundancy, cost optimization, geographic routing</td>
+<td>Complex routing logic, multiple integrations to maintain</td>
+</tr>
+</tbody></table>
+<p><strong>Decision</strong>: Multiple processors with intelligent routing. Route based on: card network (Visa routes to processor A, Mastercard to processor B), geography (EU cards to EU processor), cost optimization, and availability (failover when primary is down).</p>
+<h3>Strong vs Eventual Consistency</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Strong consistency</td>
+<td>No stale reads, simpler reasoning</td>
+<td>Higher latency, harder to scale</td>
+</tr>
+<tr>
+<td>Eventual consistency</td>
+<td>Better performance, easier scaling</td>
+<td>Stale reads, complex conflict resolution</td>
+</tr>
+</tbody></table>
+<p><strong>Decision</strong>: Strong consistency for the payment path and ledger. Money cannot be eventually consistent. Read replicas may have slight lag for non-critical reads (transaction history), which is acceptable.</p>
+<div class="important">
+
+<p>In a payment system interview, always err on the side of consistency over availability. Unlike social media where showing a slightly stale feed is fine, showing a stale payment balance or allowing a double charge is unacceptable.</p>
+</div>
+
+
+<hr>
+<h2>Interview Cheat Sheet</h2>
+<h3>Key Points to Mention</h3>
+<ol>
+<li><strong>Idempotency keys</strong>: The single most important concept. Explain how they prevent double charges.</li>
+<li><strong>Double-entry bookkeeping</strong>: Debits always equal credits. This is your audit guarantee.</li>
+<li><strong>Authorization vs capture</strong>: Two-phase payment flow. Authorization reserves; capture moves money.</li>
+<li><strong>PCI compliance</strong>: Tokenize card data immediately. Your servers never see raw PAN.</li>
+<li><strong>Exactly-once via at-most-once + idempotency</strong>: You cannot have true exactly-once in distributed systems. Achieve it through idempotent retries.</li>
+<li><strong>Reconciliation</strong>: Three levels (T+0 processor match, T+1 settlement match, monthly bank match).</li>
+<li><strong>State machine</strong>: Payments transition through well-defined states. Invalid transitions are rejected.</li>
+<li><strong>Minor units for currency</strong>: Store cents, not dollars. Never use floating point.</li>
+</ol>
+<h3>Common Interview Questions and Answers</h3>
+<p><strong>Q: What happens if the network fails between your service and the payment processor?</strong>
+A: The payment is in an &quot;unknown&quot; state. We poll the processor&#39;s API using our idempotency key to determine the outcome. If they have no record, we retry. If they confirm the payment, we update our records. We never assume success or failure without confirmation.</p>
+<p><strong>Q: How do you handle a partial refund?</strong>
+A: Create a refund record linked to the original payment. Validate that the cumulative refund amount does not exceed the original payment amount. Send the refund request to the processor. Create reversal ledger entries (debit merchant revenue, credit customer liability) for the refund amount.</p>
+<p><strong>Q: How do you prevent a merchant from being paid twice for the same order?</strong>
+A: The idempotency key is scoped to the order. The key might be <code>order-{order_id}-capture</code>. Any retry with the same key returns the original result without re-processing.</p>
+<p><strong>Q: What if your database goes down during a payment?</strong>
+A: The payment fails and the user sees an error. We never guess about money. If the authorization succeeded at the processor but we failed to record it, our reconciliation process will catch the orphaned authorization and void it within 24 hours.</p>
+<p><strong>Q: How do you handle chargebacks?</strong>
+A: Chargebacks arrive as async events from the processor. We create reversal ledger entries, debit the merchant&#39;s balance, update the payment status, and notify the merchant. We maintain evidence collection workflows for dispute resolution.</p>
+<div class="tip">
+
+<p>The interviewer is looking for you to treat money with extreme care. Phrases like &quot;we never assume success without confirmation,&quot; &quot;we reconcile daily,&quot; and &quot;the ledger is append-only&quot; signal maturity and domain awareness.</p>
+</div>
+
+
+</body>
+</html>

@@ -1,0 +1,1164 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Communication Patterns — Complete System Design Reference</title>
+</head>
+<body>
+
+<h1>Communication Patterns — Complete System Design Reference</h1>
+<h3>Staff Engineer Interview Preparation Guide</h3>
+<div class="tip">
+
+<p>Choosing the right communication pattern is one of the most impactful decisions in system design. Interviewers evaluate whether you understand the trade-offs deeply enough to pick the right tool — not just the most popular one.</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-rest--the-default-choice">REST — The Default Choice</a></li>
+<li><a href="#2-graphql--flexible-queries">GraphQL — Flexible Queries</a></li>
+<li><a href="#3-grpc--high-performance-rpc">gRPC — High-Performance RPC</a></li>
+<li><a href="#4-websockets--full-duplex-communication">WebSockets — Full-Duplex Communication</a></li>
+<li><a href="#5-server-sent-events-sse">Server-Sent Events (SSE)</a></li>
+<li><a href="#6-long-polling">Long Polling</a></li>
+<li><a href="#7-webhooks--push-based-integration">Webhooks — Push-Based Integration</a></li>
+<li><a href="#8-rpc-vs-rest--a-deeper-comparison">RPC vs REST — A Deeper Comparison</a></li>
+<li><a href="#9-choosing-the-right-pattern">Choosing the Right Pattern</a></li>
+<li><a href="#10-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. REST — The Default Choice</h2>
+<h3>What REST Actually Is</h3>
+<p>REST (Representational State Transfer) is an architectural style, not a protocol. It was defined by Roy Fielding in his 2000 doctoral dissertation. A truly RESTful API follows six constraints:</p>
+<ol>
+<li><strong>Client-Server:</strong> Separation of concerns between the UI and data storage</li>
+<li><strong>Stateless:</strong> Each request contains all information needed to process it — no server-side session state</li>
+<li><strong>Cacheable:</strong> Responses must declare themselves cacheable or non-cacheable</li>
+<li><strong>Uniform Interface:</strong> Resources are identified by URIs, manipulated through representations, and self-descriptive</li>
+<li><strong>Layered System:</strong> Clients cannot tell whether they are connected to the end server or an intermediary</li>
+<li><strong>Code on Demand (optional):</strong> Servers can extend client functionality by sending executable code</li>
+</ol>
+<div class="note">
+
+<p>Most &quot;REST APIs&quot; in production are not truly RESTful. They use HTTP with JSON payloads and resource-oriented URLs, which is more accurately called &quot;HTTP APIs&quot; or &quot;REST-ish.&quot; True REST includes HATEOAS (see below), which almost nobody implements. This is fine for interviews — just show you know the distinction.</p>
+</div>
+
+
+<h3>HTTP Methods and Their Semantics</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Operation</th>
+<th align="center">Idempotent?</th>
+<th align="center">Safe?</th>
+<th align="center">Request Body</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GET</td>
+<td>Read</td>
+<td align="center">Yes</td>
+<td align="center">Yes</td>
+<td align="center">No</td>
+<td>Fetch a resource or collection</td>
+</tr>
+<tr>
+<td>POST</td>
+<td>Create</td>
+<td align="center">No</td>
+<td align="center">No</td>
+<td align="center">Yes</td>
+<td>Create a new resource</td>
+</tr>
+<tr>
+<td>PUT</td>
+<td>Replace</td>
+<td align="center">Yes</td>
+<td align="center">No</td>
+<td align="center">Yes</td>
+<td>Full update of a resource</td>
+</tr>
+<tr>
+<td>PATCH</td>
+<td>Partial update</td>
+<td align="center">No*</td>
+<td align="center">No</td>
+<td align="center">Yes</td>
+<td>Modify specific fields</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td>Remove</td>
+<td align="center">Yes</td>
+<td align="center">No</td>
+<td align="center">Optional</td>
+<td>Delete a resource</td>
+</tr>
+<tr>
+<td>HEAD</td>
+<td>Read metadata</td>
+<td align="center">Yes</td>
+<td align="center">Yes</td>
+<td align="center">No</td>
+<td>Check if resource exists, get headers</td>
+</tr>
+<tr>
+<td>OPTIONS</td>
+<td>Read capabilities</td>
+<td align="center">Yes</td>
+<td align="center">Yes</td>
+<td align="center">No</td>
+<td>CORS preflight, discover allowed methods</td>
+</tr>
+</tbody></table>
+<p>*PATCH is idempotent if the patch document describes the final state, but not if it describes a delta (e.g., &quot;increment by 1&quot;).</p>
+<div class="important">
+
+<p>Idempotency matters enormously at scale. If a network timeout occurs and the client retries a POST, you might create a duplicate resource. Solutions include idempotency keys (a unique token the client sends with the request — the server deduplicates), or designing endpoints to be naturally idempotent (PUT with a client-generated ID).</p>
+</div>
+
+
+<h3>HTTP Status Codes — The Essential Ones</h3>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+<th>When to Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>200</td>
+<td>OK</td>
+<td>Successful GET, PUT, PATCH, DELETE</td>
+</tr>
+<tr>
+<td>201</td>
+<td>Created</td>
+<td>Successful POST that created a resource</td>
+</tr>
+<tr>
+<td>204</td>
+<td>No Content</td>
+<td>Successful DELETE with no response body</td>
+</tr>
+<tr>
+<td>301</td>
+<td>Moved Permanently</td>
+<td>Resource has a new permanent URL</td>
+</tr>
+<tr>
+<td>304</td>
+<td>Not Modified</td>
+<td>Cached version is still valid (ETag match)</td>
+</tr>
+<tr>
+<td>400</td>
+<td>Bad Request</td>
+<td>Invalid request syntax or parameters</td>
+</tr>
+<tr>
+<td>401</td>
+<td>Unauthorized</td>
+<td>Missing or invalid authentication</td>
+</tr>
+<tr>
+<td>403</td>
+<td>Forbidden</td>
+<td>Authenticated but lacking permission</td>
+</tr>
+<tr>
+<td>404</td>
+<td>Not Found</td>
+<td>Resource does not exist</td>
+</tr>
+<tr>
+<td>409</td>
+<td>Conflict</td>
+<td>Request conflicts with current state (e.g., duplicate)</td>
+</tr>
+<tr>
+<td>429</td>
+<td>Too Many Requests</td>
+<td>Rate limit exceeded</td>
+</tr>
+<tr>
+<td>500</td>
+<td>Internal Server Error</td>
+<td>Unhandled server failure</td>
+</tr>
+<tr>
+<td>502</td>
+<td>Bad Gateway</td>
+<td>Upstream service returned invalid response</td>
+</tr>
+<tr>
+<td>503</td>
+<td>Service Unavailable</td>
+<td>Server temporarily overloaded or in maintenance</td>
+</tr>
+<tr>
+<td>504</td>
+<td>Gateway Timeout</td>
+<td>Upstream service did not respond in time</td>
+</tr>
+</tbody></table>
+<h3>HATEOAS</h3>
+<p>HATEOAS (Hypermedia as the Engine of Application State) is the constraint that makes an API truly RESTful. Responses include links to related actions and resources, so the client discovers what it can do next by following links rather than hardcoding URL patterns.</p>
+<p>Example response:</p>
+<pre><code class="language-json">{
+  &quot;id&quot;: 42,
+  &quot;name&quot;: &quot;Jane Doe&quot;,
+  &quot;email&quot;: &quot;jane@example.com&quot;,
+  &quot;_links&quot;: {
+    &quot;self&quot;: { &quot;href&quot;: &quot;/users/42&quot; },
+    &quot;orders&quot;: { &quot;href&quot;: &quot;/users/42/orders&quot; },
+    &quot;update&quot;: { &quot;href&quot;: &quot;/users/42&quot;, &quot;method&quot;: &quot;PUT&quot; },
+    &quot;delete&quot;: { &quot;href&quot;: &quot;/users/42&quot;, &quot;method&quot;: &quot;DELETE&quot; }
+  }
+}
+</code></pre>
+<p>In practice, very few APIs implement HATEOAS. The overhead of generating and parsing these links is rarely worth it for tightly coupled frontend-backend pairs. It becomes more valuable in public APIs consumed by many third-party clients.</p>
+<h3>REST Best Practices for Interviews</h3>
+<p><strong>Use nouns for resources, not verbs:</strong> <code>/users/42</code> not <code>/getUser?id=42</code></p>
+<p><strong>Use plural nouns:</strong> <code>/users</code> not <code>/user</code></p>
+<p><strong>Nest for relationships:</strong> <code>/users/42/orders</code> to get orders for user 42</p>
+<p><strong>Use query parameters for filtering:</strong> <code>/users?role=admin&amp;status=active</code></p>
+<p><strong>Version your API:</strong> <code>/v1/users</code> or <code>Accept: application/vnd.api.v1+json</code></p>
+<p><strong>Pagination:</strong> Use cursor-based pagination for large datasets (<code>?cursor=abc123&amp;limit=20</code>) rather than offset-based (<code>?page=3&amp;limit=20</code>), which has issues with concurrent writes.</p>
+<hr>
+<h2>2. GraphQL — Flexible Queries</h2>
+<h3>Core Concepts</h3>
+<p>GraphQL, developed by Facebook in 2012 and open-sourced in 2015, is a query language for APIs with a strongly typed schema. The client specifies exactly what data it needs, and the server returns precisely that — nothing more, nothing less.</p>
+<h4>Schema Definition</h4>
+<pre><code class="language-graphql">type User {
+  id: ID!
+  name: String!
+  email: String!
+  posts(first: Int, after: String): PostConnection!
+}
+
+type Post {
+  id: ID!
+  title: String!
+  content: String!
+  author: User!
+  comments: [Comment!]!
+}
+
+type Query {
+  user(id: ID!): User
+  users(filter: UserFilter): [User!]!
+}
+
+type Mutation {
+  createPost(input: CreatePostInput!): Post!
+  updateUser(id: ID!, input: UpdateUserInput!): User!
+}
+</code></pre>
+<h4>Queries and Mutations</h4>
+<p>A client query requests exactly the fields it needs:</p>
+<pre><code class="language-graphql">query {
+  user(id: &quot;42&quot;) {
+    name
+    email
+    posts(first: 5) {
+      edges {
+        node {
+          title
+          comments {
+            text
+          }
+        }
+      }
+    }
+  }
+}
+</code></pre>
+<p>This single request replaces what might be 3 REST calls: <code>GET /users/42</code>, <code>GET /users/42/posts?limit=5</code>, and <code>GET /posts/{id}/comments</code> for each post.</p>
+<h3>Problems GraphQL Solves</h3>
+<p><strong>Over-fetching:</strong> REST endpoints return all fields even if the client only needs two. A mobile client requesting a user profile might receive 30 fields when it only displays the name and avatar. GraphQL lets the client request exactly <code>name</code> and <code>avatarUrl</code>.</p>
+<p><strong>Under-fetching:</strong> Getting a user&#39;s profile page might require one call for user data, another for their posts, and another for their followers. With GraphQL, a single query retrieves all three in one round trip.</p>
+<p><strong>API versioning:</strong> Instead of <code>/v1/users</code> and <code>/v2/users</code>, GraphQL schemas evolve by adding new fields. Old clients simply do not query the new fields. Deprecation is handled with the <code>@deprecated</code> directive.</p>
+<h3>The N+1 Problem</h3>
+<p>The most notorious GraphQL performance issue. Consider this query:</p>
+<pre><code class="language-graphql">{
+  posts(first: 20) {
+    title
+    author {
+      name
+    }
+  }
+}
+</code></pre>
+<p>A naive resolver fetches 20 posts (1 query), then for each post fetches the author (20 queries) = 21 total database queries.</p>
+<p><strong>Solution: DataLoader pattern.</strong> DataLoader batches and deduplicates requests within a single execution cycle. Instead of 20 individual author lookups, it collects all 20 author IDs and makes a single <code>SELECT * FROM users WHERE id IN (...)</code> query.</p>
+<div class="warning">
+
+<p>The N+1 problem is the most common GraphQL pitfall cited in interviews. Always mention DataLoader (or equivalent batching) when discussing GraphQL. Without it, GraphQL can be dramatically slower than REST because of resolver execution patterns.</p>
+</div>
+
+
+<h3>GraphQL vs REST — When to Choose Which</h3>
+<table>
+<thead>
+<tr>
+<th>Factor</th>
+<th>REST</th>
+<th>GraphQL</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Client diversity</td>
+<td>Low (one or two clients)</td>
+<td>High (mobile, web, third party with different needs)</td>
+</tr>
+<tr>
+<td>Data shape predictability</td>
+<td>Stable, well-known shapes</td>
+<td>Variable, client-driven shapes</td>
+</tr>
+<tr>
+<td>Caching</td>
+<td>HTTP caching works naturally (GET + URL = cache key)</td>
+<td>Complex (POST to single endpoint, need app-level caching)</td>
+</tr>
+<tr>
+<td>File uploads</td>
+<td>Well-supported (multipart/form-data)</td>
+<td>Awkward (spec does not cover uploads natively)</td>
+</tr>
+<tr>
+<td>Real-time</td>
+<td>Requires separate WebSocket setup</td>
+<td>Built-in subscriptions</td>
+</tr>
+<tr>
+<td>Learning curve</td>
+<td>Low</td>
+<td>Medium-high (schema, resolvers, DataLoader)</td>
+</tr>
+<tr>
+<td>Monitoring</td>
+<td>Easy (each endpoint is a metric)</td>
+<td>Hard (all queries hit one endpoint, need query-level metrics)</td>
+</tr>
+<tr>
+<td>Rate limiting</td>
+<td>Easy (per endpoint)</td>
+<td>Hard (query complexity varies wildly)</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>A strong interview answer: &quot;I would use GraphQL for the client-facing API because we have mobile and web clients with very different data needs, and I want to avoid building and maintaining separate endpoints for each. But for service-to-service communication internally, I would use gRPC for its performance and strong typing.&quot;</p>
+</div>
+
+
+<hr>
+<h2>3. gRPC — High-Performance RPC</h2>
+<h3>What gRPC Is</h3>
+<p>gRPC (Google Remote Procedure Call) is an open-source RPC framework built on HTTP/2 and Protocol Buffers. It is designed for high-throughput, low-latency communication, particularly between microservices.</p>
+<h3>Protocol Buffers (Protobuf)</h3>
+<p>Protobuf is the default serialization format for gRPC. You define your service and message types in <code>.proto</code> files, and the protobuf compiler generates client and server code in your language of choice.</p>
+<pre><code class="language-protobuf">syntax = &quot;proto3&quot;;
+
+service UserService {
+  rpc GetUser (GetUserRequest) returns (User);
+  rpc ListUsers (ListUsersRequest) returns (stream User);
+  rpc Chat (stream ChatMessage) returns (stream ChatMessage);
+}
+
+message GetUserRequest {
+  string id = 1;
+}
+
+message User {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+  int64 created_at = 4;
+}
+</code></pre>
+<h4>Why Protobuf Over JSON</h4>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>JSON</th>
+<th>Protobuf</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Format</td>
+<td>Text (human-readable)</td>
+<td>Binary (compact)</td>
+</tr>
+<tr>
+<td>Size</td>
+<td>Larger (field names repeated)</td>
+<td>3-10x smaller (field numbers, not names)</td>
+</tr>
+<tr>
+<td>Parse speed</td>
+<td>Slower (string parsing)</td>
+<td>5-100x faster (direct memory mapping)</td>
+</tr>
+<tr>
+<td>Schema</td>
+<td>None (or JSON Schema, optional)</td>
+<td>Required (.proto file)</td>
+</tr>
+<tr>
+<td>Backward compatibility</td>
+<td>Fragile (field name changes break clients)</td>
+<td>Built-in (field numbers provide stable identity)</td>
+</tr>
+<tr>
+<td>Debugging</td>
+<td>Easy (readable in logs)</td>
+<td>Hard (binary, need tools to inspect)</td>
+</tr>
+</tbody></table>
+<h3>gRPC Streaming Modes</h3>
+<p>gRPC supports four communication patterns:</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Client</th>
+<th>Server</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Unary</td>
+<td>1 request</td>
+<td>1 response</td>
+<td>Standard request-response (like REST)</td>
+</tr>
+<tr>
+<td>Server streaming</td>
+<td>1 request</td>
+<td>Stream of responses</td>
+<td>Real-time feeds, large result sets</td>
+</tr>
+<tr>
+<td>Client streaming</td>
+<td>Stream of requests</td>
+<td>1 response</td>
+<td>File upload, sensor data aggregation</td>
+</tr>
+<tr>
+<td>Bidirectional streaming</td>
+<td>Stream of requests</td>
+<td>Stream of responses</td>
+<td>Chat, collaborative editing, gaming</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>gRPC streaming over HTTP/2 gives you WebSocket-like capabilities without needing a separate protocol or connection upgrade. The same connection used for unary calls can also carry streams. This simplifies infrastructure because you do not need to handle WebSocket scaling separately.</p>
+</div>
+
+
+<h3>gRPC Limitations</h3>
+<p><strong>Browser support:</strong> Browsers cannot make raw gRPC calls because they lack HTTP/2 trailer support. gRPC-Web exists as a workaround but requires a proxy (like Envoy) to translate between the browser and gRPC services.</p>
+<p><strong>Load balancer support:</strong> L7 load balancing for gRPC requires HTTP/2-aware load balancers. Standard HTTP/1.1 load balancers will not work because gRPC multiplexes everything over a single long-lived connection, so L4 load balancing distributes very unevenly.</p>
+<p><strong>Debugging:</strong> Binary protocol means you cannot just <code>curl</code> your API. You need tools like <code>grpcurl</code>, Postman with gRPC support, or built-in reflection endpoints.</p>
+<p><strong>Human readability:</strong> Protobuf messages are not human-readable. Logs, debugging, and ad-hoc testing are harder compared to JSON-based APIs.</p>
+<div class="tip">
+
+<p>In interviews, position gRPC as the choice for internal microservice communication where performance matters, and REST/GraphQL as the choice for external-facing APIs where developer experience and browser compatibility matter. This demonstrates architectural awareness.</p>
+</div>
+
+
+<hr>
+<h2>4. WebSockets — Full-Duplex Communication</h2>
+<h3>The WebSocket Protocol</h3>
+<p>WebSockets provide a persistent, bidirectional, full-duplex communication channel over a single TCP connection. Unlike HTTP&#39;s request-response model, either side can send messages at any time after the connection is established.</p>
+<h3>Connection Lifecycle</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    Note over C,S: 1. HTTP Upgrade Handshake
+    C->>S: GET /chat HTTP/1.1<br/>Upgrade: websocket<br/>Connection: Upgrade<br/>Sec-WebSocket-Key: dGhlIHNhbXBsZQ==
+
+    S->>C: HTTP/1.1 101 Switching Protocols<br/>Upgrade: websocket<br/>Connection: Upgrade<br/>Sec-WebSocket-Accept: s3pPLMBiT...
+
+    Note over C,S: 2. Full-Duplex Communication
+    C->>S: Text/Binary frame (message from client)
+    S->>C: Text/Binary frame (message from server)
+    S->>C: Text/Binary frame (server push)
+    C->>S: Text/Binary frame (another client message)
+
+    Note over C,S: Messages flow freely in both<br/>directions without request-response pairing
+
+    Note over C,S: 3. Close Handshake
+    C->>S: Close frame (code: 1000)
+    S->>C: Close frame (code: 1000)
+    Note over C,S: TCP connection closed
+</pre>
+<h3>When to Use WebSockets</h3>
+<table>
+<thead>
+<tr>
+<th>Use Case</th>
+<th>Why WebSockets?</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Chat applications</td>
+<td>Both parties send messages unpredictably</td>
+</tr>
+<tr>
+<td>Real-time collaboration (Google Docs)</td>
+<td>Cursor positions, edits broadcast to all participants</td>
+</tr>
+<tr>
+<td>Live sports scores / stock tickers</td>
+<td>High-frequency server-to-client updates</td>
+</tr>
+<tr>
+<td>Multiplayer gaming</td>
+<td>Low-latency bidirectional state sync</td>
+</tr>
+<tr>
+<td>Live notifications</td>
+<td>Server pushes events as they happen</td>
+</tr>
+</tbody></table>
+<h3>Scaling Challenges</h3>
+<p>WebSockets are stateful. Each connection is a long-lived TCP connection tied to a specific server. This creates unique scaling problems:</p>
+<p><strong>Connection limits:</strong> Each WebSocket connection consumes a file descriptor and memory on the server. A typical server might handle 50,000-100,000 concurrent connections before running into OS limits (file descriptors) or memory pressure.</p>
+<p><strong>Load balancer stickiness:</strong> Once a WebSocket connection is established, all traffic on that connection must go to the same server. Sticky sessions or L4 load balancing is required. You cannot round-robin at L7 because the connection is persistent.</p>
+<p><strong>Horizontal scaling:</strong> Adding a server does not help existing connections. New connections go to the new server, but existing ones stay where they are. Rebalancing requires disconnecting and reconnecting clients.</p>
+<p><strong>Message broadcasting:</strong> If user A on Server 1 sends a message to user B on Server 3, there must be a cross-server communication mechanism. Common solutions:</p>
+<ul>
+<li><strong>Pub/Sub backbone:</strong> Redis Pub/Sub, Kafka, or NATS. Servers subscribe to channels and relay messages to their local WebSocket clients.</li>
+<li><strong>Shared nothing with routing:</strong> A coordination service maintains a map of which user is connected to which server, and messages are routed directly.</li>
+</ul>
+<p><strong>Reconnection handling:</strong> Network interruptions are common (mobile switching networks, laptop sleep/wake). Clients must implement reconnection logic with exponential backoff, and the server must handle resumption (buffering missed messages, reassigning state).</p>
+<div class="warning">
+
+<p>A common interview mistake is proposing WebSockets for a notification system and not addressing scaling. Always discuss: (1) how you fan out messages across servers (pub/sub backbone), (2) connection limits per server, and (3) reconnection/missed message handling.</p>
+</div>
+
+
+<hr>
+<h2>5. Server-Sent Events (SSE)</h2>
+<h3>How SSE Works</h3>
+<p>Server-Sent Events provide a unidirectional channel where the server pushes events to the client over a standard HTTP connection. The client makes a regular HTTP GET request with <code>Accept: text/event-stream</code>, and the server keeps the connection open, sending events as they occur.</p>
+<pre><code>GET /events HTTP/1.1
+Accept: text/event-stream
+
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+
+event: message
+data: {&quot;user&quot;: &quot;Alice&quot;, &quot;text&quot;: &quot;Hello&quot;}
+id: 1
+
+event: message
+data: {&quot;user&quot;: &quot;Bob&quot;, &quot;text&quot;: &quot;Hi there&quot;}
+id: 2
+
+event: heartbeat
+data: ping
+</code></pre>
+<h3>SSE vs WebSockets</h3>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>SSE</th>
+<th>WebSockets</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Direction</td>
+<td>Server to client only</td>
+<td>Bidirectional</td>
+</tr>
+<tr>
+<td>Protocol</td>
+<td>HTTP (standard)</td>
+<td>WebSocket (upgrade from HTTP)</td>
+</tr>
+<tr>
+<td>Reconnection</td>
+<td>Built-in (browser auto-reconnects)</td>
+<td>Manual implementation required</td>
+</tr>
+<tr>
+<td>Last-Event-ID</td>
+<td>Built-in (resume from where you left off)</td>
+<td>Manual implementation required</td>
+</tr>
+<tr>
+<td>Data format</td>
+<td>Text only (UTF-8)</td>
+<td>Text and binary</td>
+</tr>
+<tr>
+<td>HTTP/2 multiplexing</td>
+<td>Yes (shares connection with other requests)</td>
+<td>No (separate TCP connection)</td>
+</tr>
+<tr>
+<td>Firewall/proxy compatibility</td>
+<td>Excellent (standard HTTP)</td>
+<td>Sometimes blocked (non-HTTP protocol)</td>
+</tr>
+<tr>
+<td>Browser support</td>
+<td>All modern browsers</td>
+<td>All modern browsers</td>
+</tr>
+<tr>
+<td>Max connections per domain</td>
+<td>6 (HTTP/1.1) or unlimited (HTTP/2)</td>
+<td>No browser limit</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>SSE is dramatically underused. For any scenario where you need server-to-client push but the client does not need to send data back on the same channel (live feeds, notifications, real-time dashboards), SSE is simpler, more reliable, and easier to scale than WebSockets. The client can still send data via regular HTTP requests.</p>
+</div>
+
+
+<h3>When SSE Wins Over WebSockets</h3>
+<ul>
+<li><strong>Live feed / timeline updates:</strong> Twitter-like feed where new posts appear in real time</li>
+<li><strong>Progress tracking:</strong> File upload/processing progress pushed to client</li>
+<li><strong>Dashboard updates:</strong> Metrics that refresh every few seconds</li>
+<li><strong>Notification streams:</strong> Events pushed as they happen</li>
+</ul>
+<p>SSE works well here because the client does not need to send data back on the event channel. If the user wants to post a tweet, they make a regular HTTP POST — they do not need a bidirectional channel for that.</p>
+<hr>
+<h2>6. Long Polling</h2>
+<h3>Mechanism</h3>
+<p>Long polling is a technique that simulates server push using regular HTTP. The client sends a request, and the server holds the connection open until new data is available (or a timeout occurs). When the server responds, the client immediately sends a new request, creating a near-continuous connection.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    Note over C,S: Long Polling
+    C->>S: GET /updates?since=100
+    Note right of S: Server holds request open...<br/>waiting for new data...
+    Note right of S: New data arrives!
+    S-->>C: 200 OK (new data, lastId=105)
+    C->>S: GET /updates?since=105
+    Note right of S: Holding again...
+    Note right of S: Timeout (30s), no new data
+    S-->>C: 204 No Content
+    C->>S: GET /updates?since=105
+    Note right of S: Holding...
+
+    Note over C,S: Regular Polling (for comparison)
+    C->>S: GET /updates?since=100
+    S-->>C: 200 OK (no new data)
+    Note left of C: Wait 5 seconds
+    C->>S: GET /updates?since=100
+    S-->>C: 200 OK (no new data)
+    Note left of C: Wait 5 seconds
+    C->>S: GET /updates?since=100
+    S-->>C: 200 OK (new data!)
+</pre>
+<h3>Pros and Cons</h3>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Works everywhere (standard HTTP)</td>
+<td>Server holds open connections (resource intensive)</td>
+</tr>
+<tr>
+<td>No special protocol or library needed</td>
+<td>Timeout management adds complexity</td>
+</tr>
+<tr>
+<td>Works through all firewalls and proxies</td>
+<td>Higher latency than WebSockets (re-establish each time)</td>
+</tr>
+<tr>
+<td>Simple server implementation</td>
+<td>Thundering herd if many clients reconnect simultaneously</td>
+</tr>
+<tr>
+<td>Compatible with standard load balancers</td>
+<td>Not truly real-time (slight delay on reconnection)</td>
+</tr>
+</tbody></table>
+<h3>When to Use Long Polling</h3>
+<p>Long polling is a reasonable choice when:</p>
+<ul>
+<li>WebSocket and SSE infrastructure is not available (legacy systems, restrictive proxies)</li>
+<li>The update frequency is low (minutes between events, not seconds)</li>
+<li>Simplicity is prioritized over performance</li>
+<li>You need broad compatibility with minimal infrastructure</li>
+</ul>
+<div class="note">
+
+<p>Long polling was the standard approach for real-time web features before WebSockets and SSE became widely supported. It is still used in some systems (early Slack, some email clients). In a modern system design interview, mention it as a fallback option but prefer SSE or WebSockets for primary design.</p>
+</div>
+
+
+<hr>
+<h2>7. Webhooks — Push-Based Integration</h2>
+<h3>How Webhooks Work</h3>
+<p>Webhooks flip the typical client-server relationship. Instead of the client polling for changes, the server proactively sends an HTTP POST to a URL the client has registered whenever an event occurs.</p>
+<p>The flow:</p>
+<ol>
+<li><strong>Registration:</strong> Client registers a callback URL with the server (e.g., <code>POST /webhooks</code> with <code>{ &quot;url&quot;: &quot;https://myapp.com/hooks/payment&quot;, &quot;events&quot;: [&quot;payment.completed&quot;] }</code>)</li>
+<li><strong>Event occurs:</strong> A payment is completed on the server</li>
+<li><strong>Delivery:</strong> Server sends an HTTP POST to <code>https://myapp.com/hooks/payment</code> with the event payload</li>
+<li><strong>Acknowledgment:</strong> Client returns 200 OK to confirm receipt</li>
+<li><strong>Retry on failure:</strong> If the client does not return 2xx, the server retries with exponential backoff</li>
+</ol>
+<h3>Webhook Design Considerations</h3>
+<p><strong>Security:</strong> How does the receiver verify the webhook is genuine and not spoofed?</p>
+<ul>
+<li><strong>Signature verification:</strong> The sender includes an HMAC signature (e.g., <code>X-Signature: sha256=...</code>) computed with a shared secret. The receiver recomputes and compares.</li>
+<li><strong>IP allowlisting:</strong> Only accept webhooks from known IP ranges (fragile, hard to maintain).</li>
+<li><strong>Challenge-response:</strong> During registration, the server sends a challenge to the URL to verify ownership.</li>
+</ul>
+<p><strong>Reliability:</strong> Webhooks are HTTP requests that can fail.</p>
+<ul>
+<li><strong>Retry policy:</strong> Exponential backoff with a maximum number of attempts (e.g., Stripe retries up to 3 days)</li>
+<li><strong>Idempotency:</strong> Receivers must handle duplicate deliveries gracefully (network timeout after successful processing means the sender retries)</li>
+<li><strong>Dead letter queue:</strong> After all retries fail, store the event for manual inspection or replay</li>
+<li><strong>Event ordering:</strong> Webhooks may arrive out of order. Include a timestamp or sequence number so the receiver can handle this.</li>
+</ul>
+<p><strong>At-least-once delivery:</strong> Webhooks guarantee at-least-once delivery (with retries) but not exactly-once. The receiver must be idempotent.</p>
+<div class="tip">
+
+<p>In interviews, webhooks commonly appear in integration scenarios: &quot;How does Service A notify Service B when something happens?&quot; If Service B is an external partner you do not control, webhooks are the standard answer. If both services are internal, consider message queues (more reliable, better ordering) or event streaming (Kafka).</p>
+</div>
+
+
+<h3>Real-World Webhook Examples</h3>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>Events</th>
+<th>Delivery</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Stripe</td>
+<td>payment.succeeded, invoice.created</td>
+<td>Retries for 3 days, exponential backoff</td>
+</tr>
+<tr>
+<td>GitHub</td>
+<td>push, pull_request.opened</td>
+<td>Retries 3 times within hours</td>
+</tr>
+<tr>
+<td>Twilio</td>
+<td>message.delivered, call.completed</td>
+<td>Configurable retry policy</td>
+</tr>
+<tr>
+<td>Shopify</td>
+<td>order.created, product.updated</td>
+<td>Retries for 48 hours</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>8. RPC vs REST — A Deeper Comparison</h2>
+<h3>Fundamental Philosophical Difference</h3>
+<p><strong>REST</strong> is resource-oriented. You think in terms of resources (nouns) and standard operations (HTTP methods) on those resources. <code>GET /users/42</code> means &quot;give me the representation of user 42.&quot;</p>
+<p><strong>RPC</strong> is action-oriented. You think in terms of procedures (verbs) to call. <code>GetUser(42)</code> means &quot;execute the GetUser procedure with argument 42.&quot;</p>
+<h3>Detailed Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>REST</th>
+<th>RPC (gRPC)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Mental model</td>
+<td>Resources and representations</td>
+<td>Functions and arguments</td>
+</tr>
+<tr>
+<td>Coupling</td>
+<td>Loose (client follows links, standard methods)</td>
+<td>Tight (client must know exact method signatures)</td>
+</tr>
+<tr>
+<td>Discoverability</td>
+<td>High (uniform interface, HATEOAS)</td>
+<td>Low (need the .proto file or documentation)</td>
+</tr>
+<tr>
+<td>Transport</td>
+<td>HTTP/1.1 or HTTP/2</td>
+<td>HTTP/2 (gRPC), or any transport</td>
+</tr>
+<tr>
+<td>Payload</td>
+<td>JSON (typically), XML</td>
+<td>Protobuf (typically), JSON</td>
+</tr>
+<tr>
+<td>Streaming</td>
+<td>Not native (requires WebSocket or SSE)</td>
+<td>Built-in (4 streaming modes)</td>
+</tr>
+<tr>
+<td>Code generation</td>
+<td>Optional (OpenAPI/Swagger)</td>
+<td>Required (protobuf compiler)</td>
+</tr>
+<tr>
+<td>Browser support</td>
+<td>Native</td>
+<td>Requires proxy (gRPC-Web)</td>
+</tr>
+<tr>
+<td>Caching</td>
+<td>HTTP caching (GET is cacheable by default)</td>
+<td>No standard caching</td>
+</tr>
+<tr>
+<td>Error handling</td>
+<td>HTTP status codes</td>
+<td>Status codes + rich error details</td>
+</tr>
+</tbody></table>
+<h3>When Each Shines</h3>
+<p><strong>REST wins when:</strong></p>
+<ul>
+<li>Building public-facing APIs consumed by unknown third parties</li>
+<li>Browser clients need direct access</li>
+<li>You want HTTP caching to work out of the box</li>
+<li>Your operations map cleanly to CRUD on resources</li>
+</ul>
+<p><strong>gRPC wins when:</strong></p>
+<ul>
+<li>Microservices communicate with each other at high frequency</li>
+<li>Low latency and high throughput are critical</li>
+<li>You need streaming (real-time data, large file transfer)</li>
+<li>Strong typing and code generation improve developer velocity</li>
+<li>Payload size matters (protobuf is 3-10x smaller than JSON)</li>
+</ul>
+<hr>
+<h2>9. Choosing the Right Pattern</h2>
+<h3>Decision Framework</h3>
+<table>
+<thead>
+<tr>
+<th>Question</th>
+<th>If Yes</th>
+<th>If No</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Does the client need real-time server updates?</td>
+<td>SSE, WebSocket, or Long Polling</td>
+<td>REST or gRPC (request-response)</td>
+</tr>
+<tr>
+<td>Does the client also need to send real-time data?</td>
+<td>WebSocket or gRPC bidirectional stream</td>
+<td>SSE</td>
+</tr>
+<tr>
+<td>Is this a public API for third parties?</td>
+<td>REST (+ webhooks for events)</td>
+<td>gRPC or GraphQL</td>
+</tr>
+<tr>
+<td>Do multiple clients need different data shapes?</td>
+<td>GraphQL</td>
+<td>REST</td>
+</tr>
+<tr>
+<td>Is this service-to-service, high throughput?</td>
+<td>gRPC</td>
+<td>REST</td>
+</tr>
+<tr>
+<td>Does the external system need to know about events?</td>
+<td>Webhooks</td>
+<td>Internal: message queue</td>
+</tr>
+<tr>
+<td>Is the infrastructure constrained (legacy proxies)?</td>
+<td>Long Polling or REST</td>
+<td>WebSocket or SSE</td>
+</tr>
+</tbody></table>
+<h3>Pattern Comparison Matrix</h3>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Direction</th>
+<th>Latency</th>
+<th>Complexity</th>
+<th>Scalability</th>
+<th>Best For</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>REST</td>
+<td>Client to server</td>
+<td>Medium (per-request)</td>
+<td>Low</td>
+<td>Excellent (stateless)</td>
+<td>CRUD APIs, public APIs</td>
+</tr>
+<tr>
+<td>GraphQL</td>
+<td>Client to server</td>
+<td>Medium</td>
+<td>Medium-High</td>
+<td>Good (with caching)</td>
+<td>Multi-client APIs</td>
+</tr>
+<tr>
+<td>gRPC</td>
+<td>Bidirectional</td>
+<td>Low</td>
+<td>Medium</td>
+<td>Excellent</td>
+<td>Microservices</td>
+</tr>
+<tr>
+<td>WebSocket</td>
+<td>Bidirectional</td>
+<td>Very low</td>
+<td>High</td>
+<td>Hard (stateful)</td>
+<td>Chat, gaming, collaboration</td>
+</tr>
+<tr>
+<td>SSE</td>
+<td>Server to client</td>
+<td>Low</td>
+<td>Low</td>
+<td>Good (HTTP infra)</td>
+<td>Live feeds, notifications</td>
+</tr>
+<tr>
+<td>Long Polling</td>
+<td>Server to client</td>
+<td>Medium</td>
+<td>Low</td>
+<td>Fair (held connections)</td>
+<td>Legacy/fallback real-time</td>
+</tr>
+<tr>
+<td>Webhooks</td>
+<td>Server to server</td>
+<td>Event-driven</td>
+<td>Medium</td>
+<td>Good</td>
+<td>Event notification to external systems</td>
+</tr>
+</tbody></table>
+<h3>Common Architecture Combinations</h3>
+<p>Real systems use multiple patterns together:</p>
+<p><strong>E-commerce platform:</strong></p>
+<ul>
+<li>REST API for catalog browsing, cart management, checkout</li>
+<li>WebSockets for live chat with support</li>
+<li>Webhooks for payment provider callbacks (Stripe)</li>
+<li>SSE for order status tracking</li>
+</ul>
+<p><strong>Social media feed:</strong></p>
+<ul>
+<li>GraphQL for flexible feed queries (mobile vs web)</li>
+<li>WebSockets for real-time message delivery</li>
+<li>SSE for live comment/like counts</li>
+<li>Webhooks for third-party integrations</li>
+</ul>
+<p><strong>Microservice backend:</strong></p>
+<ul>
+<li>gRPC for inter-service communication (high throughput)</li>
+<li>REST for external-facing API gateway</li>
+<li>Kafka/message queues for async events (not a communication pattern per se, but replaces webhooks internally)</li>
+</ul>
+<hr>
+<h2>10. Interview Cheat Sheet</h2>
+<h3>Quick Decision Guide</h3>
+<pre><code>Need real-time?
+├── No → Need flexible queries from multiple clients?
+│        ├── Yes → GraphQL
+│        └── No → Service-to-service?
+│                 ├── Yes → gRPC
+│                 └── No → REST
+└── Yes → Bidirectional?
+         ├── Yes → WebSocket (or gRPC bidirectional stream)
+         └── No (server→client only) → SSE
+              └── SSE not supported? → Long Polling
+</code></pre>
+<h3>Comparison of Real-Time Approaches</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    rect rgb(240, 240, 255)
+    Note over C,S: Polling (wasteful)
+    C->>S: Any updates? (No)
+    C->>S: Any updates? (No)
+    C->>S: Any updates? (No)
+    C->>S: Any updates? (Yes!)
+    S-->>C: Here is the data
+    end
+
+    rect rgb(240, 255, 240)
+    Note over C,S: Long Polling (better)
+    C->>S: Any updates? (hold connection...)
+    Note right of S: Waiting...
+    S-->>C: Yes! Here is the data
+    C->>S: Any updates? (hold...)
+    end
+
+    rect rgb(255, 240, 240)
+    Note over C,S: SSE (server push)
+    C->>S: Open event stream
+    S-->>C: event: data1
+    S-->>C: event: data2
+    S-->>C: event: data3
+    Note left of C: Client receives as they happen
+    end
+
+    rect rgb(255, 255, 230)
+    Note over C,S: WebSocket (full-duplex)
+    C->>S: Upgrade to WebSocket
+    S-->>C: 101 Switching Protocols
+    C->>S: Message from client
+    S->>C: Message from server
+    C->>S: Another message
+    S->>C: Server-initiated push
+    end
+</pre>
+<h3>Numbers and Limits to Know</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>WebSocket connections per server</td>
+<td>50K-100K (practical limit)</td>
+</tr>
+<tr>
+<td>SSE max connections (HTTP/1.1)</td>
+<td>6 per domain per browser</td>
+</tr>
+<tr>
+<td>SSE max connections (HTTP/2)</td>
+<td>100+ (multiplexed)</td>
+</tr>
+<tr>
+<td>REST typical response time</td>
+<td>50-500 ms</td>
+</tr>
+<tr>
+<td>gRPC typical response time</td>
+<td>1-50 ms (internal, protobuf)</td>
+</tr>
+<tr>
+<td>WebSocket message latency</td>
+<td>&lt; 10 ms (same region)</td>
+</tr>
+<tr>
+<td>Long polling reconnection overhead</td>
+<td>50-200 ms per cycle</td>
+</tr>
+<tr>
+<td>Protobuf vs JSON size</td>
+<td>3-10x smaller</td>
+</tr>
+<tr>
+<td>Protobuf vs JSON parse speed</td>
+<td>5-100x faster</td>
+</tr>
+</tbody></table>
+<h3>Common Interview Mistakes</h3>
+<table>
+<thead>
+<tr>
+<th>Mistake</th>
+<th>Better Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>&quot;Use WebSockets for everything real-time&quot;</td>
+<td>SSE is simpler when you only need server-to-client push</td>
+</tr>
+<tr>
+<td>&quot;REST is always the right choice&quot;</td>
+<td>gRPC is better for internal microservice calls; GraphQL for multi-client APIs</td>
+</tr>
+<tr>
+<td>&quot;GraphQL replaces REST&quot;</td>
+<td>They solve different problems; GraphQL adds complexity (N+1, caching, security)</td>
+</tr>
+<tr>
+<td>&quot;WebSockets scale like HTTP&quot;</td>
+<td>WebSockets are stateful — discuss connection limits, pub/sub backbone, reconnection</td>
+</tr>
+<tr>
+<td>&quot;Webhooks are reliable&quot;</td>
+<td>Discuss retry policies, idempotency, signature verification</td>
+</tr>
+<tr>
+<td>&quot;Long polling is outdated&quot;</td>
+<td>It is still a valid fallback; discuss when it is appropriate</td>
+</tr>
+<tr>
+<td>Not mentioning gRPC limitations</td>
+<td>Browser support, L7 load balancing, debugging difficulty</td>
+</tr>
+</tbody></table>
+<h3>Key Phrases for Interviews</h3>
+<ol>
+<li><p><strong>REST:</strong> &quot;Stateless, cacheable, resource-oriented. Great for public APIs and standard CRUD. Uses HTTP semantics natively.&quot;</p>
+</li>
+<li><p><strong>GraphQL:</strong> &quot;Client-driven queries eliminate over- and under-fetching. Best for multi-client scenarios. Watch out for N+1 — use DataLoader.&quot;</p>
+</li>
+<li><p><strong>gRPC:</strong> &quot;Binary protocol over HTTP/2 with strong typing via Protobuf. Ideal for internal microservices where latency and bandwidth matter. Four streaming modes.&quot;</p>
+</li>
+<li><p><strong>WebSockets:</strong> &quot;Full-duplex persistent connection. Perfect for bidirectional real-time. Scaling is the challenge — stateful connections need pub/sub backbone and sticky sessions.&quot;</p>
+</li>
+<li><p><strong>SSE:</strong> &quot;Server-to-client push over standard HTTP. Built-in reconnection and last-event-ID. Simpler than WebSockets when you only need one-way push.&quot;</p>
+</li>
+<li><p><strong>Webhooks:</strong> &quot;Event-driven push between services. Register a callback URL, get notified when events happen. Must handle retries, idempotency, and signature verification.&quot;</p>
+</li>
+</ol>
+<hr>
+<div class="tip">
+
+<p>The strongest interview signal is not knowing every pattern in depth — it is being able to articulate <em>why</em> you chose one over another for a specific scenario. Practice saying: &quot;I would choose X over Y here because...&quot; and listing 2-3 concrete reasons related to the requirements. Trade-off articulation is the hallmark of a Staff+ engineer.</p>
+</div>
+
+
+</body>
+</html>

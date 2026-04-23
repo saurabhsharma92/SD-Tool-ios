@@ -1,0 +1,1434 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>API Design -- Complete System Design Reference</title>
+</head>
+<body>
+
+<h1>API Design -- Complete System Design Reference</h1>
+<h3>Staff Engineer Interview Preparation Guide</h3>
+<div class="tip">
+
+<p><strong>Why API design matters in interviews:</strong> Nearly every system design question involves designing an API layer. Interviewers assess whether you can design clean, scalable, secure APIs and articulate the tradeoffs behind your choices. This is not about memorizing HTTP status codes -- it is about demonstrating you can think about contracts, backward compatibility, and operational concerns.</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-rest-api-fundamentals">REST API Fundamentals</a></li>
+<li><a href="#2-resource-naming-and-url-design">Resource Naming and URL Design</a></li>
+<li><a href="#3-http-methods-and-status-codes">HTTP Methods and Status Codes</a></li>
+<li><a href="#4-api-gateway-architecture">API Gateway Architecture</a></li>
+<li><a href="#5-authentication-methods">Authentication Methods</a></li>
+<li><a href="#6-rate-limiting">Rate Limiting</a></li>
+<li><a href="#7-pagination-approaches">Pagination Approaches</a></li>
+<li><a href="#8-filtering-sorting-and-field-selection">Filtering, Sorting, and Field Selection</a></li>
+<li><a href="#9-api-versioning-strategies">API Versioning Strategies</a></li>
+<li><a href="#10-idempotency">Idempotency</a></li>
+<li><a href="#11-openapi-specification">OpenAPI Specification</a></li>
+<li><a href="#12-backward-compatibility">Backward Compatibility</a></li>
+<li><a href="#13-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. REST API Fundamentals</h2>
+<p>REST (Representational State Transfer) is an architectural style for distributed systems. It is not a protocol or a standard -- it is a set of constraints that, when followed, yield predictable, scalable APIs.</p>
+<h3>The Six REST Constraints</h3>
+<table>
+<thead>
+<tr>
+<th>Constraint</th>
+<th>What It Means</th>
+<th>Why It Matters</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Client-Server</strong></td>
+<td>Separate UI concerns from data storage concerns</td>
+<td>Independent evolution of frontend and backend</td>
+</tr>
+<tr>
+<td><strong>Stateless</strong></td>
+<td>Each request contains all the information needed to process it</td>
+<td>Horizontal scaling becomes trivial</td>
+</tr>
+<tr>
+<td><strong>Cacheable</strong></td>
+<td>Responses must declare themselves cacheable or non-cacheable</td>
+<td>Reduces load, improves latency</td>
+</tr>
+<tr>
+<td><strong>Uniform Interface</strong></td>
+<td>Consistent resource identification, manipulation through representations</td>
+<td>Simplifies architecture, enables independent evolution</td>
+</tr>
+<tr>
+<td><strong>Layered System</strong></td>
+<td>Client cannot tell if it is connected directly to the server or an intermediary</td>
+<td>Enables load balancers, caches, gateways</td>
+</tr>
+<tr>
+<td><strong>Code on Demand</strong> (optional)</td>
+<td>Server can extend client functionality by transferring executable code</td>
+<td>Rarely used in practice</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>Most &quot;REST&quot; APIs in practice are actually &quot;RESTish&quot; -- they follow some constraints but not all. This is fine for interviews, but knowing the original constraints shows depth.</p>
+</div>
+
+
+<h3>The Richardson Maturity Model</h3>
+<p>This model describes how &quot;RESTful&quot; an API truly is:</p>
+<table>
+<thead>
+<tr>
+<th>Level</th>
+<th>Description</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Level 0</strong></td>
+<td>Single URI, single HTTP method (usually POST)</td>
+<td>SOAP, XML-RPC</td>
+</tr>
+<tr>
+<td><strong>Level 1</strong></td>
+<td>Multiple URIs (resources), but single HTTP method</td>
+<td><code>/getUser</code>, <code>/createUser</code> all via POST</td>
+</tr>
+<tr>
+<td><strong>Level 2</strong></td>
+<td>Multiple URIs + proper HTTP methods</td>
+<td><code>GET /users</code>, <code>POST /users</code>, <code>DELETE /users/123</code></td>
+</tr>
+<tr>
+<td><strong>Level 3</strong></td>
+<td>HATEOAS -- responses include links to related actions</td>
+<td>Response contains <code>_links</code> with next actions</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> Most production APIs sit at Level 2. If an interviewer asks about HATEOAS, explain it briefly but note that in practice, most teams find the overhead not worth the benefit for internal APIs.</p>
+</div>
+
+
+<hr>
+<h2>2. Resource Naming and URL Design</h2>
+<p>Good URL design makes an API intuitive. The goal is that a developer reading the URL can guess what it does without reading documentation.</p>
+<h3>Core Principles</h3>
+<p><strong>Use nouns, not verbs.</strong> The HTTP method already provides the verb.</p>
+<pre><code># Good
+GET    /articles
+POST   /articles
+GET    /articles/42
+DELETE /articles/42
+
+# Bad
+GET    /getArticles
+POST   /createArticle
+POST   /deleteArticle/42
+</code></pre>
+<p><strong>Use plural nouns for collections.</strong></p>
+<pre><code>GET /users          -- collection of users
+GET /users/7        -- a single user
+GET /users/7/orders -- orders belonging to user 7
+</code></pre>
+<p><strong>Nest resources to express relationships, but keep nesting shallow.</strong></p>
+<pre><code># Good -- one level of nesting
+GET /users/7/orders
+
+# Acceptable but getting deep
+GET /users/7/orders/42/items
+
+# Too deep -- flatten instead
+GET /order-items?orderId=42
+</code></pre>
+<p><strong>Use hyphens for multi-word resources, never underscores or camelCase.</strong></p>
+<pre><code># Good
+GET /order-items
+GET /user-profiles
+
+# Bad
+GET /order_items
+GET /userProfiles
+</code></pre>
+<p><strong>Actions that do not map to CRUD can use sub-resources.</strong></p>
+<pre><code>POST /users/7/activate
+POST /orders/42/cancel
+POST /payments/99/refund
+</code></pre>
+<div class="warning">
+
+<p>Avoid putting verbs in URLs except for true &quot;action&quot; endpoints. If you find yourself writing <code>/getUsers</code> or <code>/fetchOrders</code>, step back and reconsider your resource model.</p>
+</div>
+
+
+<h3>URL Design Patterns for Common Scenarios</h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>URL Pattern</th>
+<th>Method</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>List all items</td>
+<td><code>/items</code></td>
+<td>GET</td>
+</tr>
+<tr>
+<td>Create an item</td>
+<td><code>/items</code></td>
+<td>POST</td>
+</tr>
+<tr>
+<td>Get one item</td>
+<td><code>/items/{id}</code></td>
+<td>GET</td>
+</tr>
+<tr>
+<td>Update an item fully</td>
+<td><code>/items/{id}</code></td>
+<td>PUT</td>
+</tr>
+<tr>
+<td>Partial update</td>
+<td><code>/items/{id}</code></td>
+<td>PATCH</td>
+</tr>
+<tr>
+<td>Delete an item</td>
+<td><code>/items/{id}</code></td>
+<td>DELETE</td>
+</tr>
+<tr>
+<td>Items belonging to a parent</td>
+<td><code>/users/{id}/items</code></td>
+<td>GET</td>
+</tr>
+<tr>
+<td>Search with complex filters</td>
+<td><code>/items/search</code></td>
+<td>POST (body has filters)</td>
+</tr>
+<tr>
+<td>Bulk operations</td>
+<td><code>/items/batch</code></td>
+<td>POST</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>3. HTTP Methods and Status Codes</h2>
+<h3>HTTP Methods Deep Dive</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Semantics</th>
+<th>Idempotent?</th>
+<th>Safe?</th>
+<th>Request Body?</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>GET</strong></td>
+<td>Retrieve a resource</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>No (technically allowed, but discouraged)</td>
+</tr>
+<tr>
+<td><strong>POST</strong></td>
+<td>Create a resource or trigger an action</td>
+<td>No</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><strong>PUT</strong></td>
+<td>Replace a resource entirely</td>
+<td>Yes</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><strong>PATCH</strong></td>
+<td>Partially update a resource</td>
+<td>No*</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><strong>DELETE</strong></td>
+<td>Remove a resource</td>
+<td>Yes</td>
+<td>No</td>
+<td>Rarely</td>
+</tr>
+<tr>
+<td><strong>HEAD</strong></td>
+<td>Same as GET but no response body</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td><strong>OPTIONS</strong></td>
+<td>Describe communication options (CORS preflight)</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>*PATCH is technically not idempotent by the HTTP spec because the same patch applied twice could have different effects (e.g., &quot;increment counter by 1&quot;). In practice, most PATCH implementations are idempotent because they set fields to specific values.</p>
+</div>
+
+
+<h3>PUT vs PATCH -- A Common Interview Question</h3>
+<p><strong>PUT</strong> replaces the entire resource. If you omit a field, it gets cleared.</p>
+<pre><code class="language-json">// Original: { &quot;name&quot;: &quot;Alice&quot;, &quot;email&quot;: &quot;alice@co.com&quot;, &quot;role&quot;: &quot;admin&quot; }
+
+PUT /users/7
+{ &quot;name&quot;: &quot;Alice&quot;, &quot;email&quot;: &quot;alice@newco.com&quot; }
+
+// Result: { &quot;name&quot;: &quot;Alice&quot;, &quot;email&quot;: &quot;alice@newco.com&quot;, &quot;role&quot;: null }
+// role is gone because PUT replaces the whole object
+</code></pre>
+<p><strong>PATCH</strong> updates only the specified fields. Everything else stays unchanged.</p>
+<pre><code class="language-json">PATCH /users/7
+{ &quot;email&quot;: &quot;alice@newco.com&quot; }
+
+// Result: { &quot;name&quot;: &quot;Alice&quot;, &quot;email&quot;: &quot;alice@newco.com&quot;, &quot;role&quot;: &quot;admin&quot; }
+// name and role are untouched
+</code></pre>
+<h3>Status Codes You Must Know</h3>
+<p><strong>2xx -- Success</strong></p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+<th>When to Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>200 OK</td>
+<td>Generic success</td>
+<td>GET returning data, PUT/PATCH success</td>
+</tr>
+<tr>
+<td>201 Created</td>
+<td>Resource created</td>
+<td>POST that creates a new resource</td>
+</tr>
+<tr>
+<td>202 Accepted</td>
+<td>Request accepted for async processing</td>
+<td>Long-running tasks, message queue submissions</td>
+</tr>
+<tr>
+<td>204 No Content</td>
+<td>Success, nothing to return</td>
+<td>DELETE success, PUT with no response body needed</td>
+</tr>
+</tbody></table>
+<p><strong>3xx -- Redirection</strong></p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+<th>When to Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>301 Moved Permanently</td>
+<td>Resource permanently moved</td>
+<td>API version sunset, permanent URL change</td>
+</tr>
+<tr>
+<td>304 Not Modified</td>
+<td>Cached version is still valid</td>
+<td>Conditional GET with ETag/If-Modified-Since</td>
+</tr>
+</tbody></table>
+<p><strong>4xx -- Client Errors</strong></p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+<th>When to Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>400 Bad Request</td>
+<td>Malformed request</td>
+<td>Invalid JSON, missing required fields</td>
+</tr>
+<tr>
+<td>401 Unauthorized</td>
+<td>Authentication required</td>
+<td>No token, expired token</td>
+</tr>
+<tr>
+<td>403 Forbidden</td>
+<td>Authenticated but not authorized</td>
+<td>User lacks permission for this resource</td>
+</tr>
+<tr>
+<td>404 Not Found</td>
+<td>Resource does not exist</td>
+<td>Invalid ID, deleted resource</td>
+</tr>
+<tr>
+<td>405 Method Not Allowed</td>
+<td>HTTP method not supported on this resource</td>
+<td>POST to a read-only endpoint</td>
+</tr>
+<tr>
+<td>409 Conflict</td>
+<td>Conflict with current state</td>
+<td>Duplicate creation, optimistic locking failure</td>
+</tr>
+<tr>
+<td>422 Unprocessable Entity</td>
+<td>Semantically invalid</td>
+<td>Validation errors (email format wrong, etc.)</td>
+</tr>
+<tr>
+<td>429 Too Many Requests</td>
+<td>Rate limit exceeded</td>
+<td>Include Retry-After header</td>
+</tr>
+</tbody></table>
+<p><strong>5xx -- Server Errors</strong></p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+<th>When to Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>500 Internal Server Error</td>
+<td>Unexpected server failure</td>
+<td>Unhandled exceptions</td>
+</tr>
+<tr>
+<td>502 Bad Gateway</td>
+<td>Upstream service returned invalid response</td>
+<td>Broken microservice dependency</td>
+</tr>
+<tr>
+<td>503 Service Unavailable</td>
+<td>Server temporarily overloaded</td>
+<td>During deployments, maintenance windows</td>
+</tr>
+<tr>
+<td>504 Gateway Timeout</td>
+<td>Upstream service timed out</td>
+<td>Slow downstream dependency</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> When designing an API in an interview, always specify which status codes your endpoints return for both success and error cases. It shows you think about error handling, not just the happy path.</p>
+</div>
+
+
+<hr>
+<h2>4. API Gateway Architecture</h2>
+<p>An API Gateway sits between clients and your backend services, acting as a reverse proxy that handles cross-cutting concerns.</p>
+<h3>Why You Need an API Gateway</h3>
+<p>Without a gateway, every microservice must independently handle authentication, rate limiting, logging, CORS, protocol translation, and more. This leads to duplicated logic, inconsistent behavior, and security gaps.</p>
+<pre class="mermaid">
+graph TB
+    subgraph Clients
+        MOB["Mobile App"]
+        WEB["Web App"]
+        EXT["3rd Party"]
+    end
+
+    subgraph Gateway["API Gateway"]
+        AUTH["Authentication\n& Authorization"]
+        RATE["Rate\nLimiting"]
+        ROUTE["Request\nRouting"]
+        AGG["Request\nAggregation"]
+        PROTO["Protocol\nTranslation"]
+        LOG["Logging &\nMonitoring"]
+        CACHE["Response\nCaching"]
+    end
+
+    subgraph Services["Backend Services"]
+        US["User Service"]
+        OS["Order Service"]
+        PS["Product Service"]
+        NS["Notification Service"]
+    end
+
+    MOB --> AUTH
+    WEB --> AUTH
+    EXT --> AUTH
+    AUTH --> RATE
+    RATE --> ROUTE
+    ROUTE --> AGG
+    AGG --> US
+    AGG --> OS
+    AGG --> PS
+    ROUTE --> NS
+    ROUTE --> PROTO
+    LOG -.->|observes| ROUTE
+    CACHE -.->|serves cached| ROUTE
+</pre>
+<h3>Core Gateway Responsibilities</h3>
+<p><strong>1. Request Routing</strong></p>
+<p>The gateway examines the incoming request path, headers, or query parameters and forwards it to the appropriate backend service. This decouples clients from the internal service topology.</p>
+<pre><code>/api/users/*    -&gt; User Service (port 8001)
+/api/orders/*   -&gt; Order Service (port 8002)
+/api/products/* -&gt; Product Service (port 8003)
+</code></pre>
+<p><strong>2. Authentication and Authorization</strong></p>
+<p>The gateway validates tokens (JWT, OAuth, API keys) before the request reaches any backend service. If the token is invalid, the request is rejected at the edge. This means backend services can trust that any request they receive has already been authenticated.</p>
+<p><strong>3. Rate Limiting</strong></p>
+<p>Enforced at the gateway level to protect all downstream services uniformly. Rate limits can be set per user, per API key, per IP, or per endpoint.</p>
+<p><strong>4. Request Aggregation (API Composition)</strong></p>
+<p>A single client request might need data from multiple services. Instead of making the client call each service separately, the gateway can fan out, call multiple services in parallel, and merge the responses.</p>
+<pre><code>Client: GET /api/dashboard
+
+Gateway internally calls:
+  GET /user-service/profile
+  GET /order-service/recent-orders
+  GET /notification-service/unread-count
+
+Returns combined response to client
+</code></pre>
+<p><strong>5. Protocol Translation</strong></p>
+<p>Clients speak HTTP/REST, but internal services might use gRPC, WebSockets, or message queues. The gateway translates between protocols.</p>
+<p><strong>6. Response Caching</strong></p>
+<p>Frequently requested, rarely changing data (product catalogs, configuration) can be cached at the gateway layer to reduce backend load.</p>
+<h3>Popular API Gateway Solutions</h3>
+<table>
+<thead>
+<tr>
+<th>Gateway</th>
+<th>Type</th>
+<th>Best For</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Kong</strong></td>
+<td>Open-source, plugin-based</td>
+<td>Self-hosted, highly customizable</td>
+</tr>
+<tr>
+<td><strong>AWS API Gateway</strong></td>
+<td>Managed service</td>
+<td>AWS-native architectures</td>
+</tr>
+<tr>
+<td><strong>Nginx</strong></td>
+<td>Web server + reverse proxy</td>
+<td>High-performance routing</td>
+</tr>
+<tr>
+<td><strong>Envoy</strong></td>
+<td>Service mesh sidecar</td>
+<td>Kubernetes, microservices</td>
+</tr>
+<tr>
+<td><strong>Apigee</strong></td>
+<td>Enterprise managed</td>
+<td>Large organizations, analytics</td>
+</tr>
+<tr>
+<td><strong>Traefik</strong></td>
+<td>Cloud-native</td>
+<td>Docker/Kubernetes auto-discovery</td>
+</tr>
+</tbody></table>
+<div class="important">
+
+<p>The API Gateway is a single point of failure. In interviews, always mention that it must be deployed with redundancy (multiple instances behind a load balancer) and that you need health checks and circuit breakers to handle gateway failures gracefully.</p>
+</div>
+
+
+<h3>Backend for Frontend (BFF) Pattern</h3>
+<p>Instead of one gateway for all clients, create separate gateways optimized for each client type:</p>
+<pre class="mermaid">
+graph TB
+    MOB["Mobile App"] --> MBFF["Mobile BFF\n(smaller payloads,\noffline support)"]
+    WEB["Web App"] --> WBFF["Web BFF\n(full payloads,\nSSR support)"]
+    TV["Smart TV"] --> TBFF["TV BFF\n(simplified UI data)"]
+
+    MBFF --> US["User Service"]
+    MBFF --> OS["Order Service"]
+    WBFF --> US
+    WBFF --> OS
+    WBFF --> AS["Analytics Service"]
+    TBFF --> US
+    TBFF --> PS["Product Service"]
+</pre>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> The BFF pattern is a strong signal of senior thinking. Mention it when designing systems with multiple client types (mobile, web, TV, IoT). It allows each client to get exactly the data shape it needs without over-fetching.</p>
+</div>
+
+
+<hr>
+<h2>5. Authentication Methods</h2>
+<h3>API Keys</h3>
+<p>The simplest form of authentication. The client includes a static key in every request, typically in a header.</p>
+<pre><code>GET /api/data
+X-API-Key: sk_live_abc123def456
+</code></pre>
+<p><strong>When to use:</strong> Server-to-server communication, third-party API access, public data APIs where you just need to track usage.</p>
+<p><strong>When NOT to use:</strong> User-facing authentication (API keys do not represent a user identity).</p>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Simple to implement</td>
+<td>No user identity -- just identifies the application</td>
+</tr>
+<tr>
+<td>Easy to rotate</td>
+<td>If leaked, full access until rotated</td>
+</tr>
+<tr>
+<td>Good for rate limiting per client</td>
+<td>Cannot represent different permission levels easily</td>
+</tr>
+</tbody></table>
+<h3>OAuth 2.0</h3>
+<p>OAuth 2.0 is a delegation framework. It lets a user grant a third-party application limited access to their resources without sharing their password.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant A as Client App
+    participant AS as Auth Server
+    participant RS as Resource Server
+
+    U->>A: Click "Login with Google"
+    A->>AS: Redirect to /authorize
+    AS->>U: Show consent screen
+    U->>AS: Grant permission
+    AS->>A: Authorization code (via redirect)
+    A->>AS: Exchange code for tokens (+ client secret)
+    AS->>A: Access token + Refresh token
+    A->>RS: API request + Access token
+    RS->>A: Protected resource
+</pre>
+<p><strong>Key OAuth 2.0 Flows:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Flow</th>
+<th>Use Case</th>
+<th>Security Level</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Authorization Code</strong></td>
+<td>Server-side web apps</td>
+<td>Highest (code exchanged server-side)</td>
+</tr>
+<tr>
+<td><strong>Authorization Code + PKCE</strong></td>
+<td>Mobile apps, SPAs</td>
+<td>High (no client secret needed)</td>
+</tr>
+<tr>
+<td><strong>Client Credentials</strong></td>
+<td>Service-to-service (no user)</td>
+<td>High (server-side only)</td>
+</tr>
+<tr>
+<td><strong>Implicit</strong> (deprecated)</td>
+<td>Was used for SPAs</td>
+<td>Low (token in URL fragment)</td>
+</tr>
+</tbody></table>
+<div class="warning">
+
+<p>The Implicit flow is deprecated as of OAuth 2.1. Always use Authorization Code + PKCE for browser-based apps. If an interviewer asks about the implicit flow, mention that it is no longer recommended.</p>
+</div>
+
+
+<h3>JWT (JSON Web Tokens)</h3>
+<p>A JWT is a self-contained token that carries claims (user ID, roles, expiry) in a signed, base64-encoded format.</p>
+<p><strong>Structure:</strong> <code>header.payload.signature</code></p>
+<pre><code>Header:  { &quot;alg&quot;: &quot;RS256&quot;, &quot;typ&quot;: &quot;JWT&quot; }
+Payload: { &quot;sub&quot;: &quot;user123&quot;, &quot;role&quot;: &quot;admin&quot;, &quot;exp&quot;: 1700000000 }
+Signature: RSASHA256(base64(header) + &quot;.&quot; + base64(payload), privateKey)
+</code></pre>
+<p><strong>How validation works:</strong> The server verifies the signature using the public key. If the signature is valid and the token has not expired, the request is authenticated. No database lookup is needed.</p>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Stateless -- no server-side session store needed</td>
+<td>Cannot be revoked individually (must wait for expiry)</td>
+</tr>
+<tr>
+<td>Contains user info -- avoids extra DB queries</td>
+<td>Larger than opaque tokens (adds bandwidth)</td>
+</tr>
+<tr>
+<td>Works across services (shared public key)</td>
+<td>If secret key is compromised, all tokens are compromised</td>
+</tr>
+<tr>
+<td>Self-contained -- any service can validate</td>
+<td>Payload is base64-encoded, NOT encrypted (do not put secrets in it)</td>
+</tr>
+</tbody></table>
+<p><strong>Handling JWT Revocation:</strong></p>
+<p>Since JWTs cannot be individually revoked, common strategies include:</p>
+<ul>
+<li><strong>Short expiry times</strong> (15 minutes) with refresh tokens</li>
+<li><strong>Token blacklist</strong> in a fast store like Redis (somewhat defeats the stateless benefit)</li>
+<li><strong>Token versioning</strong> -- store a version counter per user; reject tokens with old versions</li>
+</ul>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> A common question is &quot;How do you handle logout with JWTs?&quot; The answer is: use short-lived access tokens (15 min) paired with longer-lived refresh tokens stored server-side. On logout, revoke the refresh token. The access token will expire shortly.</p>
+</div>
+
+
+<h3>Choosing an Authentication Method</h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Recommended Method</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Internal microservice-to-microservice</td>
+<td>Mutual TLS or JWT with service accounts</td>
+</tr>
+<tr>
+<td>Third-party developers accessing your API</td>
+<td>OAuth 2.0 + API keys</td>
+</tr>
+<tr>
+<td>Mobile app user login</td>
+<td>OAuth 2.0 Authorization Code + PKCE</td>
+</tr>
+<tr>
+<td>Simple rate-limited public API</td>
+<td>API keys</td>
+</tr>
+<tr>
+<td>Web app user sessions</td>
+<td>OAuth 2.0 or session cookies (HttpOnly, Secure)</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>6. Rate Limiting</h2>
+<p>Rate limiting controls how many requests a client can make in a given time window. It protects your system from abuse, ensures fair usage, and prevents cascading failures.</p>
+<h3>Rate Limiting Algorithms</h3>
+<h4>Token Bucket</h4>
+<p>The most widely used algorithm. Imagine a bucket that holds tokens. Each request costs one token. Tokens are added at a fixed rate. If the bucket is empty, the request is rejected.</p>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Bucket has a maximum capacity (e.g., 100 tokens)</li>
+<li>Tokens are added at a fixed rate (e.g., 10 per second)</li>
+<li>Each request removes one token</li>
+<li>If no tokens remain, the request is rejected (429)</li>
+<li>Tokens that would overflow the bucket are discarded</li>
+</ol>
+<pre class="mermaid">
+graph LR
+    subgraph Token_Bucket["Token Bucket"]
+        REFILL["Refill Rate:\n10 tokens/sec"] -->|adds tokens| BUCKET["Bucket\nCapacity: 100"]
+        REQ["Incoming\nRequest"] -->|takes 1 token| BUCKET
+        BUCKET -->|tokens > 0| ALLOW["Allow Request"]
+        BUCKET -->|tokens = 0| DENY["Reject 429"]
+    end
+</pre>
+<p><strong>Pros:</strong> Allows bursts (up to bucket capacity), smooth rate limiting, memory efficient.
+<strong>Cons:</strong> Tuning bucket size and refill rate requires experimentation.</p>
+<p><strong>Used by:</strong> AWS, Stripe, most cloud providers.</p>
+<h4>Leaky Bucket</h4>
+<p>Requests enter a queue (bucket) and are processed at a fixed rate, like water leaking from a bucket. If the queue is full, new requests are dropped.</p>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Requests enter a FIFO queue</li>
+<li>Requests are processed at a fixed rate (e.g., 10/sec)</li>
+<li>If the queue is full, new requests are dropped</li>
+<li>Output rate is perfectly smooth</li>
+</ol>
+<p><strong>Pros:</strong> Perfectly smooth output rate, good for APIs that need consistent throughput.
+<strong>Cons:</strong> A burst of traffic fills the queue, causing subsequent requests to wait even if the system has capacity. Recent requests may be dropped while old ones are still in the queue.</p>
+<h4>Fixed Window Counter</h4>
+<p>Divide time into fixed windows (e.g., 1-minute intervals) and count requests per window. Reset the counter at the start of each window.</p>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Time is divided into windows (e.g., 00:00-00:59, 01:00-01:59)</li>
+<li>Counter starts at 0 for each window</li>
+<li>Each request increments the counter</li>
+<li>If counter exceeds limit, reject the request</li>
+<li>Counter resets at the start of the next window</li>
+</ol>
+<p><strong>Pros:</strong> Simple to implement, low memory (one counter per window).
+<strong>Cons:</strong> Boundary problem -- a client can send 2x the limit by sending max requests at the end of one window and the start of the next.</p>
+<pre><code>Window 1: [............XXXXXXX]  (100 requests at end)
+Window 2: [XXXXXXX............]  (100 requests at start)
+           ^-- 200 requests in a short burst, despite 100/min limit
+</code></pre>
+<h4>Sliding Window Log</h4>
+<p>Keep a log of timestamps for each request. When a new request arrives, remove timestamps older than the window, then count remaining entries.</p>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Store timestamp of every request in a sorted set</li>
+<li>On new request, remove all entries older than (now - window_size)</li>
+<li>Count remaining entries</li>
+<li>If count exceeds limit, reject; otherwise, add timestamp and allow</li>
+</ol>
+<p><strong>Pros:</strong> Perfectly accurate, no boundary problem.
+<strong>Cons:</strong> Memory-intensive -- stores every request timestamp.</p>
+<h4>Sliding Window Counter</h4>
+<p>A hybrid approach that combines fixed window and sliding window. It estimates the count in the current sliding window using a weighted combination of the current and previous fixed window counts.</p>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Track counts for the current and previous fixed windows</li>
+<li>Estimate sliding window count = (previous window count * overlap percentage) + current window count</li>
+<li>If estimated count exceeds limit, reject</li>
+</ol>
+<p><strong>Example:</strong> Window size = 1 minute, limit = 100. Previous window had 80 requests. Current window has 30 requests. We are 40% into the current window.</p>
+<ul>
+<li>Estimated count = 80 * 0.6 + 30 = 78. Allow.</li>
+</ul>
+<p><strong>Pros:</strong> Low memory (two counters), reasonably accurate, no boundary problem.
+<strong>Cons:</strong> Approximate -- not perfectly accurate.</p>
+<h3>Algorithm Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Algorithm</th>
+<th>Memory</th>
+<th>Accuracy</th>
+<th>Burst Handling</th>
+<th>Complexity</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Token Bucket</td>
+<td>Low</td>
+<td>Good</td>
+<td>Allows controlled bursts</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Leaky Bucket</td>
+<td>Low</td>
+<td>Good</td>
+<td>Smooths out bursts</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Fixed Window</td>
+<td>Very Low</td>
+<td>Poor (boundary)</td>
+<td>No burst control</td>
+<td>Simple</td>
+</tr>
+<tr>
+<td>Sliding Window Log</td>
+<td>High</td>
+<td>Perfect</td>
+<td>No burst control</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Sliding Window Counter</td>
+<td>Low</td>
+<td>Good (approximate)</td>
+<td>No burst control</td>
+<td>Simple</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> If asked to design rate limiting, start with Token Bucket -- it is the most common in production. Mention that the implementation typically uses Redis with atomic operations (MULTI/EXEC or Lua scripting) to handle distributed rate limiting across multiple server instances.</p>
+</div>
+
+
+<h3>Rate Limit Response Headers</h3>
+<p>Well-designed APIs communicate rate limit status through response headers:</p>
+<pre><code>HTTP/1.1 200 OK
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 73
+X-RateLimit-Reset: 1700000060
+
+HTTP/1.1 429 Too Many Requests
+Retry-After: 30
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1700000060
+</code></pre>
+<hr>
+<h2>7. Pagination Approaches</h2>
+<p>When a collection has thousands or millions of items, you must paginate. There are three main approaches, each with significant tradeoffs.</p>
+<h3>Offset-Based Pagination</h3>
+<p>The simplest approach. The client specifies a page number (or offset) and page size.</p>
+<pre><code>GET /articles?page=3&amp;per_page=20
+-- or equivalently --
+GET /articles?offset=40&amp;limit=20
+</code></pre>
+<p><strong>How it works internally:</strong></p>
+<pre><code class="language-sql">SELECT * FROM articles ORDER BY created_at DESC LIMIT 20 OFFSET 40;
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Simple to implement</td>
+<td>Slow for large offsets (DB must scan and skip rows)</td>
+</tr>
+<tr>
+<td>Client can jump to any page</td>
+<td>Inconsistent results if data is inserted/deleted between requests</td>
+</tr>
+<tr>
+<td>Easy to show &quot;Page X of Y&quot;</td>
+<td>OFFSET 1000000 is extremely expensive</td>
+</tr>
+</tbody></table>
+<div class="warning">
+
+<p>Offset-based pagination breaks down at scale. <code>OFFSET 1,000,000</code> means the database reads 1,000,020 rows and discards the first 1,000,000. This is O(offset + limit), not O(limit).</p>
+</div>
+
+
+<h3>Cursor-Based Pagination</h3>
+<p>Instead of an offset, the client sends a cursor -- an opaque token that represents the position of the last item received. The server uses this to fetch the next batch.</p>
+<pre><code>GET /articles?limit=20
+Response: { &quot;data&quot;: [...], &quot;next_cursor&quot;: &quot;eyJpZCI6NDJ9&quot; }
+
+GET /articles?limit=20&amp;cursor=eyJpZCI6NDJ9
+Response: { &quot;data&quot;: [...], &quot;next_cursor&quot;: &quot;eyJpZCI6NjJ9&quot; }
+</code></pre>
+<p><strong>How it works internally:</strong></p>
+<p>The cursor typically encodes the last seen value of the sort column. The query uses a WHERE clause instead of OFFSET:</p>
+<pre><code class="language-sql">-- Cursor decodes to: id &gt; 42
+SELECT * FROM articles WHERE id &gt; 42 ORDER BY id ASC LIMIT 20;
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Consistent performance regardless of position</td>
+<td>Cannot jump to an arbitrary page</td>
+</tr>
+<tr>
+<td>Stable results even with concurrent inserts/deletes</td>
+<td>Cannot show &quot;Page X of Y&quot; easily</td>
+</tr>
+<tr>
+<td>Works well at scale</td>
+<td>More complex to implement</td>
+</tr>
+</tbody></table>
+<h3>Keyset Pagination</h3>
+<p>A refinement of cursor-based pagination where the cursor is a composite of the sort columns. This handles the case where you sort by non-unique columns (e.g., created_at, which could have duplicates).</p>
+<pre><code class="language-sql">-- Sort by created_at DESC, id DESC (tie-breaker)
+-- Last seen: created_at = &#39;2024-01-15&#39;, id = 42
+
+SELECT * FROM articles
+WHERE (created_at, id) &lt; (&#39;2024-01-15&#39;, 42)
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
+</code></pre>
+<h3>Pagination Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Offset</th>
+<th>Cursor</th>
+<th>Keyset</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Jump to page N</td>
+<td>Yes</td>
+<td>No</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Consistent with mutations</td>
+<td>No</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Performance at page 10,000</td>
+<td>Very slow</td>
+<td>Fast</td>
+<td>Fast</td>
+</tr>
+<tr>
+<td>&quot;Total count&quot; easily available</td>
+<td>Yes</td>
+<td>Expensive</td>
+<td>Expensive</td>
+</tr>
+<tr>
+<td>Implementation complexity</td>
+<td>Simple</td>
+<td>Medium</td>
+<td>Medium-High</td>
+</tr>
+<tr>
+<td>Best for</td>
+<td>Small datasets, admin UIs</td>
+<td>Infinite scroll, feeds</td>
+<td>Large sorted datasets</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> For social media feeds, timelines, chat histories, and any &quot;infinite scroll&quot; UI, always use cursor-based pagination. For admin dashboards where users need &quot;go to page 50,&quot; offset-based is acceptable if the dataset is small enough.</p>
+</div>
+
+
+<hr>
+<h2>8. Filtering, Sorting, and Field Selection</h2>
+<h3>Filtering</h3>
+<p>Allow clients to filter results using query parameters:</p>
+<pre><code>GET /products?category=electronics&amp;price_min=100&amp;price_max=500&amp;in_stock=true
+</code></pre>
+<p>For more complex filtering, consider a structured query parameter:</p>
+<pre><code>GET /products?filter[category]=electronics&amp;filter[price][gte]=100&amp;filter[price][lte]=500
+</code></pre>
+<h3>Sorting</h3>
+<p>Allow clients to specify sort order:</p>
+<pre><code>GET /products?sort=price           -- ascending by price
+GET /products?sort=-price          -- descending by price (prefix with -)
+GET /products?sort=-created_at,name -- multi-field sort
+</code></pre>
+<h3>Field Selection (Sparse Fieldsets)</h3>
+<p>Let clients request only the fields they need to reduce payload size:</p>
+<pre><code>GET /users/7?fields=name,email,avatar_url
+</code></pre>
+<p>This is particularly important for mobile clients on limited bandwidth.</p>
+<div class="note">
+
+<p>GraphQL was created largely to solve the over-fetching problem. If your API consumers frequently need different field subsets, consider whether GraphQL might be a better fit than REST with field selection.</p>
+</div>
+
+
+<hr>
+<h2>9. API Versioning Strategies</h2>
+<p>APIs evolve. Versioning lets you make breaking changes without breaking existing clients.</p>
+<h3>Strategy 1: URL Path Versioning</h3>
+<pre><code>GET /v1/users/7
+GET /v2/users/7
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Immediately visible which version is in use</td>
+<td>URL changes with every version</td>
+</tr>
+<tr>
+<td>Easy to route in load balancers/gateways</td>
+<td>Can lead to code duplication across versions</td>
+</tr>
+<tr>
+<td>Simple to understand</td>
+<td>Some argue it breaks REST (resource URI should not change)</td>
+</tr>
+</tbody></table>
+<p><strong>Used by:</strong> Twitter, Stripe, Google, most major APIs.</p>
+<h3>Strategy 2: Header Versioning</h3>
+<pre><code>GET /users/7
+Accept: application/vnd.myapi.v2+json
+</code></pre>
+<p>Or a custom header:</p>
+<pre><code>GET /users/7
+X-API-Version: 2
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Clean URLs</td>
+<td>Not visible in browser/logs</td>
+</tr>
+<tr>
+<td>Follows HTTP content negotiation</td>
+<td>Harder to test (need to set headers)</td>
+</tr>
+<tr>
+<td>Same URL for all versions</td>
+<td>Gateway routing is more complex</td>
+</tr>
+</tbody></table>
+<p><strong>Used by:</strong> GitHub (Accept header).</p>
+<h3>Strategy 3: Query Parameter Versioning</h3>
+<pre><code>GET /users/7?version=2
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Easy to add</td>
+<td>Easy to forget, defaulting to wrong version</td>
+</tr>
+<tr>
+<td>Works in browsers</td>
+<td>Pollutes query string</td>
+</tr>
+<tr>
+<td>Optional (can default to latest)</td>
+<td>Caching is harder (varies by param)</td>
+</tr>
+</tbody></table>
+<h3>Which Should You Choose?</h3>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> Default to URL path versioning (<code>/v1/</code>, <code>/v2/</code>). It is the most common, most explicit, and easiest to reason about. Mention header versioning as an alternative and explain why you prefer URL path versioning for its simplicity and debuggability.</p>
+</div>
+
+
+<h3>Versioning Best Practices</h3>
+<ol>
+<li><strong>Do not version aggressively.</strong> Aim for backward-compatible changes that do not require a new version.</li>
+<li><strong>Deprecate gracefully.</strong> Announce deprecation, set a sunset date, include <code>Sunset</code> and <code>Deprecation</code> headers.</li>
+<li><strong>Keep at most 2-3 versions active.</strong> Supporting many versions multiplies maintenance cost.</li>
+<li><strong>Version the API, not individual endpoints.</strong> Mixing <code>/v1/users</code> and <code>/v2/orders</code> in the same API is confusing.</li>
+</ol>
+<hr>
+<h2>10. Idempotency</h2>
+<p>An operation is idempotent if performing it multiple times produces the same result as performing it once. This is critical in distributed systems where network failures cause retries.</p>
+<h3>Why Idempotency Matters</h3>
+<p>Consider a payment API. The client sends a request to charge $50. The server processes it, but the response is lost due to a network failure. The client retries. Without idempotency, the customer is charged $100.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    C->>S: POST /payments (charge $50)
+    S->>S: Process payment
+    S--xC: Response lost (network failure)
+    Note over C: Client retries...
+    C->>S: POST /payments (charge $50) -- same request
+    
+    alt Without Idempotency
+        S->>S: Process payment AGAIN
+        Note over S: Customer charged $100!
+    end
+
+    alt With Idempotency Key
+        S->>S: Check idempotency key
+        S->>S: Found! Return cached result
+        Note over S: Customer charged $50 (correct)
+    end
+</pre>
+<h3>Idempotency Keys</h3>
+<p>The client generates a unique key (usually a UUID) for each logical operation and sends it with the request:</p>
+<pre><code>POST /payments
+Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
+Content-Type: application/json
+
+{ &quot;amount&quot;: 5000, &quot;currency&quot;: &quot;usd&quot;, &quot;customer&quot;: &quot;cus_abc&quot; }
+</code></pre>
+<p><strong>Server-side implementation:</strong></p>
+<ol>
+<li>Receive request with idempotency key</li>
+<li>Check if this key exists in the store (Redis or database)</li>
+<li>If exists, return the stored response (do not reprocess)</li>
+<li>If not exists, process the request, store the response with the key, return the response</li>
+<li>Keys expire after a reasonable period (e.g., 24 hours)</li>
+</ol>
+<h3>HTTP Method Idempotency</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Idempotent by Spec?</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GET</td>
+<td>Yes</td>
+<td>Reading the same resource always returns the same result</td>
+</tr>
+<tr>
+<td>PUT</td>
+<td>Yes</td>
+<td>Replacing a resource with the same data yields the same state</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td>Yes</td>
+<td>Deleting an already-deleted resource is a no-op (return 404 or 204)</td>
+</tr>
+<tr>
+<td>PATCH</td>
+<td>Not guaranteed</td>
+<td>Depends on implementation</td>
+</tr>
+<tr>
+<td>POST</td>
+<td>No</td>
+<td>Each POST can create a new resource -- needs idempotency key</td>
+</tr>
+</tbody></table>
+<div class="important">
+
+<p>Always make payment, order creation, and any financially sensitive POST endpoints idempotent. This is non-negotiable in production systems.</p>
+</div>
+
+
+<hr>
+<h2>11. OpenAPI Specification</h2>
+<p>OpenAPI (formerly Swagger) is the standard way to describe REST APIs. It is a machine-readable YAML/JSON file that documents every endpoint, parameter, request body, and response.</p>
+<h3>Why It Matters</h3>
+<ol>
+<li><strong>Auto-generates documentation</strong> (Swagger UI, Redoc)</li>
+<li><strong>Auto-generates client SDKs</strong> (openapi-generator for 40+ languages)</li>
+<li><strong>Enables contract-first development</strong> -- design the API before writing code</li>
+<li><strong>Powers API testing tools</strong> (Postman can import OpenAPI specs)</li>
+<li><strong>Gateway configuration</strong> -- API gateways can use the spec for validation and routing</li>
+</ol>
+<h3>Minimal Example</h3>
+<pre><code class="language-yaml">openapi: 3.0.3
+info:
+  title: User API
+  version: 1.0.0
+paths:
+  /users:
+    get:
+      summary: List users
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+      responses:
+        &#39;200&#39;:
+          description: A list of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: &#39;#/components/schemas/User&#39;
+  /users/{id}:
+    get:
+      summary: Get a user
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        &#39;200&#39;:
+          description: A single user
+          content:
+            application/json:
+              schema:
+                $ref: &#39;#/components/schemas/User&#39;
+        &#39;404&#39;:
+          description: User not found
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+</code></pre>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> Mentioning OpenAPI shows you think about API documentation and developer experience. In a design interview, saying &quot;I would define this API contract using OpenAPI and generate client SDKs&quot; signals production-level thinking.</p>
+</div>
+
+
+<hr>
+<h2>12. Backward Compatibility</h2>
+<p>Breaking changes to an API can destroy client applications. Understanding what is and is not a breaking change is essential.</p>
+<h3>Non-Breaking Changes (Safe)</h3>
+<ul>
+<li>Adding a new optional field to request or response</li>
+<li>Adding a new endpoint</li>
+<li>Adding a new optional query parameter</li>
+<li>Adding a new HTTP method to an existing resource</li>
+<li>Widening the accepted range of a parameter (e.g., string field now also accepts null)</li>
+</ul>
+<h3>Breaking Changes (Dangerous)</h3>
+<ul>
+<li>Removing or renaming a field in the response</li>
+<li>Changing a field&#39;s type (e.g., <code>id</code> from integer to string)</li>
+<li>Making a previously optional field required</li>
+<li>Removing an endpoint</li>
+<li>Changing the URL structure</li>
+<li>Changing the authentication mechanism</li>
+<li>Changing the meaning/behavior of an existing field</li>
+</ul>
+<h3>Strategies for Managing Breaking Changes</h3>
+<ol>
+<li><strong>Expand-and-contract:</strong> Add the new field alongside the old one. Migrate clients. Remove the old field.</li>
+<li><strong>API versioning:</strong> Introduce a new API version with the breaking change.</li>
+<li><strong>Deprecation headers:</strong> Add <code>Deprecated: true</code> and <code>Sunset: &lt;date&gt;</code> headers to warn clients.</li>
+<li><strong>Client library updates:</strong> If you control the client SDKs, update them before making the server change.</li>
+</ol>
+<div class="note">
+
+<p>The golden rule of backward compatibility: <strong>Adding is safe. Removing and changing are dangerous.</strong> If you remember nothing else about backward compatibility, remember this.</p>
+</div>
+
+
+<hr>
+<h2>13. Interview Cheat Sheet</h2>
+<h3>Quick Reference Card</h3>
+<table>
+<thead>
+<tr>
+<th>Topic</th>
+<th>Key Point</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Resource naming</strong></td>
+<td>Plural nouns, no verbs, hyphens for multi-word</td>
+</tr>
+<tr>
+<td><strong>PUT vs PATCH</strong></td>
+<td>PUT replaces entirely; PATCH updates specific fields</td>
+</tr>
+<tr>
+<td><strong>401 vs 403</strong></td>
+<td>401 = not authenticated; 403 = authenticated but not authorized</td>
+</tr>
+<tr>
+<td><strong>API Gateway</strong></td>
+<td>Single entry point: auth, rate limiting, routing, aggregation</td>
+</tr>
+<tr>
+<td><strong>BFF pattern</strong></td>
+<td>Separate gateways per client type (mobile, web, TV)</td>
+</tr>
+<tr>
+<td><strong>API Key vs OAuth</strong></td>
+<td>API key = identify the app; OAuth = delegate user access</td>
+</tr>
+<tr>
+<td><strong>JWT revocation</strong></td>
+<td>Short-lived access tokens + server-side refresh tokens</td>
+</tr>
+<tr>
+<td><strong>Token Bucket</strong></td>
+<td>Most common rate limiting algorithm; allows controlled bursts</td>
+</tr>
+<tr>
+<td><strong>Offset pagination</strong></td>
+<td>Simple but slow at large offsets; breaks with mutations</td>
+</tr>
+<tr>
+<td><strong>Cursor pagination</strong></td>
+<td>Fast at any position; stable with mutations; no page jumps</td>
+</tr>
+<tr>
+<td><strong>Idempotency key</strong></td>
+<td>UUID per request to prevent duplicate processing</td>
+</tr>
+<tr>
+<td><strong>API versioning</strong></td>
+<td>Prefer URL path (/v1/); keep max 2-3 versions</td>
+</tr>
+<tr>
+<td><strong>Backward compatibility</strong></td>
+<td>Adding is safe; removing/changing is dangerous</td>
+</tr>
+</tbody></table>
+<h3>System Design Interview Template</h3>
+<p>When designing an API in an interview:</p>
+<ol>
+<li><strong>Define resources</strong> -- What are the nouns? (users, orders, products)</li>
+<li><strong>Define endpoints</strong> -- CRUD operations for each resource</li>
+<li><strong>Specify request/response formats</strong> -- JSON schemas, required vs optional fields</li>
+<li><strong>Choose authentication</strong> -- Who is calling this API? Internal service, mobile app, third party?</li>
+<li><strong>Add pagination</strong> -- How will you handle large collections?</li>
+<li><strong>Add rate limiting</strong> -- What limits are appropriate? Per user? Per endpoint?</li>
+<li><strong>Plan versioning</strong> -- How will you evolve the API without breaking clients?</li>
+<li><strong>Consider idempotency</strong> -- Which operations need idempotency keys?</li>
+<li><strong>Error handling</strong> -- What status codes for each failure mode?</li>
+<li><strong>Document with OpenAPI</strong> -- How will developers discover and understand the API?</li>
+</ol>
+<h3>Common Mistakes to Avoid</h3>
+<ol>
+<li>Using verbs in URLs (<code>/getUsers</code> instead of <code>GET /users</code>)</li>
+<li>Returning 200 for everything with error codes in the body</li>
+<li>Not paginating large collections</li>
+<li>Ignoring rate limiting until it is too late</li>
+<li>Making all fields required when they should be optional</li>
+<li>Versioning individual endpoints instead of the whole API</li>
+<li>Not handling duplicate/retry scenarios (no idempotency)</li>
+<li>Exposing internal service topology through the API</li>
+<li>Returning more data than the client needs (no field selection)</li>
+<li>Using sequential IDs that leak business information (use UUIDs)</li>
+</ol>
+<h3>Talking Points That Impress Interviewers</h3>
+<ul>
+<li>&quot;I would use cursor-based pagination here because this is a feed with frequent insertions, and offset pagination would give inconsistent results.&quot;</li>
+<li>&quot;The API Gateway handles authentication so individual services do not need to duplicate that logic, but it introduces a single point of failure, so we need to deploy multiple instances.&quot;</li>
+<li>&quot;I would add an Idempotency-Key header for the payment endpoint because network retries could cause duplicate charges.&quot;</li>
+<li>&quot;This is a non-breaking change because we are only adding an optional field. Existing clients will simply ignore it.&quot;</li>
+<li>&quot;Token Bucket is the right rate limiting algorithm here because we want to allow short bursts of traffic while maintaining an average rate.&quot;</li>
+</ul>
+
+</body>
+</html>

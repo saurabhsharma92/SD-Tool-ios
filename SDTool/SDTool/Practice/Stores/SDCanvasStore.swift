@@ -42,6 +42,17 @@ final class SDCanvasStore: ObservableObject {
         nodes[i].scalingMode = mode
     }
 
+    func renameNode(id: UUID, label: String) {
+        guard let i = nodes.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        nodes[i].label = trimmed.isEmpty ? nil : trimmed
+    }
+
+    func resizeNode(id: UUID, height: CGFloat) {
+        guard let i = nodes.firstIndex(where: { $0.id == id }) else { return }
+        nodes[i].customHeight = height
+    }
+
     // MARK: - Edge operations
 
     func deleteEdge(id: UUID) {
@@ -99,13 +110,22 @@ final class SDCanvasStore: ObservableObject {
 
     /// Serialises the current canvas into the flat graph structure used by SDValidationService.
     func exportGraph() -> DesignGraph {
-        let components = Array(Set(nodes.map { $0.type.rawValue }))
+        // Preserve duplicate counts; horizontal-scaled nodes count as 3 instances
+        let components = nodes.flatMap { node -> [String] in
+            node.scalingMode == .horizontal
+                ? [node.type.rawValue, node.type.rawValue, node.type.rawValue]
+                : [node.type.rawValue]
+        }
         let connections: [[String]] = edges.compactMap { edge in
             guard let from = nodes.first(where: { $0.id == edge.fromNodeId }),
                   let to   = nodes.first(where: { $0.id == edge.toNodeId }) else { return nil }
             return [from.type.rawValue, to.type.rawValue]
         }
-        return DesignGraph(components: components, connections: connections)
+        let nodeLabels = Dictionary(uniqueKeysWithValues: nodes.compactMap { n -> (String, String)? in
+            guard let l = n.label else { return nil }
+            return (n.id.uuidString, l)
+        })
+        return DesignGraph(components: components, connections: connections, nodeLabels: nodeLabels)
     }
 
     // MARK: - Reset

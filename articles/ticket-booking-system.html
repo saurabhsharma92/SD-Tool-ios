@@ -1,0 +1,1296 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Design Interview: Ticket Booking System</title>
+</head>
+<body>
+
+<h1>System Design Interview: Ticket Booking System</h1>
+<h3>BookMyShow / Ticketmaster Scale</h3>
+<div class="note">
+
+<p><strong>Staff Engineer Interview Preparation Guide</strong> — High Level Design Round</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-problem-clarification--requirements">Problem Clarification &amp; Requirements</a></li>
+<li><a href="#2-capacity-estimation--scale">Capacity Estimation &amp; Scale</a></li>
+<li><a href="#3-high-level-architecture">High-Level Architecture</a></li>
+<li><a href="#4-core-components-deep-dive">Core Components Deep Dive</a></li>
+<li><a href="#5-seat-inventory-management">Seat Inventory Management</a></li>
+<li><a href="#6-concurrency-control">Concurrency Control</a></li>
+<li><a href="#7-temporary-hold-pattern">Temporary Hold Pattern</a></li>
+<li><a href="#8-booking-flow--state-machine">Booking Flow &amp; State Machine</a></li>
+<li><a href="#9-payment-integration">Payment Integration</a></li>
+<li><a href="#10-virtual-queue--waiting-room">Virtual Queue &amp; Waiting Room</a></li>
+<li><a href="#11-flash-sale-handling">Flash Sale Handling</a></li>
+<li><a href="#12-data-models--storage">Data Models &amp; Storage</a></li>
+<li><a href="#13-scalability-strategies">Scalability Strategies</a></li>
+<li><a href="#14-design-trade-offs--justifications">Design Trade-offs &amp; Justifications</a></li>
+<li><a href="#15-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. Problem Clarification &amp; Requirements</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Ticket booking is fundamentally a resource contention problem. The core engineering challenge is not building a CRUD app for events — it is preventing two people from buying the same seat while keeping the system responsive under extreme demand spikes. Frame your answer around concurrency and inventory management from the very beginning.</p>
+</div>
+
+
+<h3>Questions to Ask the Interviewer</h3>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Question</th>
+<th>Why It Matters</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Scale</strong></td>
+<td>How many events per day? What is the largest venue capacity?</td>
+<td>Determines seat inventory size and write throughput</td>
+</tr>
+<tr>
+<td><strong>Concurrency</strong></td>
+<td>Do we need assigned seating or general admission?</td>
+<td>Assigned seating drastically increases contention complexity</td>
+</tr>
+<tr>
+<td><strong>Flash sales</strong></td>
+<td>Are there Taylor-Swift-scale events where millions try to buy at once?</td>
+<td>Requires virtual queue / waiting room architecture</td>
+</tr>
+<tr>
+<td><strong>Hold time</strong></td>
+<td>How long do we hold seats during the payment window?</td>
+<td>Impacts seat turnover and user experience</td>
+</tr>
+<tr>
+<td><strong>Payment</strong></td>
+<td>Single payment provider or multiple? Refunds?</td>
+<td>Payment failure handling complexity</td>
+</tr>
+<tr>
+<td><strong>Geography</strong></td>
+<td>Single country or global events?</td>
+<td>Multi-region deployment, currency handling</td>
+</tr>
+<tr>
+<td><strong>Resale</strong></td>
+<td>Do we support ticket transfers or a secondary market?</td>
+<td>Adds ownership transfer logic</td>
+</tr>
+<tr>
+<td><strong>Notifications</strong></td>
+<td>Real-time availability updates? Waitlist?</td>
+<td>Push notification infrastructure</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>Functional Requirements (Agreed Upon)</h3>
+<ul>
+<li>Users can browse and search events by location, date, category, and artist</li>
+<li>Users can view a venue&#39;s seat map with real-time availability</li>
+<li>Users can select one or more seats and initiate a booking</li>
+<li>Selected seats are temporarily held (10 minutes) while the user completes payment</li>
+<li>On successful payment, the booking is confirmed and tickets are issued</li>
+<li>On payment failure or timeout, the held seats are released back to the pool</li>
+<li>Users receive booking confirmation via email and push notification</li>
+<li>Event organizers can create events, define venue layouts, and set pricing tiers</li>
+<li>Users can view their booking history and download tickets</li>
+</ul>
+<h3>Non-Functional Requirements</h3>
+<ul>
+<li><strong>Consistency:</strong> No double-booking — a seat must never be sold to two users simultaneously</li>
+<li><strong>Availability:</strong> 99.99% uptime; the system must remain responsive during high-demand events</li>
+<li><strong>Latency:</strong> Seat selection and hold acquisition must complete in &lt; 500ms</li>
+<li><strong>Scale:</strong> Handle 50K concurrent users competing for seats during flash sales</li>
+<li><strong>Throughput:</strong> Handle up to 100K seat hold requests per second during peak events</li>
+<li><strong>Durability:</strong> Once a booking is confirmed, it must never be lost (zero data loss)</li>
+<li><strong>Fairness:</strong> Users who arrive first should have priority access during high-demand events</li>
+</ul>
+<hr>
+<h2>2. Capacity Estimation &amp; Scale</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Ticket booking has an extremely spiky traffic pattern. Average throughput might be modest, but a single popular event announcement can spike traffic 1000x. Your capacity estimates must address both steady-state and flash-sale scenarios separately.</p>
+</div>
+
+
+<h3>Traffic Estimation</h3>
+<pre><code>Events per year           = 10 Million
+Average seats per event   = 5,000
+Total seats per year      = 50 Billion seat-slots
+
+Daily bookings (avg)      = 10M events * avg 0.5 booking days each / 365
+                          ~ 500K bookings/day (steady state)
+
+Steady-state QPS:
+  500K / 86,400 = ~6 bookings/sec
+  With browsing + seat map views: ~600 reads/sec
+
+Flash sale scenario (single popular event):
+  50,000 concurrent users
+  Each user loads seat map + selects seats within first 60 seconds
+  Seat map requests: 50K / 60 = ~833/sec
+  Seat hold requests: 50K / 120 = ~417/sec (staggered over 2 min)
+  Peak burst: 5,000 hold requests/sec (first few seconds)
+</code></pre>
+<h3>Storage Estimation</h3>
+<pre><code>Event record:
+  - Event metadata     = ~2 KB (name, description, date, venue, artist)
+  - 10M events/year    = 20 GB/year
+
+Seat inventory:
+  - Seat record        = ~200 bytes (seat_id, section, row, number, price_tier, status)
+  - 50 Billion seats   = 10 TB/year (but most are ephemeral)
+  - Active inventory   = ~500M seats at any time = 100 GB
+
+Booking records:
+  - Booking + payment  = ~1 KB
+  - 500K/day           = 500 MB/day = ~180 GB/year
+
+Seat holds (Redis):
+  - Hold entry         = ~100 bytes (seat_id, user_id, expiry)
+  - Peak active holds  = 500K = 50 MB (easily fits in memory)
+</code></pre>
+<h3>Bandwidth</h3>
+<pre><code>Seat map payload:
+  - Large venue (50K seats) = ~500 KB (compressed SVG + seat status JSON)
+  - 50K concurrent users loading seat map = 25 GB burst
+  - CDN absorbs most of this; dynamic seat status is ~50 KB per request
+
+API traffic:
+  - Steady state: ~10 MB/sec
+  - Flash sale peak: ~500 MB/sec
+</code></pre>
+<hr>
+<h2>3. High-Level Architecture</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Draw the architecture with clear separation between the read path (browsing events, viewing seat maps) and the write path (holding seats, processing payments). The read path can be heavily cached; the write path requires strong consistency. This separation is what allows you to handle flash sale spikes.</p>
+</div>
+
+
+<pre class="mermaid">
+graph TB
+    subgraph Clients
+        WEB[Web App]
+        MOB[Mobile App]
+    end
+
+    subgraph Edge Layer
+        CDN[CDN - Static Assets & Seat Maps]
+        LB[Load Balancer]
+        WR[Waiting Room Service]
+    end
+
+    subgraph API Layer
+        GW[API Gateway + Rate Limiter]
+        ES[Event Service]
+        SS[Seat Service]
+        BS[Booking Service]
+        PS[Payment Service]
+        NS[Notification Service]
+    end
+
+    subgraph Data Layer
+        PG[(PostgreSQL - Events & Bookings)]
+        RD[(Redis - Seat Holds & Locks)]
+        ES_SEARCH[(Elasticsearch - Event Search)]
+        MQ[Message Queue - Kafka]
+    end
+
+    subgraph External
+        PAY[Payment Gateway]
+        EMAIL[Email Provider]
+        PUSH[Push Notification]
+    end
+
+    WEB --> CDN
+    MOB --> CDN
+    WEB --> LB
+    MOB --> LB
+    LB --> WR
+    WR --> GW
+    GW --> ES
+    GW --> SS
+    GW --> BS
+    ES --> PG
+    ES --> ES_SEARCH
+    SS --> PG
+    SS --> RD
+    BS --> PG
+    BS --> RD
+    BS --> PS
+    PS --> PAY
+    BS --> MQ
+    MQ --> NS
+    NS --> EMAIL
+    NS --> PUSH
+</pre>
+<h3>Component Responsibilities</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Responsibility</th>
+<th>Scaling Strategy</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Event Service</strong></td>
+<td>CRUD for events, search, browse</td>
+<td>Horizontal scaling, Elasticsearch for search</td>
+</tr>
+<tr>
+<td><strong>Seat Service</strong></td>
+<td>Seat map rendering, real-time availability</td>
+<td>Read replicas + Redis cache for availability</td>
+</tr>
+<tr>
+<td><strong>Booking Service</strong></td>
+<td>Orchestrates hold -&gt; pay -&gt; confirm flow</td>
+<td>Stateless, horizontally scaled</td>
+</tr>
+<tr>
+<td><strong>Payment Service</strong></td>
+<td>Integrates with payment gateway, handles idempotency</td>
+<td>Isolated to contain blast radius of payment failures</td>
+</tr>
+<tr>
+<td><strong>Waiting Room</strong></td>
+<td>Virtual queue for high-demand events</td>
+<td>Separate infra to absorb traffic spikes</td>
+</tr>
+<tr>
+<td><strong>Notification Service</strong></td>
+<td>Async booking confirmations, reminders</td>
+<td>Consumer-based scaling off Kafka</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>4. Core Components Deep Dive</h2>
+<h3>Event Service</h3>
+<p>The event service is the read-heavy component of the system. It serves event browsing, searching, and detail pages.</p>
+<pre><code>Event Search Flow:
+  1. User types &quot;Taylor Swift NYC&quot;
+  2. API Gateway routes to Event Service
+  3. Event Service queries Elasticsearch with:
+     - Full-text match on event name / artist
+     - Geo filter on user&#39;s city
+     - Date range filter
+     - Availability filter (events with remaining seats)
+  4. Results are ranked by relevance + date proximity
+  5. Response includes event metadata + venue summary + price range
+</code></pre>
+<div class="note">
+
+<p>Event data changes infrequently (organizer creates event once, updates rarely). This makes it an excellent candidate for aggressive caching. Use a CDN for event detail pages with a 5-minute TTL, and invalidate on update.</p>
+</div>
+
+
+<h3>Venue and Seat Map Service</h3>
+<p>The seat map is the most visually complex part of the system. It must show real-time seat availability while handling thousands of concurrent viewers.</p>
+<p><strong>Architecture Decision: Static Map + Dynamic Overlay</strong></p>
+<p>The seat map is split into two layers:</p>
+<ol>
+<li><strong>Static layer</strong> — The venue layout (sections, rows, seat positions) is rendered as an SVG and served via CDN. This never changes for a given venue.</li>
+<li><strong>Dynamic layer</strong> — Seat availability status (available, held, sold) is fetched as a lightweight JSON overlay and merged client-side.</li>
+</ol>
+<pre><code>Static SVG (CDN-cached):
+  - Section boundaries, row labels, seat positions
+  - Served once, cached indefinitely per venue
+  - Size: 200-500 KB compressed
+
+Dynamic status JSON (real-time):
+  - Array of seat_id -&gt; status mappings
+  - Only includes non-available seats (held + sold)
+  - Much smaller: 5-50 KB for a 50K-seat venue
+  - TTL: 2-5 seconds, fetched via polling or SSE
+</code></pre>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Mention the static + dynamic split. It shows you understand that serving a full seat map with real-time status to 50K concurrent users is not feasible as a single monolithic API call. The static portion is cacheable; only the small dynamic portion needs real-time updates.</p>
+</div>
+
+
+<hr>
+<h2>5. Seat Inventory Management</h2>
+<div class="warning">
+
+<p><strong>The Double-Booking Problem</strong> is the single most critical correctness requirement in this system. If two users can purchase the same seat, the system has fundamentally failed. Every design decision in this section is driven by preventing this scenario.</p>
+</div>
+
+
+<h3>Seat States</h3>
+<p>A seat transitions through a well-defined set of states:</p>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> Available
+    Available --> Held: User selects seat
+    Held --> Available: Hold expires (TTL)
+    Held --> Available: User cancels
+    Held --> Reserved: Payment initiated
+    Reserved --> Booked: Payment succeeds
+    Reserved --> Available: Payment fails
+    Booked --> Available: Refund / Cancellation
+    Booked --> [*]
+</pre>
+<h3>Seat Status Storage</h3>
+<p>We maintain seat status in two places, each serving a different purpose:</p>
+<table>
+<thead>
+<tr>
+<th>Storage</th>
+<th>What it holds</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Redis</strong></td>
+<td>Active holds (seat_id -&gt; user_id with TTL)</td>
+<td>Sub-millisecond reads for availability checks, automatic expiry</td>
+</tr>
+<tr>
+<td><strong>PostgreSQL</strong></td>
+<td>Confirmed bookings (seat_id, booking_id, status)</td>
+<td>ACID guarantees, permanent record, source of truth</td>
+</tr>
+</tbody></table>
+<p><strong>Key insight:</strong> Redis is the first line of defense for concurrency. When a user tries to hold a seat, we first check Redis. Only after payment succeeds do we write the confirmed booking to PostgreSQL.</p>
+<h3>Real-Time Availability</h3>
+<pre><code>Availability Check Flow:
+  1. Client requests seat status for event E, section S
+  2. Seat Service checks Redis for held seats in (E, S)
+  3. Seat Service queries PostgreSQL for booked seats in (E, S)
+  4. Combine: available = all_seats - held - booked
+  5. Return status array to client
+  6. Client merges with static SVG map
+
+Optimization: Cache the combined result with 2-second TTL
+  - During flash sales, stale-by-2-seconds is acceptable
+  - Dramatically reduces PostgreSQL load
+</code></pre>
+<hr>
+<h2>6. Concurrency Control</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> This is the section that separates a good answer from a great one. Be prepared to discuss three approaches — optimistic locking, pessimistic locking, and distributed locks — and explain why you chose one over the others for this specific use case.</p>
+</div>
+
+
+<h3>Approach 1: Pessimistic Locking (Database Row Lock)</h3>
+<pre><code class="language-sql">BEGIN;
+SELECT * FROM seats
+WHERE event_id = ? AND seat_id = ? AND status = &#39;available&#39;
+FOR UPDATE;
+
+-- If row returned, seat is available. Lock held until commit.
+UPDATE seats SET status = &#39;held&#39;, held_by = ?, held_until = NOW() + INTERVAL &#39;10 minutes&#39;
+WHERE event_id = ? AND seat_id = ?;
+COMMIT;
+</code></pre>
+<p><strong>Pros:</strong></p>
+<ul>
+<li>Simple to implement and reason about</li>
+<li>Strong consistency — no race conditions possible</li>
+<li>Database handles all locking semantics</li>
+</ul>
+<p><strong>Cons:</strong></p>
+<ul>
+<li>Locks are held for the duration of the transaction</li>
+<li>Under high contention (1000 users clicking the same seat), connections pile up waiting for locks</li>
+<li>Database becomes the bottleneck — cannot scale horizontally</li>
+<li>Risk of deadlocks when users select multiple seats</li>
+</ul>
+<h3>Approach 2: Optimistic Locking (Version-Based)</h3>
+<pre><code class="language-sql">-- Read current version
+SELECT seat_id, status, version FROM seats
+WHERE event_id = ? AND seat_id = ?;
+
+-- Attempt update with version check
+UPDATE seats
+SET status = &#39;held&#39;, held_by = ?, held_until = NOW() + INTERVAL &#39;10 minutes&#39;, version = version + 1
+WHERE event_id = ? AND seat_id = ? AND status = &#39;available&#39; AND version = ?;
+
+-- If rows_affected = 0, someone else got it first -&gt; retry or show &quot;seat taken&quot;
+</code></pre>
+<p><strong>Pros:</strong></p>
+<ul>
+<li>No long-held locks — reads are non-blocking</li>
+<li>Works well when contention is moderate</li>
+<li>Simple implementation</li>
+</ul>
+<p><strong>Cons:</strong></p>
+<ul>
+<li>Under extreme contention (flash sales), almost every attempt fails and retries</li>
+<li>Retry storms can actually increase load on the database</li>
+<li>Multiple seat selection requires careful handling (all-or-nothing)</li>
+</ul>
+<h3>Approach 3: Distributed Lock (Redis) -- Recommended</h3>
+<pre><code>HOLD_SEAT(event_id, seat_id, user_id):
+  lock_key = &quot;seat_hold:{event_id}:{seat_id}&quot;
+
+  result = Redis.SET(lock_key, user_id, NX, EX, 600)
+  // NX = only set if not exists
+  // EX 600 = expire in 600 seconds (10 min)
+
+  if result == OK:
+    return SUCCESS  // Seat held for this user
+  else:
+    return ALREADY_HELD  // Another user has this seat
+</code></pre>
+<p><strong>Pros:</strong></p>
+<ul>
+<li>Sub-millisecond operation — Redis SET with NX is O(1)</li>
+<li>Automatic expiry via TTL — no background cleanup needed</li>
+<li>No database contention for the hold phase</li>
+<li>Horizontally scalable (Redis Cluster)</li>
+<li>Atomic — SET NX guarantees exactly one winner</li>
+</ul>
+<p><strong>Cons:</strong></p>
+<ul>
+<li>Redis is not the permanent source of truth — need PostgreSQL for confirmed bookings</li>
+<li>Redis failure could cause temporary inability to hold seats (mitigated by Redis Cluster)</li>
+<li>Need careful handling of the Redis -&gt; PostgreSQL transition during payment confirmation</li>
+</ul>
+<div class="important">
+
+<p><strong>Recommended approach:</strong> Use Redis distributed locks for the hold phase, then PostgreSQL for the final booking confirmation. This gives you the speed of Redis for the high-contention seat selection phase and the durability of PostgreSQL for the permanent booking record.</p>
+</div>
+
+
+<h3>Comparison Summary</h3>
+<table>
+<thead>
+<tr>
+<th>Criteria</th>
+<th>Pessimistic Lock</th>
+<th>Optimistic Lock</th>
+<th>Redis Distributed Lock</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Latency</strong></td>
+<td>High (lock wait)</td>
+<td>Low (no locks)</td>
+<td>Very low (sub-ms)</td>
+</tr>
+<tr>
+<td><strong>Contention handling</strong></td>
+<td>Queues waiters</td>
+<td>Fails fast + retry</td>
+<td>Fails fast, no retry needed</td>
+</tr>
+<tr>
+<td><strong>Flash sale performance</strong></td>
+<td>Poor (connection exhaustion)</td>
+<td>Moderate (retry storms)</td>
+<td>Excellent</td>
+</tr>
+<tr>
+<td><strong>Complexity</strong></td>
+<td>Low</td>
+<td>Medium</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td><strong>Data durability</strong></td>
+<td>Built-in (RDBMS)</td>
+<td>Built-in (RDBMS)</td>
+<td>Needs separate confirmation step</td>
+</tr>
+<tr>
+<td><strong>Scalability</strong></td>
+<td>Limited by DB</td>
+<td>Limited by DB</td>
+<td>Redis Cluster scales horizontally</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>7. Temporary Hold Pattern</h2>
+<div class="note">
+
+<p>The temporary hold is the bridge between &quot;I want this seat&quot; and &quot;I have paid for this seat.&quot; It must be long enough for the user to complete payment (typically 10 minutes) but short enough that unsold seats are not locked up indefinitely. The design must handle the case where a user abandons the booking mid-flow.</p>
+</div>
+
+
+<h3>Redis TTL-Based Hold Design</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant API as Booking Service
+    participant R as Redis
+    participant DB as PostgreSQL
+    participant P as Payment Service
+
+    U->>API: Select seats [A1, A2, A3]
+    API->>R: SET seat_hold:evt:A1 user123 NX EX 600
+    R-->>API: OK
+    API->>R: SET seat_hold:evt:A2 user123 NX EX 600
+    R-->>API: OK
+    API->>R: SET seat_hold:evt:A3 user123 NX EX 600
+    R-->>API: OK
+    API-->>U: Seats held. You have 10 min to pay.
+
+    Note over U,P: User fills payment info (up to 10 min)
+
+    U->>API: Submit payment
+    API->>P: Charge $150
+    P-->>API: Payment successful (txn_id: TXN456)
+
+    API->>DB: INSERT booking (seats A1,A2,A3, status=confirmed)
+    DB-->>API: OK
+    API->>R: DEL seat_hold:evt:A1
+    API->>R: DEL seat_hold:evt:A2
+    API->>R: DEL seat_hold:evt:A3
+    API-->>U: Booking confirmed! Ticket ID: BK789
+</pre>
+<h3>Multi-Seat Atomicity</h3>
+<p>When a user selects multiple seats, we need all-or-nothing semantics. If seat A1 is available but A2 is already held, we should not hold A1 alone.</p>
+<pre><code>HOLD_MULTIPLE_SEATS(event_id, seat_ids, user_id):
+  held = []
+  for seat_id in seat_ids:
+    result = Redis.SET(&quot;seat_hold:{event_id}:{seat_id}&quot;, user_id, NX, EX, 600)
+    if result == OK:
+      held.append(seat_id)
+    else:
+      // Rollback: release all seats we already held
+      for held_seat in held:
+        Redis.DEL(&quot;seat_hold:{event_id}:{held_seat}&quot;)
+      return FAILURE(&quot;Seat {seat_id} is no longer available&quot;)
+
+  return SUCCESS(held)
+</code></pre>
+<div class="warning">
+
+<p><strong>Race condition alert:</strong> The loop above is not fully atomic. Between holding seat A1 and attempting seat A2, another user could grab A1. For truly atomic multi-seat holds, use a Redis Lua script that executes all SET NX operations in a single atomic block.</p>
+</div>
+
+
+<p><strong>Lua Script for Atomic Multi-Seat Hold:</strong></p>
+<pre><code class="language-lua">-- KEYS: list of seat hold keys
+-- ARGV[1]: user_id, ARGV[2]: TTL in seconds
+
+-- First, check all seats are available
+for i, key in ipairs(KEYS) do
+  if redis.call(&#39;EXISTS&#39;, key) == 1 then
+    return 0  -- At least one seat is taken
+  end
+end
+
+-- All available, hold them all
+for i, key in ipairs(KEYS) do
+  redis.call(&#39;SET&#39;, key, ARGV[1], &#39;EX&#39;, ARGV[2])
+end
+
+return 1  -- All seats held successfully
+</code></pre>
+<h3>Hold Expiry and Cleanup</h3>
+<p>Redis TTL handles expiry automatically. When a hold expires:</p>
+<ol>
+<li>The Redis key disappears — seat becomes available for others</li>
+<li>No explicit cleanup needed</li>
+<li>The booking service should also track holds in a <code>pending_bookings</code> table for audit purposes</li>
+</ol>
+<p><strong>Edge case — Payment completes after hold expires:</strong></p>
+<pre><code>Scenario:
+  1. User holds seat at T=0, TTL=600s
+  2. User&#39;s payment is slow, completes at T=620s
+  3. Meanwhile, at T=601s, another user holds the same seat
+  4. Original user&#39;s payment confirmation arrives
+
+Solution:
+  - Before confirming booking, re-verify the hold:
+    if Redis.GET(&quot;seat_hold:evt:A1&quot;) != user_id:
+      REFUND payment
+      return &quot;Sorry, your seat hold expired and the seat was taken&quot;
+  - This is the safety check that prevents double-booking
+</code></pre>
+<hr>
+<h2>8. Booking Flow &amp; State Machine</h2>
+<h3>Complete Booking Lifecycle</h3>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> Browsing
+    Browsing --> SeatSelected: User picks seats
+    SeatSelected --> HoldAcquired: All seats held (Redis NX)
+    SeatSelected --> SeatUnavailable: One or more seats taken
+    SeatUnavailable --> Browsing: User picks different seats
+
+    HoldAcquired --> PaymentInitiated: User submits payment
+    HoldAcquired --> HoldExpired: 10-minute TTL expires
+
+    PaymentInitiated --> PaymentProcessing: Payment gateway called
+    PaymentProcessing --> BookingConfirmed: Payment succeeds + hold still valid
+    PaymentProcessing --> PaymentFailed: Payment declined/error
+    PaymentProcessing --> HoldExpiredDuringPayment: Hold expired before payment completed
+
+    PaymentFailed --> HoldAcquired: User retries (if hold still active)
+    PaymentFailed --> HoldExpired: Hold expired during retry
+
+    HoldExpired --> Browsing: Seats released, user starts over
+    HoldExpiredDuringPayment --> RefundInitiated: Refund the charge
+
+    BookingConfirmed --> TicketIssued: Generate ticket + send notification
+    TicketIssued --> [*]
+    RefundInitiated --> Browsing: Refund processed, user starts over
+</pre>
+<h3>Compensating Transactions</h3>
+<div class="important">
+
+<p>In a distributed system, you cannot rely on a single database transaction spanning seat hold, payment, and booking confirmation. Instead, use compensating transactions (the Saga pattern) to handle failures at each step.</p>
+</div>
+
+
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Action</th>
+<th>Compensation on Failure</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>Hold seats in Redis</td>
+<td>Release holds (DEL keys)</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Create pending booking in DB</td>
+<td>Mark booking as cancelled</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Charge payment</td>
+<td>Initiate refund via payment gateway</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Confirm booking in DB</td>
+<td>(Cannot fail if step 3 succeeded — use retries)</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Release holds in Redis</td>
+<td>(Cleanup — holds are no longer needed)</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Send confirmation notification</td>
+<td>Retry async via message queue</td>
+</tr>
+</tbody></table>
+<p><strong>Failure at each step:</strong></p>
+<ul>
+<li><strong>Step 1 fails:</strong> Seat is taken. Inform user immediately. No compensation needed.</li>
+<li><strong>Step 2 fails:</strong> Database error. Release Redis holds. Retry or inform user.</li>
+<li><strong>Step 3 fails:</strong> Payment declined. Release Redis holds. Mark pending booking as cancelled.</li>
+<li><strong>Step 4 fails:</strong> Booking confirmation write fails. This is critical — payment was already charged. Retry with exponential backoff. If all retries fail, alert operations team and queue for manual resolution. Never refund automatically at this stage without human review.</li>
+<li><strong>Step 5 fails:</strong> Redis DEL fails. Not critical — TTL will expire the holds anyway.</li>
+<li><strong>Step 6 fails:</strong> Notification failure. Retry via dead letter queue. Booking is still valid.</li>
+</ul>
+<hr>
+<h2>9. Payment Integration</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Payment integration in a booking system has a unique challenge: the thing being purchased (a seat) has a time-limited hold. If the payment takes too long, the hold expires and we must refund. This time-pressure makes idempotency and timeout handling especially critical.</p>
+</div>
+
+
+<h3>Idempotency</h3>
+<p>Every payment request must include an idempotency key to prevent double charges:</p>
+<pre><code>Payment Request:
+  POST /api/payment/charge
+  {
+    &quot;idempotency_key&quot;: &quot;booking_BK789_attempt_1&quot;,
+    &quot;amount&quot;: 15000,        // cents
+    &quot;currency&quot;: &quot;USD&quot;,
+    &quot;payment_method&quot;: &quot;pm_card_visa_123&quot;,
+    &quot;booking_id&quot;: &quot;BK789&quot;
+  }
+</code></pre>
+<p>The idempotency key is derived from the booking ID + attempt number. If the same request is sent twice (due to network retry, user double-click, etc.), the payment gateway returns the same result without charging again.</p>
+<h3>Timeout Handling</h3>
+<pre><code>Payment Timeout Strategy:
+
+1. Set a payment gateway timeout of 30 seconds
+2. If timeout occurs:
+   a. Do NOT assume payment failed
+   b. Query the payment gateway for transaction status
+   c. If confirmed: proceed with booking
+   d. If not found: safe to retry with same idempotency key
+   e. If pending: wait and poll (up to 3 retries, 10s apart)
+   f. If still pending after all retries: hold the booking in &quot;payment_pending&quot; state
+      and resolve asynchronously via webhook from payment gateway
+</code></pre>
+<h3>Payment Gateway Webhook</h3>
+<pre><code>Payment Gateway -&gt; Our System:
+  POST /webhooks/payment
+  {
+    &quot;event&quot;: &quot;payment.completed&quot;,
+    &quot;transaction_id&quot;: &quot;TXN456&quot;,
+    &quot;idempotency_key&quot;: &quot;booking_BK789_attempt_1&quot;,
+    &quot;status&quot;: &quot;succeeded&quot;,
+    &quot;amount&quot;: 15000
+  }
+
+On receiving webhook:
+  1. Verify webhook signature (HMAC)
+  2. Look up booking by idempotency_key
+  3. If booking is in &quot;payment_pending&quot; state, confirm it
+  4. If booking is already confirmed, ignore (idempotent)
+  5. If booking was cancelled (hold expired), initiate refund
+</code></pre>
+<hr>
+<h2>10. Virtual Queue &amp; Waiting Room</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> The waiting room is what separates a system that crashes during Taylor Swift ticket sales from one that handles them gracefully. This is a load-shedding mechanism that protects your backend by controlling the rate at which users reach the booking flow.</p>
+</div>
+
+
+<h3>Why a Waiting Room?</h3>
+<p>When a high-demand event goes on sale:</p>
+<ul>
+<li>500K users hit the site simultaneously</li>
+<li>The booking system can handle ~5K concurrent seat selection flows</li>
+<li>Without a queue: the system is overwhelmed, everyone gets errors, and the experience is terrible</li>
+<li>With a queue: users wait in an orderly line, and the system processes them at a sustainable rate</li>
+</ul>
+<h3>Token-Based Queue Design</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant WR as Waiting Room Service
+    participant API as Booking API
+
+    U->>WR: I want to buy tickets for Event X
+    WR-->>U: You are #45,231 in line. Token: TKN_abc123
+    Note over WR: User added to Redis sorted set with timestamp
+
+    loop Every 5 seconds
+        U->>WR: Check my position (Token: TKN_abc123)
+        WR-->>U: You are now #12,456. Estimated wait: 8 min
+    end
+
+    Note over WR: When user reaches front of queue
+    WR-->>U: Your turn! Access token: ACC_xyz789 (valid 5 min)
+    U->>API: Browse seats (Authorization: ACC_xyz789)
+    API->>API: Validate access token
+    API-->>U: Seat map with availability
+</pre>
+<h3>Queue Implementation</h3>
+<pre><code>Data Structure: Redis Sorted Set
+  Key: &quot;waiting_room:{event_id}&quot;
+  Score: timestamp of join (for FIFO ordering)
+  Member: user_token
+
+Admission Rate:
+  - Configurable per event (default: 500 users/minute)
+  - Background job runs every second:
+    1. Pop N users from the sorted set (ZPOPMIN)
+    2. Generate access tokens for them (JWT with 5-min expiry)
+    3. Push access tokens to a notification channel (SSE/WebSocket)
+    4. Users receive their access token and can proceed to booking
+
+Token Validation:
+  - Access tokens are JWTs signed by the waiting room service
+  - Booking API validates the JWT on every request
+  - Token includes: user_id, event_id, issued_at, expires_at
+  - If token is expired or invalid, redirect user back to waiting room
+</code></pre>
+<h3>Fairness Guarantees</h3>
+<table>
+<thead>
+<tr>
+<th>Mechanism</th>
+<th>How It Ensures Fairness</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Sorted set with timestamp</strong></td>
+<td>First-come-first-served ordering</td>
+</tr>
+<tr>
+<td><strong>One token per user per event</strong></td>
+<td>Prevents a user from joining the queue multiple times</td>
+</tr>
+<tr>
+<td><strong>Device fingerprinting</strong></td>
+<td>Detects the same person using multiple browsers/devices</td>
+</tr>
+<tr>
+<td><strong>CAPTCHA before joining queue</strong></td>
+<td>Blocks simple bots from taking queue positions</td>
+</tr>
+<tr>
+<td><strong>Rate limiting on join</strong></td>
+<td>Prevents scripted mass-joins from a single IP</td>
+</tr>
+</tbody></table>
+<div class="warning">
+
+<p>Sophisticated scalpers use residential proxy networks and headless browsers to bypass simple bot detection. For truly high-value events, consider integrating with dedicated bot-detection services (e.g., Cloudflare Turnstile, Akamai Bot Manager) that use behavioral analysis.</p>
+</div>
+
+
+<hr>
+<h2>11. Flash Sale Handling</h2>
+<p>Flash sales introduce load patterns that are fundamentally different from normal operations. The traffic is not just high — it is concentrated in a very short window (often the first 30 seconds).</p>
+<h3>Rate Limiting Strategy</h3>
+<pre><code>Rate Limiting Layers:
+
+Layer 1 — CDN/Edge (Cloudflare, AWS CloudFront)
+  - IP-based rate limiting: max 100 requests/min per IP
+  - Drops obvious DDoS traffic before it reaches your infrastructure
+
+Layer 2 — API Gateway
+  - Token bucket per user: max 10 requests/sec
+  - Adaptive throttling: if backend latency &gt; 500ms, reduce admitted rate
+  - Returns 429 Too Many Requests with Retry-After header
+
+Layer 3 — Waiting Room (described above)
+  - Controls the flow of users into the booking system
+  - Admission rate tuned to backend capacity
+
+Layer 4 — Seat Service
+  - Per-event concurrency limit: max 5K concurrent hold attempts per event
+  - Overflow goes to waiting room or receives &quot;try again in X seconds&quot;
+</code></pre>
+<h3>Queue-Based Processing for Holds</h3>
+<p>During flash sales, instead of processing seat holds synchronously, switch to an asynchronous queue-based model:</p>
+<pre><code>Normal mode (low traffic):
+  User -&gt; API -&gt; Redis (hold seat) -&gt; Response
+  Latency: ~50ms
+
+Flash sale mode (high traffic):
+  User -&gt; API -&gt; Kafka (enqueue hold request) -&gt; Response(&quot;processing&quot;)
+  Background: Kafka Consumer -&gt; Redis (hold seat) -&gt; Notify user via SSE
+
+Switching criteria:
+  - When event is flagged as &quot;high demand&quot; by organizer
+  - Or when concurrent hold requests exceed 1K/sec for an event
+  - System automatically switches to queue mode
+</code></pre>
+<div class="note">
+
+<p>The queue-based approach introduces latency (user waits for async processing) but prevents system overload. Combined with the waiting room, it ensures that the system remains stable even under extreme load.</p>
+</div>
+
+
+<h3>Inventory Pre-partitioning</h3>
+<p>For very large venues, partition the seat inventory across multiple Redis instances to distribute the write load:</p>
+<pre><code>Partitioning Strategy:
+  - Venue has 50K seats across 20 sections
+  - Each section&#39;s seats are managed by a dedicated Redis shard
+  - Section A-E -&gt; Redis shard 1
+  - Section F-J -&gt; Redis shard 2
+  - Section K-O -&gt; Redis shard 3
+  - Section P-T -&gt; Redis shard 4
+
+  This distributes the SET NX load across 4 Redis instances
+  Each shard handles ~12.5K seats, reducing contention
+</code></pre>
+<hr>
+<h2>12. Data Models &amp; Storage</h2>
+<h3>Database Schema</h3>
+<pre><code>Table: events
+  - event_id          UUID PRIMARY KEY
+  - name              VARCHAR(255)
+  - description       TEXT
+  - venue_id          UUID REFERENCES venues
+  - event_date        TIMESTAMP WITH TIME ZONE
+  - sale_start_date   TIMESTAMP WITH TIME ZONE
+  - category          VARCHAR(50)  -- concert, sports, theater
+  - artist_name       VARCHAR(255)
+  - status            VARCHAR(20)  -- draft, on_sale, sold_out, completed, cancelled
+  - is_high_demand    BOOLEAN DEFAULT FALSE
+  - created_at        TIMESTAMP
+  - updated_at        TIMESTAMP
+
+Table: venues
+  - venue_id          UUID PRIMARY KEY
+  - name              VARCHAR(255)
+  - city              VARCHAR(100)
+  - country           VARCHAR(50)
+  - total_capacity    INTEGER
+  - seat_map_svg_url  VARCHAR(500)
+  - created_at        TIMESTAMP
+
+Table: sections
+  - section_id        UUID PRIMARY KEY
+  - venue_id          UUID REFERENCES venues
+  - name              VARCHAR(50)  -- &quot;Orchestra&quot;, &quot;Balcony&quot;, &quot;GA Floor&quot;
+  - price_tier_id     UUID REFERENCES price_tiers
+  - total_seats       INTEGER
+  - section_type      VARCHAR(20)  -- assigned, general_admission
+
+Table: seats
+  - seat_id           UUID PRIMARY KEY
+  - section_id        UUID REFERENCES sections
+  - event_id          UUID REFERENCES events
+  - row_label         VARCHAR(10)  -- &quot;A&quot;, &quot;B&quot;, &quot;AA&quot;
+  - seat_number       INTEGER
+  - status            VARCHAR(20)  -- available, held, reserved, booked
+  - price_cents       INTEGER
+  - version           INTEGER DEFAULT 0  -- for optimistic locking fallback
+  - INDEX (event_id, section_id, status)
+  - UNIQUE (event_id, section_id, row_label, seat_number)
+
+Table: bookings
+  - booking_id        UUID PRIMARY KEY
+  - user_id           UUID REFERENCES users
+  - event_id          UUID REFERENCES events
+  - status            VARCHAR(20)  -- pending, confirmed, cancelled, refunded
+  - total_amount      INTEGER  -- in cents
+  - currency          VARCHAR(3)
+  - payment_id        UUID
+  - created_at        TIMESTAMP
+  - confirmed_at      TIMESTAMP
+  - cancelled_at      TIMESTAMP
+
+Table: booking_seats
+  - booking_id        UUID REFERENCES bookings
+  - seat_id           UUID REFERENCES seats
+  - price_cents       INTEGER  -- price at time of booking
+  - PRIMARY KEY (booking_id, seat_id)
+
+Table: payments
+  - payment_id        UUID PRIMARY KEY
+  - booking_id        UUID REFERENCES bookings
+  - amount_cents      INTEGER
+  - currency          VARCHAR(3)
+  - payment_method    VARCHAR(50)
+  - gateway_txn_id    VARCHAR(100)
+  - idempotency_key   VARCHAR(100) UNIQUE
+  - status            VARCHAR(20)  -- pending, succeeded, failed, refunded
+  - created_at        TIMESTAMP
+  - completed_at      TIMESTAMP
+
+Table: users
+  - user_id           UUID PRIMARY KEY
+  - email             VARCHAR(255) UNIQUE
+  - name              VARCHAR(100)
+  - phone             VARCHAR(20)
+  - created_at        TIMESTAMP
+</code></pre>
+<h3>Database Choice Justification</h3>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Database</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Events, Bookings, Payments, Seats</strong></td>
+<td>PostgreSQL</td>
+<td>ACID transactions are critical for booking correctness. No double-booking guarantee requires serializable transactions for the final confirmation step.</td>
+</tr>
+<tr>
+<td><strong>Seat Holds</strong></td>
+<td>Redis</td>
+<td>Sub-millisecond SET NX for hold acquisition. TTL for automatic expiry. No need for durability — holds are temporary by definition.</td>
+</tr>
+<tr>
+<td><strong>Event Search</strong></td>
+<td>Elasticsearch</td>
+<td>Full-text search on event names, artists, descriptions. Faceted filtering by category, date, city.</td>
+</tr>
+<tr>
+<td><strong>Waiting Room Queue</strong></td>
+<td>Redis (Sorted Set)</td>
+<td>O(log N) insertion and O(1) pop for FIFO queue. Built-in sorted set is perfect for timestamp-ordered queues.</td>
+</tr>
+<tr>
+<td><strong>Notifications</strong></td>
+<td>Kafka</td>
+<td>Decouples booking confirmation from notification delivery. Guarantees at-least-once delivery.</td>
+</tr>
+</tbody></table>
+<h3>Indexing Strategy</h3>
+<pre><code class="language-sql">-- Fast seat availability lookups
+CREATE INDEX idx_seats_event_status ON seats(event_id, status);
+
+-- Booking lookups by user
+CREATE INDEX idx_bookings_user ON bookings(user_id, created_at DESC);
+
+-- Payment idempotency
+CREATE UNIQUE INDEX idx_payments_idempotency ON payments(idempotency_key);
+
+-- Event search by date and status
+CREATE INDEX idx_events_date_status ON events(event_date, status);
+</code></pre>
+<hr>
+<h2>13. Scalability Strategies</h2>
+<h3>Sharding Strategy</h3>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Ticket booking is one of the clearest use cases for sharding by event_id. Bookings for different events are completely independent of each other, making event_id a natural shard key with zero cross-shard queries during the booking flow.</p>
+</div>
+
+
+<p><strong>Shard key: event_id</strong></p>
+<pre><code>Shard routing:
+  shard_number = hash(event_id) % num_shards
+
+Benefits:
+  - All data for an event (seats, bookings, payments) lives on the same shard
+  - The booking transaction (hold verification + booking insert) never crosses shards
+  - Popular events can be assigned to dedicated shards (hot-shard mitigation)
+  - Independent events do not contend with each other
+
+Drawback:
+  - User&#39;s booking history spans multiple shards
+  - Solution: Maintain a lightweight user_bookings lookup table in a separate DB
+    or use eventual consistency (query all shards, merge results)
+</code></pre>
+<h3>Horizontal Scaling</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Scaling Approach</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>API Gateway</strong></td>
+<td>Auto-scale pods behind load balancer based on request rate</td>
+</tr>
+<tr>
+<td><strong>Booking Service</strong></td>
+<td>Stateless — scale to any number of instances</td>
+</tr>
+<tr>
+<td><strong>Redis (Seat Holds)</strong></td>
+<td>Redis Cluster with hash slots; shard by event_id prefix</td>
+</tr>
+<tr>
+<td><strong>PostgreSQL</strong></td>
+<td>Read replicas for seat availability reads; primary for writes</td>
+</tr>
+<tr>
+<td><strong>Elasticsearch</strong></td>
+<td>Multi-node cluster with sharding by event category</td>
+</tr>
+<tr>
+<td><strong>Kafka</strong></td>
+<td>Partition by event_id; add partitions as throughput grows</td>
+</tr>
+</tbody></table>
+<h3>Caching Strategy</h3>
+<pre><code>Caching Layers:
+
+1. CDN (Cloudflare/CloudFront)
+   - Static venue maps (SVG): Cache indefinitely, versioned URL
+   - Event detail pages: Cache 5 min, purge on update
+
+2. Application Cache (Redis)
+   - Event metadata: 5-min TTL
+   - Section-level availability summary: 2-sec TTL (high-demand events)
+   - Seat-level availability: Not cached — always check Redis holds + DB
+
+3. Client-Side Cache
+   - Event list/search results: 30-sec cache
+   - Seat map SVG: Cached until venue changes
+   - Seat status: Polled every 2-5 seconds (no caching)
+</code></pre>
+<h3>Read vs Write Path Separation</h3>
+<pre class="mermaid">
+graph LR
+    subgraph Read Path - Eventually Consistent
+        R1[Event Search] --> ES[Elasticsearch]
+        R2[Seat Map Static] --> CDN[CDN]
+        R3[Seat Availability] --> REDIS_R[Redis Read Replica]
+        R4[Booking History] --> PG_R[PostgreSQL Read Replica]
+    end
+
+    subgraph Write Path - Strongly Consistent
+        W1[Hold Seat] --> REDIS_W[Redis Primary]
+        W2[Confirm Booking] --> PG_W[PostgreSQL Primary]
+        W3[Process Payment] --> PAY[Payment Gateway]
+    end
+</pre>
+<hr>
+<h2>14. Design Trade-offs &amp; Justifications</h2>
+<h3>Trade-off 1: Consistency vs Availability for Seat Status</h3>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Description</th>
+<th>Chosen?</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Strong consistency</strong></td>
+<td>Every seat status read reflects the latest state</td>
+<td>For writes (booking confirmation)</td>
+</tr>
+<tr>
+<td><strong>Eventual consistency</strong></td>
+<td>Seat status may be stale by a few seconds</td>
+<td>For reads (seat map display)</td>
+</tr>
+</tbody></table>
+<p><strong>Justification:</strong> We accept eventual consistency for displaying seat availability (a seat might show as available when it was just held 1 second ago). But we enforce strong consistency for the actual hold operation (Redis SET NX is atomic) and booking confirmation (PostgreSQL transaction).</p>
+<h3>Trade-off 2: Optimistic vs Pessimistic Locking</h3>
+<p>We chose <strong>Redis distributed locks</strong> over database-level locking because the hold phase has extremely high contention during flash sales. Database locks would become the bottleneck. Redis SET NX provides the same mutual-exclusion guarantee with sub-millisecond latency.</p>
+<h3>Trade-off 3: Hold Duration</h3>
+<table>
+<thead>
+<tr>
+<th>Shorter Hold (5 min)</th>
+<th>Longer Hold (15 min)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Seats return to pool faster</td>
+<td>Users have more time to pay</td>
+</tr>
+<tr>
+<td>Higher seat turnover during flash sales</td>
+<td>Less pressure on users</td>
+</tr>
+<tr>
+<td>More &quot;seat expired&quot; errors for slow users</td>
+<td>More &quot;phantom holds&quot; blocking seats</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen: 10 minutes</strong> as a balanced default, configurable per event. High-demand events may use 5-minute holds.</p>
+<h3>Trade-off 4: Synchronous vs Async Booking</h3>
+<table>
+<thead>
+<tr>
+<th>Synchronous</th>
+<th>Asynchronous (Queue-based)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>User gets immediate confirmation</td>
+<td>User gets &quot;processing&quot; then notification</td>
+</tr>
+<tr>
+<td>Simpler implementation</td>
+<td>Better load handling during spikes</td>
+</tr>
+<tr>
+<td>Can fail under extreme load</td>
+<td>Degrades gracefully</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen:</strong> Synchronous for normal load, automatic switch to async during flash sales (detected by monitoring concurrent hold requests per event).</p>
+<h3>Trade-off 5: Seat-Level vs Section-Level Inventory</h3>
+<table>
+<thead>
+<tr>
+<th>Seat-Level (Assigned Seating)</th>
+<th>Section-Level (General Admission)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Each individual seat is tracked</td>
+<td>Only total count per section matters</td>
+</tr>
+<tr>
+<td>Higher storage and contention</td>
+<td>Simple counter decrement</td>
+</tr>
+<tr>
+<td>Better user experience for concerts, theaters</td>
+<td>Sufficient for GA events, festivals</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen:</strong> Support both. Assigned seating uses the full seat hold mechanism. General admission uses atomic counter decrements in Redis (DECR with LUA script to prevent going below zero).</p>
+<hr>
+<h2>15. Interview Cheat Sheet</h2>
+<div class="tip">
+
+<p><strong>Use this as a quick reference before your interview. The key differentiators for a Staff-level answer are: (1) articulating the concurrency control approach clearly, (2) explaining the temporary hold pattern with TTL-based expiry, (3) discussing the waiting room for flash sales, and (4) handling payment edge cases (timeout, double-charge, hold expiry during payment).</strong></p>
+</div>
+
+
+<h3>30-Second Pitch</h3>
+<p>&quot;A ticket booking system is a resource contention problem. The core challenge is preventing double-booking while maintaining sub-second latency for seat selection under extreme concurrency. I would use a Redis-based distributed lock with TTL for temporary seat holds, PostgreSQL for confirmed bookings with ACID guarantees, a virtual queue/waiting room to absorb flash sale spikes, and the Saga pattern for coordinating the hold-pay-confirm flow with compensating transactions on failure.&quot;</p>
+<h3>Key Numbers to Remember</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Steady-state booking QPS</td>
+<td>~6/sec</td>
+</tr>
+<tr>
+<td>Flash sale peak seat holds</td>
+<td>5,000/sec</td>
+</tr>
+<tr>
+<td>Seat hold TTL</td>
+<td>10 minutes</td>
+</tr>
+<tr>
+<td>Seat availability cache TTL</td>
+<td>2 seconds</td>
+</tr>
+<tr>
+<td>Waiting room admission rate</td>
+<td>500 users/min (configurable)</td>
+</tr>
+<tr>
+<td>Payment timeout</td>
+<td>30 seconds</td>
+</tr>
+<tr>
+<td>Target booking latency</td>
+<td>&lt; 500ms (non-flash-sale)</td>
+</tr>
+</tbody></table>
+<h3>Common Follow-Up Questions</h3>
+<p><strong>Q: How do you handle a user who selects 4 seats and 2 are taken?</strong>
+A: Atomic multi-seat hold via Redis Lua script. All-or-nothing semantics. If any seat is taken, none are held — user must re-select.</p>
+<p><strong>Q: What happens if Redis goes down?</strong>
+A: Fall back to PostgreSQL pessimistic locking (SELECT FOR UPDATE). Higher latency but still correct. Redis Cluster with replicas makes full outage unlikely.</p>
+<p><strong>Q: How do you prevent scalpers/bots?</strong>
+A: Multi-layered: CAPTCHA before entering queue, rate limiting per user/IP, device fingerprinting, one-booking-per-user-per-event limit, identity verification for high-value events.</p>
+<p><strong>Q: How do you handle partial refunds?</strong>
+A: Each seat in a booking can be individually cancelled. Payment service issues partial refund for cancelled seats. Booking status changes to &quot;partially_cancelled.&quot;</p>
+<p><strong>Q: How would you handle a venue layout change after some seats are sold?</strong>
+A: Never modify existing seat records that have bookings. Create a new section/seat mapping and migrate unsold seats. Sold seats retain their original mapping.</p>
+<p><strong>Q: How do you detect and handle stuck holds (Redis TTL failed to expire)?</strong>
+A: Background sweeper job runs every minute, queries Redis for holds older than TTL + buffer. In practice, Redis TTL is extremely reliable — this is a defense-in-depth measure.</p>
+<h3>Architecture Diagram (Simplified)</h3>
+<pre><code>User -&gt; CDN (static maps) -&gt; LB -&gt; Waiting Room -&gt; API Gateway
+  -&gt; Event Service (search/browse) -&gt; Elasticsearch, PostgreSQL
+  -&gt; Seat Service (availability) -&gt; Redis (holds), PostgreSQL (booked)
+  -&gt; Booking Service (hold/pay/confirm) -&gt; Redis + PostgreSQL + Payment Gateway
+  -&gt; Notification Service (async) &lt;- Kafka &lt;- Booking Service
+</code></pre>
+<h3>The Three Guarantees</h3>
+<ol>
+<li><strong>No double-booking:</strong> Redis SET NX for holds + PostgreSQL UNIQUE constraint on (event_id, seat_id) for confirmed bookings</li>
+<li><strong>No lost bookings:</strong> PostgreSQL durability + synchronous replication + payment idempotency keys</li>
+<li><strong>No permanent seat locks:</strong> Redis TTL auto-expires holds + background sweeper as safety net</li>
+</ol>
+<hr>
+<div class="note">
+
+<p><strong>Final thought for the interview:</strong> The ticket booking system is deceptively simple on the surface but reveals deep distributed systems challenges when you consider flash sale concurrency, payment failure modes, and fairness. The key architectural insight is separating the high-contention hold phase (Redis) from the durable confirmation phase (PostgreSQL), and using the waiting room as a load-shedding mechanism to protect the entire system during demand spikes.</p>
+</div>
+
+
+</body>
+</html>

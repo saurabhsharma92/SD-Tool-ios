@@ -11,6 +11,7 @@ struct DocGridView: View {
 
     @State private var sectionToDelete:  DocSection? = nil
     @State private var showDeleteConfirm = false
+    @State private var selectedDoc:       Doc?       = nil
 
     private let columns = [
         GridItem(.flexible(), spacing: 12),
@@ -84,6 +85,11 @@ struct DocGridView: View {
             .padding(16)
         }
         .background(Color(.systemGroupedBackground))
+        .sheet(item: $selectedDoc) { doc in
+            NavigationStack {
+                DocReaderView(doc: doc)
+            }
+        }
         .confirmationDialog(
             "Delete \"\(sectionToDelete?.name ?? "")\"?",
             isPresented: $showDeleteConfirm,
@@ -136,7 +142,18 @@ struct DocGridView: View {
     private func docTile(doc: Doc, section: DocSection?) -> some View {
         switch doc.state {
         case .remote:
-            remoteTile(doc: doc)
+            Button { selectedDoc = doc } label: {
+                ZStack(alignment: .bottomTrailing) {
+                    DocTileView(doc: doc) {}
+                        .opacity(0.6)
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundStyle(.white)
+                        .background(Color.accentColor.clipShape(Circle()))
+                        .padding(8)
+                }
+            }
+            .buttonStyle(.plain)
         case .downloading:
             ZStack {
                 DocTileView(doc: doc) {}
@@ -144,32 +161,11 @@ struct DocGridView: View {
                 ProgressView().tint(.white)
             }
         case .downloaded:
-            NavigationLink(value: doc) {
-                DocTileView(doc: doc) { docStore.download(doc) }
+            Button { selectedDoc = doc } label: {
+                DocTileView(doc: doc) {}
             }
             .buttonStyle(.plain)
             .contextMenu { downloadedTileMenu(doc: doc, section: section) }
-            .simultaneousGesture(TapGesture().onEnded {
-                ActivityStore.shared.recordArticleRead(filename: doc.filename)
-            })
-        }
-    }
-
-    // Remote tile — dimmed with download button
-    private func remoteTile(doc: Doc) -> some View {
-        ZStack(alignment: .bottomTrailing) {
-            DocTileView(doc: doc) {}
-                .opacity(0.5)
-            Button {
-                docStore.download(doc)
-            } label: {
-                Image(systemName: "arrow.down.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundStyle(.white)
-                    .background(Color.accentColor.clipShape(Circle()))
-            }
-            .buttonStyle(.plain)
-            .padding(8)
         }
     }
 

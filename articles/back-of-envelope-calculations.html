@@ -1,0 +1,1050 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Back of the Envelope Calculations</title>
+</head>
+<body>
+
+<h1>🧮 Back of the Envelope Calculations</h1>
+<h3>Staff Engineer System Design Interview — Quick Reference</h3>
+<div class="tip">
+
+<p><strong>How to use this:</strong> Interviewers don&#39;t expect precision. They want to see structured thinking, correct order-of-magnitude estimates, and awareness of bottlenecks. Always show your work out loud.</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-powers-of-10--the-foundation">Powers of 10 — The Foundation</a></li>
+<li><a href="#2-time-conversions">Time Conversions</a></li>
+<li><a href="#3-latency-numbers-every-engineer-must-know">Latency Numbers Every Engineer Must Know</a></li>
+<li><a href="#4-storage-units-cheat-sheet">Storage Units Cheat Sheet</a></li>
+<li><a href="#5-throughput-reference">Throughput Reference</a></li>
+<li><a href="#6-common-estimation-formulas">Common Estimation Formulas</a></li>
+<li><a href="#7-dau--qps-estimation-framework">DAU → QPS Estimation Framework</a></li>
+<li><a href="#8-storage-estimation-framework">Storage Estimation Framework</a></li>
+<li><a href="#9-bandwidth-estimation-framework">Bandwidth Estimation Framework</a></li>
+<li><a href="#10-server-count-estimation">Server Count Estimation</a></li>
+<li><a href="#11-real-world-system-examples">Real-World System Examples</a></li>
+<li><a href="#12-interview-estimation-template">Interview Estimation Template</a></li>
+</ol>
+<hr>
+<h2>1. Powers of 10 — The Foundation</h2>
+<div class="tip">
+
+<p>Everything in back-of-envelope math reduces to powers of 10. Internalize this table first.</p>
+</div>
+
+
+<table>
+<thead>
+<tr>
+<th>Power</th>
+<th>Value</th>
+<th>Name</th>
+<th>Symbol</th>
+<th>Real-World Anchor</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>10³</td>
+<td>1,000</td>
+<td>Thousand</td>
+<td>K</td>
+<td>Small city population</td>
+</tr>
+<tr>
+<td>10⁶</td>
+<td>1,000,000</td>
+<td>Million</td>
+<td>M</td>
+<td>Tweets per day (rough)</td>
+</tr>
+<tr>
+<td>10⁹</td>
+<td>1,000,000,000</td>
+<td>Billion</td>
+<td>B</td>
+<td>Facebook MAU (approx)</td>
+</tr>
+<tr>
+<td>10¹²</td>
+<td>1,000,000,000,000</td>
+<td>Trillion</td>
+<td>T</td>
+<td>Google searches per year</td>
+</tr>
+<tr>
+<td>10¹⁵</td>
+<td>—</td>
+<td>Quadrillion</td>
+<td>P</td>
+<td>Global internet traffic / year</td>
+</tr>
+</tbody></table>
+<h3>Quick Multiplication Rules</h3>
+<pre><code>K × K = M         (10³ × 10³ = 10⁶)
+K × M = B         (10³ × 10⁶ = 10⁹)
+M × M = T         (10⁶ × 10⁶ = 10¹²)
+
+1B / 10K = 100K   — useful for &quot;users ÷ connections per server&quot;
+1M / 1K  = 1K     — useful for &quot;requests ÷ capacity per machine&quot;
+</code></pre>
+<hr>
+<h2>2. Time Conversions</h2>
+<div class="tip">
+
+<p>Memorize the seconds-per-day — it&#39;s used in nearly every QPS calculation.</p>
+</div>
+
+
+<table>
+<thead>
+<tr>
+<th>Period</th>
+<th>Exact Seconds</th>
+<th>Approximation Used</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1 minute</td>
+<td>60 s</td>
+<td>60 s</td>
+</tr>
+<tr>
+<td>1 hour</td>
+<td>3,600 s</td>
+<td>~4,000 s</td>
+</tr>
+<tr>
+<td>1 day</td>
+<td>86,400 s</td>
+<td><strong>~100,000 s</strong> ✅</td>
+</tr>
+<tr>
+<td>1 month</td>
+<td>2,592,000 s</td>
+<td>~2.5M s</td>
+</tr>
+<tr>
+<td>1 year</td>
+<td>31,536,000 s</td>
+<td>~30M s</td>
+</tr>
+</tbody></table>
+<h3>The Golden Rule</h3>
+<pre><code>QPS = Daily Requests / 86,400
+    ≈ Daily Requests / 100,000      ← Use this approximation
+
+Example:
+  10B requests/day ÷ 100,000 = 100,000 QPS = 100K QPS
+</code></pre>
+<hr>
+<h2>3. Latency Numbers Every Engineer Must Know</h2>
+<div class="tip">
+
+<p>Originally from Jeff Dean (Google). These are the numbers you cite during interviews.</p>
+</div>
+
+
+<pre class="mermaid">
+graph LR
+    subgraph Nanoseconds["⚡ Nanoseconds (ns)"]
+        L1["L1 Cache: 1 ns"]
+        L2["L2 Cache: 4 ns"]
+        L3["L3 Cache: 40 ns"]
+        RAM["Main Memory: 100 ns"]
+    end
+
+    subgraph Microseconds["🔶 Microseconds (μs)"]
+        SSD1["SSD Random Read: 16 μs"]
+        NW1["Datacenter Round Trip: 500 μs"]
+    end
+
+    subgraph Milliseconds["🐢 Milliseconds (ms)"]
+        DISK["HDD Seek: 2 ms"]
+        SSD2["SSD Sequential Read: 1 ms"]
+        REDIS["Redis Get: 1 ms"]
+        DB["DB Query (indexed): 5-10 ms"]
+        SAMEREGION["Same Region Network: 1-2 ms"]
+        CROSSREGION["Cross-Region: 50-150 ms"]
+        TRANSOCEANIC["US ↔ EU: ~100 ms"]
+    end
+</pre>
+<h3>Latency Table</h3>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Latency</th>
+<th>Relative to L1 Cache</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>L1 cache hit</td>
+<td><strong>1 ns</strong></td>
+<td>1×</td>
+</tr>
+<tr>
+<td>L2 cache hit</td>
+<td><strong>4 ns</strong></td>
+<td>4×</td>
+</tr>
+<tr>
+<td>L3 cache hit</td>
+<td><strong>40 ns</strong></td>
+<td>40×</td>
+</tr>
+<tr>
+<td>RAM read</td>
+<td><strong>100 ns</strong></td>
+<td>100×</td>
+</tr>
+<tr>
+<td>SSD random read</td>
+<td><strong>16 μs</strong></td>
+<td>16,000×</td>
+</tr>
+<tr>
+<td>Redis GET</td>
+<td><strong>~1 ms</strong></td>
+<td>1,000,000×</td>
+</tr>
+<tr>
+<td>HDD seek</td>
+<td><strong>2 ms</strong></td>
+<td>2,000,000×</td>
+</tr>
+<tr>
+<td>DB query (indexed, local)</td>
+<td><strong>5–10 ms</strong></td>
+<td>~10,000,000×</td>
+</tr>
+<tr>
+<td>Intra-datacenter round trip</td>
+<td><strong>0.5 ms</strong></td>
+<td>500,000×</td>
+</tr>
+<tr>
+<td>Same-region network</td>
+<td><strong>1–2 ms</strong></td>
+<td>~1,500,000×</td>
+</tr>
+<tr>
+<td>Cross-region (US → EU)</td>
+<td><strong>~100 ms</strong></td>
+<td>100,000,000×</td>
+</tr>
+<tr>
+<td>Cross-region (US → APAC)</td>
+<td><strong>~150 ms</strong></td>
+<td>150,000,000×</td>
+</tr>
+<tr>
+<td>HDD sequential read (1 MB)</td>
+<td><strong>~5 ms</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>SSD sequential read (1 MB)</td>
+<td><strong>~1 ms</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>Memory sequential read (1 MB)</td>
+<td><strong>~0.25 ms</strong></td>
+<td>—</td>
+</tr>
+</tbody></table>
+<h3>Key Takeaways</h3>
+<pre><code>Memory is 1000× faster than SSD.
+SSD is 100× faster than HDD.
+Network same-region ≈ Redis ≈ 1ms (treat them equally for rough math).
+Cross-region adds 50–150ms — design to avoid cross-region in the critical path.
+</code></pre>
+<hr>
+<h2>4. Storage Units Cheat Sheet</h2>
+<table>
+<thead>
+<tr>
+<th>Unit</th>
+<th>Bytes</th>
+<th>Abbrev</th>
+<th>Real-World Anchor</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Kilobyte</td>
+<td>1,024 ≈ <strong>1,000</strong></td>
+<td>KB</td>
+<td>A short text email</td>
+</tr>
+<tr>
+<td>Megabyte</td>
+<td>1,024² ≈ <strong>1,000,000</strong></td>
+<td>MB</td>
+<td>A 1-min MP3 song</td>
+</tr>
+<tr>
+<td>Gigabyte</td>
+<td>1,024³ ≈ <strong>10⁹</strong></td>
+<td>GB</td>
+<td>A full HD movie</td>
+</tr>
+<tr>
+<td>Terabyte</td>
+<td>1,024⁴ ≈ <strong>10¹²</strong></td>
+<td>TB</td>
+<td>1,000 HD movies</td>
+</tr>
+<tr>
+<td>Petabyte</td>
+<td>1,024⁵ ≈ <strong>10¹⁵</strong></td>
+<td>PB</td>
+<td>Facebook stores ~100 PB</td>
+</tr>
+<tr>
+<td>Exabyte</td>
+<td>1,024⁶ ≈ <strong>10¹⁸</strong></td>
+<td>EB</td>
+<td>All words ever spoken</td>
+</tr>
+</tbody></table>
+<h3>Common Data Size Anchors</h3>
+<table>
+<thead>
+<tr>
+<th>Data Type</th>
+<th>Size (Approximate)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>ASCII character</td>
+<td>1 byte</td>
+</tr>
+<tr>
+<td>Unicode character (UTF-8)</td>
+<td>1–4 bytes</td>
+</tr>
+<tr>
+<td>Integer (int32)</td>
+<td>4 bytes</td>
+</tr>
+<tr>
+<td>Long / Timestamp</td>
+<td>8 bytes</td>
+</tr>
+<tr>
+<td>UUID</td>
+<td>16 bytes</td>
+</tr>
+<tr>
+<td>Short text message</td>
+<td>100 bytes</td>
+</tr>
+<tr>
+<td>Average tweet</td>
+<td>280 bytes</td>
+</tr>
+<tr>
+<td>Metadata row (DB)</td>
+<td>1 KB</td>
+</tr>
+<tr>
+<td>Web page (HTML)</td>
+<td>50–100 KB</td>
+</tr>
+<tr>
+<td>Profile photo (thumbnail)</td>
+<td>50 KB</td>
+</tr>
+<tr>
+<td>Profile photo (full)</td>
+<td>300 KB</td>
+</tr>
+<tr>
+<td>High-res photo</td>
+<td>2–5 MB</td>
+</tr>
+<tr>
+<td>1 min audio (compressed)</td>
+<td>1 MB</td>
+</tr>
+<tr>
+<td>1 min HD video (compressed)</td>
+<td>50–100 MB</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>5. Throughput Reference</h2>
+<h3>Network Bandwidth Anchors</h3>
+<table>
+<thead>
+<tr>
+<th>Link Type</th>
+<th>Bandwidth</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Home WiFi</td>
+<td>100 Mbps – 1 Gbps</td>
+</tr>
+<tr>
+<td>Mobile 4G</td>
+<td>10–50 Mbps</td>
+</tr>
+<tr>
+<td>Mobile 5G</td>
+<td>100 Mbps – 1 Gbps</td>
+</tr>
+<tr>
+<td>Datacenter NIC</td>
+<td>10–100 Gbps</td>
+</tr>
+<tr>
+<td>Datacenter backbone</td>
+<td>1–100 Tbps</td>
+</tr>
+</tbody></table>
+<h3>System Throughput Anchors</h3>
+<table>
+<thead>
+<tr>
+<th>System</th>
+<th>Throughput</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Single web server (simple)</td>
+<td>~1,000 – 10,000 RPS</td>
+</tr>
+<tr>
+<td>Single web server (optimized)</td>
+<td>~50,000 – 100,000 RPS</td>
+</tr>
+<tr>
+<td>Nginx (reverse proxy)</td>
+<td>~50,000 RPS</td>
+</tr>
+<tr>
+<td>Redis (single node)</td>
+<td>~100,000 – 1,000,000 ops/sec</td>
+</tr>
+<tr>
+<td>Kafka (single broker)</td>
+<td>~1,000,000 msgs/sec</td>
+</tr>
+<tr>
+<td>Cassandra (single node)</td>
+<td>~50,000 writes/sec</td>
+</tr>
+<tr>
+<td>PostgreSQL (single node)</td>
+<td>~10,000 – 50,000 writes/sec</td>
+</tr>
+<tr>
+<td>MySQL (single node)</td>
+<td>~10,000 – 30,000 writes/sec</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>6. Common Estimation Formulas</h2>
+<h3>Core Formulas</h3>
+<pre><code>┌─────────────────────────────────────────────────────┐
+│                 CORE FORMULAS                       │
+├─────────────────────────────────────────────────────┤
+│  QPS      = Daily Actions / 86,400                  │
+│  Peak QPS = Avg QPS × Peak Factor (2x – 5x)        │
+│  Storage  = Daily Items × Item Size × Retention     │
+│  Bandwidth= QPS × Avg Payload Size                  │
+│  Servers  = Peak QPS / RPS per Server               │
+└─────────────────────────────────────────────────────┘
+</code></pre>
+<h3>Useful Approximations</h3>
+<pre><code>1 billion / day  → ~10,000 / sec  (10K QPS)
+10 billion / day → ~100,000 / sec (100K QPS)
+1 million / day  → ~12 / sec      (~10 QPS)
+
+1 GB/sec bandwidth = 8 Gbps (multiply by 8 for bits)
+</code></pre>
+<hr>
+<h2>7. DAU → QPS Estimation Framework</h2>
+<pre class="mermaid">
+flowchart TD
+    A["Start: DAU"] --> B["Estimate actions per user per day"]
+    B --> C["Total Daily Requests = DAU × Actions"]
+    C --> D["Avg QPS = Total Daily / 86,400\n≈ Daily / 100,000"]
+    D --> E["Peak QPS = Avg QPS × Peak Multiplier\nTypically 2× – 5×"]
+    E --> F["Read/Write Split\nMost systems: 80% read / 20% write\nSocial media: 99% read / 1% write"]
+    F --> G["Read QPS = Total QPS × Read %\nWrite QPS = Total QPS × Write %"]
+</pre>
+<h3>DAU → QPS Quick Reference Table</h3>
+<table>
+<thead>
+<tr>
+<th>DAU</th>
+<th>Actions/User/Day</th>
+<th>Total Daily Requests</th>
+<th>Avg QPS</th>
+<th>Peak QPS (3×)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1M</td>
+<td>10</td>
+<td>10M</td>
+<td>~100</td>
+<td>~300</td>
+</tr>
+<tr>
+<td>10M</td>
+<td>10</td>
+<td>100M</td>
+<td>~1,000</td>
+<td>~3,000</td>
+</tr>
+<tr>
+<td>100M</td>
+<td>50</td>
+<td>5B</td>
+<td>~50,000</td>
+<td>~150,000</td>
+</tr>
+<tr>
+<td>500M</td>
+<td>50</td>
+<td>25B</td>
+<td>~250,000</td>
+<td>~750,000</td>
+</tr>
+<tr>
+<td>1B</td>
+<td>100</td>
+<td>100B</td>
+<td>~1,000,000</td>
+<td>~3,000,000</td>
+</tr>
+</tbody></table>
+<h3>Example: Twitter-Scale Estimation</h3>
+<pre><code>DAU              = 300 Million
+Avg tweets/user  = 1 tweet per 30 days ≈ 0.033/day (writes are rare)
+Avg views/user   = 200 timelines/day
+
+Write QPS:
+  300M × 0.033 / 86,400 = ~115 writes/sec (very low!)
+
+Read QPS:
+  300M × 200 / 86,400 = ~694,000 reads/sec ≈ 700K QPS
+
+Peak Read QPS (3×): ~2.1 Million reads/sec
+
+→ Twitter is overwhelmingly read-heavy. Design the read path first.
+</code></pre>
+<hr>
+<h2>8. Storage Estimation Framework</h2>
+<pre class="mermaid">
+flowchart TD
+    A["Items Created Per Day\n(DAU × write actions per user)"] --> B["× Average Item Size (bytes/KB/MB)"]
+    B --> C["= Daily Raw Storage"]
+    C --> D["× Replication Factor\n(typically 3×)"]
+    D --> E["× Retention Period\n(days / months / years)"]
+    E --> F["= Total Storage Required"]
+    F --> G["Add 20% overhead buffer\nfor indexes, metadata, fragmentation"]
+</pre>
+<h3>Storage Estimation Table</h3>
+<table>
+<thead>
+<tr>
+<th>System</th>
+<th>Item</th>
+<th>Size</th>
+<th>Daily Volume</th>
+<th>Daily Storage</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Chat (WhatsApp scale)</td>
+<td>Text message</td>
+<td>100 B</td>
+<td>100B msgs</td>
+<td>10 TB</td>
+</tr>
+<tr>
+<td>Chat (WhatsApp scale)</td>
+<td>Media message</td>
+<td>1 MB</td>
+<td>10B msgs</td>
+<td>10 PB</td>
+</tr>
+<tr>
+<td>Twitter</td>
+<td>Tweet (text)</td>
+<td>280 B</td>
+<td>500M tweets</td>
+<td>~140 GB</td>
+</tr>
+<tr>
+<td>Twitter</td>
+<td>Photo</td>
+<td>300 KB</td>
+<td>200M photos</td>
+<td>~60 TB</td>
+</tr>
+<tr>
+<td>YouTube</td>
+<td>Video (uploaded)</td>
+<td>300 MB</td>
+<td>500 hrs/min × 60</td>
+<td>~4.5 PB</td>
+</tr>
+<tr>
+<td>Instagram</td>
+<td>Photo</td>
+<td>2 MB</td>
+<td>100M photos</td>
+<td>~200 TB</td>
+</tr>
+<tr>
+<td>Uber</td>
+<td>Trip record</td>
+<td>1 KB</td>
+<td>20M trips</td>
+<td>~20 GB</td>
+</tr>
+</tbody></table>
+<h3>Example: URL Shortener Storage</h3>
+<pre><code>DAU                     = 100M users
+URLs shortened per user = 0.1 per day (most users just click)
+New URLs per day        = 100M × 0.1 = 10M URLs/day
+
+Per URL record size:
+  short_code  = 7 chars = 7 bytes
+  long_url    = avg 200 chars = 200 bytes
+  created_at  = 8 bytes (timestamp)
+  user_id     = 8 bytes
+  click_count = 8 bytes
+  Total       ≈ 250 bytes per record
+
+Daily storage  = 10M × 250 bytes = 2.5 GB/day
+Annual storage = 2.5 GB × 365   = ~900 GB/year ≈ 1 TB/year
+
+Replication (3×): ~3 TB/year
+With 10-year retention: ~30 TB total  ← Very manageable
+</code></pre>
+<hr>
+<h2>9. Bandwidth Estimation Framework</h2>
+<pre class="mermaid">
+flowchart LR
+    subgraph Ingress["📥 Ingress (Upload)"]
+        I1["Write QPS"] --> I2["× Avg Upload Payload"]
+        I2 --> I3["= Inbound Bandwidth"]
+    end
+
+    subgraph Egress["📤 Egress (Download)"]
+        E1["Read QPS"] --> E2["× Avg Response Size"]
+        E2 --> E3["= Outbound Bandwidth"]
+    end
+
+    subgraph Convert["🔄 Unit Conversion"]
+        C1["MB/s × 8 = Mbps"]
+        C2["GB/s × 8 = Gbps"]
+    end
+
+    I3 --> Convert
+    E3 --> Convert
+</pre>
+<h3>Bandwidth Anchor Points</h3>
+<table>
+<thead>
+<tr>
+<th>Bandwidth</th>
+<th>Equivalent</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1 MB/s</td>
+<td>8 Mbps — Single video stream (SD)</td>
+</tr>
+<tr>
+<td>10 MB/s</td>
+<td>80 Mbps — HD video stream</td>
+</tr>
+<tr>
+<td>100 MB/s</td>
+<td>800 Mbps — ~1 datacenter NIC</td>
+</tr>
+<tr>
+<td>1 GB/s</td>
+<td>8 Gbps — Heavy traffic server</td>
+</tr>
+<tr>
+<td>10 GB/s</td>
+<td>80 Gbps — Backbone connection</td>
+</tr>
+</tbody></table>
+<h3>Example: Video Streaming Bandwidth (YouTube-scale)</h3>
+<pre><code>DAU                  = 2 Billion
+Avg watch per day    = 30 minutes = 1,800 seconds
+Video bitrate (avg)  = 2 Mbps (720p compressed)
+
+Concurrent viewers at peak (assume 10% of DAU):
+  = 2B × 10% = 200M concurrent viewers
+
+Bandwidth required:
+  = 200M viewers × 2 Mbps
+  = 400 Tbps outbound
+
+→ This is why YouTube needs massive CDN infrastructure
+→ 95%+ of traffic served from CDN edge, not origin
+</code></pre>
+<hr>
+<h2>10. Server Count Estimation</h2>
+<h3>Single Server Capacity Reference</h3>
+<table>
+<thead>
+<tr>
+<th>Server Type</th>
+<th>Capacity</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Web server (stateless, async)</td>
+<td>10K – 50K RPS</td>
+</tr>
+<tr>
+<td>Web server (CPU-heavy, sync)</td>
+<td>1K – 5K RPS</td>
+</tr>
+<tr>
+<td>WebSocket server</td>
+<td>10K – 50K concurrent connections</td>
+</tr>
+<tr>
+<td>Cache server (Redis)</td>
+<td>100K – 1M ops/sec</td>
+</tr>
+<tr>
+<td>DB server (PostgreSQL reads)</td>
+<td>10K – 50K QPS</td>
+</tr>
+<tr>
+<td>DB server (Cassandra writes)</td>
+<td>50K – 100K writes/sec</td>
+</tr>
+<tr>
+<td>Kafka broker</td>
+<td>1M msgs/sec</td>
+</tr>
+<tr>
+<td>Load balancer</td>
+<td>1M – 10M RPS</td>
+</tr>
+</tbody></table>
+<h3>Server Count Formula</h3>
+<pre><code>Servers needed = Peak QPS / RPS per Server
+
+Always add:
+  × 1.2 buffer for headroom (don&#39;t run servers at 100%)
+  + N servers for redundancy (at least 2 in each AZ)
+
+Example: 100K Peak QPS, web servers handle 10K RPS each
+  = 100K / 10K = 10 servers
+  + 20% buffer = 12 servers
+  + redundancy = ~15 servers across 3 AZs (5 per AZ)
+</code></pre>
+<h3>Example: Chat System Server Estimation</h3>
+<pre><code>DAU             = 1 Billion
+Concurrent users = 60% online = 600M
+
+WebSocket Servers:
+  Connections per server = 50,000
+  Servers needed         = 600M / 50K = 12,000 servers
+
+Message Services:
+  Peak QPS = 3.5M msg/sec
+  Each service handles 50K msg/sec
+  Services needed = 3.5M / 50K = 70 service pods
+
+Cassandra Nodes:
+  Peak write QPS = 3.5M writes/sec
+  Per node capacity = 50K writes/sec
+  Nodes needed = 3.5M / 50K = 70 nodes (before replication)
+  With RF=3: 70 × 3 = 210 nodes total
+</code></pre>
+<hr>
+<h2>11. Amdahl&#39;s Law — Parallelism Limits</h2>
+<p>Amdahl&#39;s Law defines the theoretical maximum speedup of a system when only part of it can be parallelized.</p>
+<h3>The Formula</h3>
+<pre><code>Speedup = 1 / ((1 - P) + P/N)
+
+Where:
+  P = fraction of the task that can be parallelized (0 to 1)
+  N = number of parallel processors/threads
+</code></pre>
+<h3>Practical Examples</h3>
+<table>
+<thead>
+<tr>
+<th>Parallelizable (P)</th>
+<th>2 cores</th>
+<th>4 cores</th>
+<th>16 cores</th>
+<th>1000 cores</th>
+<th>Max speedup</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>50%</td>
+<td>1.33x</td>
+<td>1.60x</td>
+<td>1.88x</td>
+<td>2.00x</td>
+<td><strong>2x</strong></td>
+</tr>
+<tr>
+<td>75%</td>
+<td>1.60x</td>
+<td>2.29x</td>
+<td>3.37x</td>
+<td>3.99x</td>
+<td><strong>4x</strong></td>
+</tr>
+<tr>
+<td>90%</td>
+<td>1.82x</td>
+<td>3.08x</td>
+<td>6.40x</td>
+<td>9.91x</td>
+<td><strong>10x</strong></td>
+</tr>
+<tr>
+<td>95%</td>
+<td>1.90x</td>
+<td>3.48x</td>
+<td>9.14x</td>
+<td>19.6x</td>
+<td><strong>20x</strong></td>
+</tr>
+<tr>
+<td>99%</td>
+<td>1.98x</td>
+<td>3.88x</td>
+<td>13.9x</td>
+<td>90.8x</td>
+<td><strong>100x</strong></td>
+</tr>
+</tbody></table>
+<div class="important">
+
+<p><strong>The key insight:</strong> Even with infinite cores, the serial portion of your code sets an absolute ceiling on speedup. If 5% of your task is serial, you can never exceed 20x speedup no matter how many servers you throw at it.</p>
+</div>
+
+
+<h3>Interview Application</h3>
+<p>When estimating server counts, consider which parts of the pipeline are inherently serial:</p>
+<ul>
+<li><strong>Database writes with strong consistency</strong> — serial (leader-based)</li>
+<li><strong>Stateless API processing</strong> — fully parallelizable</li>
+<li><strong>Aggregation/reduce steps</strong> — partially serial (final merge)</li>
+</ul>
+<p>This is why horizontally scaling a system hits diminishing returns — Amdahl&#39;s Law in action.</p>
+<hr>
+<h2>12. Real-World System Examples</h2>
+<h3>Instagram-Scale Estimation</h3>
+<pre><code>┌─────────────────────────────────────────────────┐
+│             INSTAGRAM SCALE ESTIMATES            │
+├──────────────────────┬──────────────────────────┤
+│ DAU                  │ 500 Million               │
+│ Photos uploaded/day  │ 100 Million               │
+│ Photo size (avg)     │ 2 MB                      │
+│ Reads per write      │ 100× (very read-heavy)    │
+├──────────────────────┼──────────────────────────┤
+│ Write QPS            │ 100M / 86,400 ≈ 1,200/s  │
+│ Read QPS             │ 1,200 × 100 = 120,000/s  │
+│ Peak Read QPS        │ 120K × 3 = ~360K QPS     │
+├──────────────────────┼──────────────────────────┤
+│ Daily photo storage  │ 100M × 2MB = 200 TB/day  │
+│ Annual photo storage │ 200TB × 365 = ~73 PB/yr  │
+│ With replication 3×  │ ~220 PB/year              │
+├──────────────────────┼──────────────────────────┤
+│ Outbound bandwidth   │ 360K × 300KB ≈ 108 GB/s  │
+└──────────────────────┴──────────────────────────┘
+</code></pre>
+<hr>
+<h3>Uber-Scale Estimation</h3>
+<pre><code>┌─────────────────────────────────────────────────┐
+│               UBER SCALE ESTIMATES               │
+├──────────────────────┬──────────────────────────┤
+│ DAU (riders)         │ 10 Million                │
+│ DAU (drivers)        │ 1 Million                 │
+│ Driver location freq │ Every 4 seconds           │
+│ Trips per day        │ 20 Million                │
+├──────────────────────┼──────────────────────────┤
+│ Location updates/sec │ 1M drivers / 4s = 250K/s │
+│ Trip write QPS       │ 20M / 86,400 ≈ 230/s     │
+│ Ride matching QPS    │ ~5,000 active searches/s  │
+├──────────────────────┼──────────────────────────┤
+│ Location data/update │ ~50 bytes (lat/lng + meta)│
+│ Location data/day    │ 250K × 50B × 86,400 ≈    │
+│                      │ ~1 TB/day (raw GPS)       │
+│ Trip record size     │ ~1 KB                     │
+│ Trip storage/day     │ 20M × 1KB = 20 GB/day    │
+└──────────────────────┴──────────────────────────┘
+
+Key insight: Location update volume (250K/s) dwarfs trip writes (230/s).
+Design the write path for location, not trips.
+</code></pre>
+<hr>
+<h3>Google Search Estimation</h3>
+<pre><code>┌─────────────────────────────────────────────────┐
+│           GOOGLE SEARCH SCALE ESTIMATES          │
+├──────────────────────┬──────────────────────────┤
+│ Searches/day         │ 8.5 Billion               │
+│ Avg QPS              │ 8.5B / 86,400 ≈ 100K/s   │
+│ Peak QPS             │ ~200K – 500K/s            │
+├──────────────────────┼──────────────────────────┤
+│ Avg query size       │ ~30 bytes                 │
+│ Avg response size    │ ~500 KB (HTML + assets)   │
+│ Bandwidth (outbound) │ 100K × 500KB = 50 GB/s   │
+├──────────────────────┼──────────────────────────┤
+│ Web pages indexed    │ ~50 Billion pages         │
+│ Avg page size (index)│ ~10 KB (compressed text)  │
+│ Index storage        │ 50B × 10KB = 500 TB       │
+│ With replication 3×  │ ~1.5 PB for index alone   │
+└──────────────────────┴──────────────────────────┘
+</code></pre>
+<hr>
+<h2>12. Interview Estimation Template</h2>
+<div class="tip">
+
+<p>Use this exact structure in your interview. Takes ~5 minutes and signals strong engineering judgment.</p>
+</div>
+
+
+<pre class="mermaid">
+flowchart TD
+    S1["① State Assumptions Clearly\n'I'll assume 100M DAU, 10 actions per user per day'"]
+    S2["② Calculate Traffic (QPS)\n'Daily requests = 100M × 10 = 1B\nAvg QPS = 1B / 100K = 10K\nPeak QPS = 10K × 3 = 30K'"]
+    S3["③ Calculate Storage\n'10% are writes → 1K writes/sec\n1K × 500 bytes × 86,400 × 365 ≈ 15 TB/year'"]
+    S4["④ Calculate Bandwidth\n'Read QPS: 27K × 50KB response = 1.35 GB/s outbound'"]
+    S5["⑤ Derive Server Count\n'30K QPS / 10K RPS per server = 3 servers\n+buffer +redundancy = ~6 servers'"]
+    S6["⑥ Call Out Bottlenecks\n'Storage is the constraint here, not compute.\nThis suggests we need distributed object storage + CDN'"]
+
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6
+</pre>
+<h3>Interview Estimation Script</h3>
+<pre><code>&quot;Let me start with some assumptions I&#39;d like you to validate...&quot;
+
+STEP 1 — USERS
+  DAU = [X] Million / Billion
+  Concurrent users = [20–60]% of DAU
+
+STEP 2 — TRAFFIC
+  Actions per user per day = [Y]
+  Total daily requests = DAU × Y
+  Avg QPS = Daily / 100,000
+  Peak QPS = Avg × 3 (standard multiplier)
+  Read:Write ratio = [80:20 or 99:1 depending on system]
+
+STEP 3 — STORAGE
+  Writes per day = DAU × write actions per user
+  Storage per day = writes × avg record size
+  Annual storage = daily × 365 × replication factor (3)
+
+STEP 4 — BANDWIDTH
+  Outbound = Read QPS × avg response size
+  Inbound  = Write QPS × avg upload size
+
+STEP 5 — SERVERS
+  Web servers = Peak QPS / 10,000 (RPS per server)
+  DB servers  = Write QPS / 50,000 (writes per node)
+  Add 20% buffer + redundancy across AZs
+
+STEP 6 — INSIGHT
+  &quot;The bottleneck is [storage/bandwidth/compute] because...&quot;
+  &quot;This tells me we need [CDN/sharding/caching/async]...&quot;
+</code></pre>
+<hr>
+<h3>Quick Reference — Numbers to Memorize</h3>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Number</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Seconds per day</td>
+<td><strong>86,400 ≈ 100K</strong></td>
+<td>QPS calculation</td>
+</tr>
+<tr>
+<td>L1 Cache</td>
+<td><strong>1 ns</strong></td>
+<td>Latency baseline</td>
+</tr>
+<tr>
+<td>RAM read</td>
+<td><strong>100 ns</strong></td>
+<td>Memory latency</td>
+</tr>
+<tr>
+<td>SSD random read</td>
+<td><strong>16 μs</strong></td>
+<td>Disk latency</td>
+</tr>
+<tr>
+<td>Redis GET</td>
+<td><strong>~1 ms</strong></td>
+<td>Cache latency</td>
+</tr>
+<tr>
+<td>DB query</td>
+<td><strong>5–10 ms</strong></td>
+<td>DB latency</td>
+</tr>
+<tr>
+<td>Cross-region</td>
+<td><strong>50–150 ms</strong></td>
+<td>Network latency</td>
+</tr>
+<tr>
+<td>Connections per WS server</td>
+<td><strong>10K – 50K</strong></td>
+<td>WebSocket sizing</td>
+</tr>
+<tr>
+<td>RPS per web server</td>
+<td><strong>10K – 50K</strong></td>
+<td>Server sizing</td>
+</tr>
+<tr>
+<td>Kafka throughput</td>
+<td><strong>1M msg/sec</strong></td>
+<td>Queue sizing</td>
+</tr>
+<tr>
+<td>Replication factor</td>
+<td><strong>3×</strong></td>
+<td>Storage multiplier</td>
+</tr>
+<tr>
+<td>Peak multiplier</td>
+<td><strong>3×</strong></td>
+<td>Traffic spike</td>
+</tr>
+<tr>
+<td>CDN offload</td>
+<td><strong>90–95%</strong></td>
+<td>Bandwidth relief</td>
+</tr>
+</tbody></table>
+<hr>
+<p><em>Back of the Envelope Quick Reference — Staff Engineer System Design Interviews</em></p>
+
+</body>
+</html>

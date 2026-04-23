@@ -1,6 +1,7 @@
 # 🧮 Back of the Envelope Calculations
 ### Staff Engineer System Design Interview — Quick Reference
 
+> [!TIP]
 > **How to use this:** Interviewers don't expect precision. They want to see structured thinking, correct order-of-magnitude estimates, and awareness of bottlenecks. Always show your work out loud.
 
 ---
@@ -24,6 +25,7 @@
 
 ## 1. Powers of 10 — The Foundation
 
+> [!TIP]
 > Everything in back-of-envelope math reduces to powers of 10. Internalize this table first.
 
 | Power | Value | Name | Symbol | Real-World Anchor |
@@ -49,6 +51,7 @@ M × M = T         (10⁶ × 10⁶ = 10¹²)
 
 ## 2. Time Conversions
 
+> [!TIP]
 > Memorize the seconds-per-day — it's used in nearly every QPS calculation.
 
 | Period | Exact Seconds | Approximation Used |
@@ -73,6 +76,7 @@ Example:
 
 ## 3. Latency Numbers Every Engineer Must Know
 
+> [!TIP]
 > Originally from Jeff Dean (Google). These are the numbers you cite during interviews.
 
 ```mermaid
@@ -415,7 +419,45 @@ Cassandra Nodes:
 
 ---
 
-## 11. Real-World System Examples
+## 11. Amdahl's Law — Parallelism Limits
+
+Amdahl's Law defines the theoretical maximum speedup of a system when only part of it can be parallelized.
+
+### The Formula
+
+```
+Speedup = 1 / ((1 - P) + P/N)
+
+Where:
+  P = fraction of the task that can be parallelized (0 to 1)
+  N = number of parallel processors/threads
+```
+
+### Practical Examples
+
+| Parallelizable (P) | 2 cores | 4 cores | 16 cores | 1000 cores | Max speedup |
+|---------------------|---------|---------|----------|------------|-------------|
+| 50% | 1.33x | 1.60x | 1.88x | 2.00x | **2x** |
+| 75% | 1.60x | 2.29x | 3.37x | 3.99x | **4x** |
+| 90% | 1.82x | 3.08x | 6.40x | 9.91x | **10x** |
+| 95% | 1.90x | 3.48x | 9.14x | 19.6x | **20x** |
+| 99% | 1.98x | 3.88x | 13.9x | 90.8x | **100x** |
+
+> [!IMPORTANT]
+> **The key insight:** Even with infinite cores, the serial portion of your code sets an absolute ceiling on speedup. If 5% of your task is serial, you can never exceed 20x speedup no matter how many servers you throw at it.
+
+### Interview Application
+
+When estimating server counts, consider which parts of the pipeline are inherently serial:
+- **Database writes with strong consistency** — serial (leader-based)
+- **Stateless API processing** — fully parallelizable
+- **Aggregation/reduce steps** — partially serial (final merge)
+
+This is why horizontally scaling a system hits diminishing returns — Amdahl's Law in action.
+
+---
+
+## 12. Real-World System Examples
 
 ### Instagram-Scale Estimation
 
@@ -495,7 +537,8 @@ Design the write path for location, not trips.
 
 ## 12. Interview Estimation Template
 
-> 🎯 Use this exact structure in your interview. Takes ~5 minutes and signals strong engineering judgment.
+> [!TIP]
+> Use this exact structure in your interview. Takes ~5 minutes and signals strong engineering judgment.
 
 ```mermaid
 flowchart TD

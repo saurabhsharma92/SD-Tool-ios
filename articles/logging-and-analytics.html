@@ -1,0 +1,2002 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Design Interview: Logging & Analytics Platform</title>
+</head>
+<body>
+
+<h1>System Design Interview: Logging &amp; Analytics Platform</h1>
+<h3>Datadog / Splunk / ELK Scale</h3>
+<div class="note">
+
+<p><strong>Staff Engineer Interview Preparation Guide</strong> -- High Level Design Round</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-requirements">Requirements</a></li>
+<li><a href="#2-capacity-estimation">Capacity Estimation</a></li>
+<li><a href="#3-high-level-architecture">High-Level Architecture</a></li>
+<li><a href="#4-core-components-deep-dive">Core Components Deep Dive</a></li>
+<li><a href="#5-log-ingestion-pipeline">Log Ingestion Pipeline</a></li>
+<li><a href="#6-log-format--structuring">Log Format &amp; Structuring</a></li>
+<li><a href="#7-message-queue-as-buffer">Message Queue as Buffer</a></li>
+<li><a href="#8-log-processing">Log Processing</a></li>
+<li><a href="#9-storage-tiers">Storage Tiers</a></li>
+<li><a href="#10-search--query-engine">Search &amp; Query Engine</a></li>
+<li><a href="#11-dashboards--visualization">Dashboards &amp; Visualization</a></li>
+<li><a href="#12-alerting-engine">Alerting Engine</a></li>
+<li><a href="#13-log-retention--lifecycle">Log Retention &amp; Lifecycle</a></li>
+<li><a href="#14-multi-tenancy">Multi-Tenancy</a></li>
+<li><a href="#15-data-models--storage">Data Models &amp; Storage</a></li>
+<li><a href="#16-scalability-strategies">Scalability Strategies</a></li>
+<li><a href="#17-design-trade-offs">Design Trade-offs</a></li>
+<li><a href="#18-platform-comparison">Platform Comparison</a></li>
+<li><a href="#19-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. Requirements</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Logging platform design is deceptively complex. It looks like &quot;just store and search text,&quot; but the scale (millions of events per second) and the diverse query patterns (full-text search, aggregation, time-series analysis) make it one of the hardest storage system design problems. Clarify whether the interviewer wants log management, metrics, traces, or all three (observability platform).</p>
+</div>
+
+
+<h3>Questions to Ask the Interviewer</h3>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Question</th>
+<th>Why It Matters</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Scale</strong></td>
+<td>How many log events per second at peak?</td>
+<td>Drives ingestion pipeline and storage architecture</td>
+</tr>
+<tr>
+<td><strong>Scope</strong></td>
+<td>Logs only, or also metrics and traces?</td>
+<td>Full observability vs log management</td>
+</tr>
+<tr>
+<td><strong>Search</strong></td>
+<td>What search latency is acceptable?</td>
+<td>Real-time search vs batch analytics</td>
+</tr>
+<tr>
+<td><strong>Retention</strong></td>
+<td>How long must logs be retained?</td>
+<td>Hot vs cold storage design</td>
+</tr>
+<tr>
+<td><strong>Tenancy</strong></td>
+<td>Single organization or multi-tenant SaaS?</td>
+<td>Isolation, quotas, billing complexity</td>
+</tr>
+<tr>
+<td><strong>Compliance</strong></td>
+<td>Any data residency or audit requirements?</td>
+<td>Affects storage regions and retention policy</td>
+</tr>
+<tr>
+<td><strong>Format</strong></td>
+<td>Structured JSON or unstructured text?</td>
+<td>Schema-on-read vs schema-on-write</td>
+</tr>
+<tr>
+<td><strong>Alerting</strong></td>
+<td>Real-time alerting on log patterns?</td>
+<td>Streaming processing requirements</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>Functional Requirements</h3>
+<ul>
+<li>Ingest logs from thousands of services and hosts</li>
+<li>Full-text search across log messages with filtering by service, level, time range</li>
+<li>Structured field search (e.g., <code>service:api-gateway AND status_code:500</code>)</li>
+<li>Pre-built and custom dashboards for log analytics</li>
+<li>Alerting on log patterns, error rates, and anomalies</li>
+<li>Log retention with configurable policies per service/team</li>
+<li>Correlation of logs across services using trace IDs</li>
+<li>Live tail: real-time streaming view of incoming logs</li>
+</ul>
+<h3>Non-Functional Requirements</h3>
+<ul>
+<li><strong>Write throughput:</strong> 1 million log events per second sustained, 5M peak</li>
+<li><strong>Search latency:</strong> &lt; 5 seconds for queries over the last 24 hours</li>
+<li><strong>Search latency (recent):</strong> &lt; 1 second for the last 15 minutes</li>
+<li><strong>Ingestion latency:</strong> &lt; 10 seconds from log generation to searchability</li>
+<li><strong>Availability:</strong> 99.9% for ingestion (logs must not be lost), 99.5% for search</li>
+<li><strong>Durability:</strong> Zero log loss after acknowledgment</li>
+<li><strong>Cost efficiency:</strong> Storage cost must decrease as logs age</li>
+<li><strong>Multi-tenant:</strong> Complete isolation between tenants with per-tenant quotas</li>
+</ul>
+<hr>
+<h2>2. Capacity Estimation</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Logging platforms are dominated by write-heavy workloads. The read:write ratio might be 1:100 or even 1:1000 (logs are written constantly but searched occasionally). This is the opposite of most web applications and drives very different architectural choices.</p>
+</div>
+
+
+<h3>Traffic Estimation</h3>
+<pre><code>Number of services: 5,000
+Average hosts per service: 20
+Total hosts: 100,000
+
+Average log lines per host per second: 10
+Peak log lines per host per second: 50
+
+Sustained ingestion rate: 100,000 hosts x 10 lines/sec = 1,000,000 events/sec
+Peak ingestion rate: 100,000 hosts x 50 lines/sec = 5,000,000 events/sec
+
+Average log event size: 500 bytes (structured JSON)
+Metadata overhead: 200 bytes (timestamps, indexes, etc.)
+Total per event: 700 bytes
+</code></pre>
+<h3>Storage Estimation</h3>
+<pre><code>Daily raw log volume:
+  1M events/sec x 86,400 sec x 500 bytes = ~43 TB/day (raw)
+  With metadata and indexing overhead (~2x): ~86 TB/day
+
+Storage by tier (30-day hot, 90-day warm, 1-year cold):
+  Hot (Elasticsearch/ClickHouse, SSD):
+    86 TB/day x 30 days = 2.58 PB
+    With replication factor 2: ~5.16 PB SSD storage
+
+  Warm (compressed, HDD):
+    86 TB/day x 60 days x 0.3 (compression) = 1.55 PB
+
+  Cold (S3, Parquet):
+    43 TB/day x 275 days x 0.2 (columnar compression) = 2.37 PB
+
+  Total: ~9 PB across all tiers
+</code></pre>
+<h3>Bandwidth Estimation</h3>
+<pre><code>Ingestion bandwidth:
+  1M events/sec x 700 bytes = 700 MB/sec = ~5.6 Gbps sustained
+  Peak (5x): ~28 Gbps
+
+Internal bandwidth (Kafka replication, index building):
+  ~3x ingestion = ~2.1 GB/sec sustained
+
+Search query bandwidth:
+  Average query scans 1 GB of data, 100 concurrent queries
+  = 100 GB/sec read throughput needed from storage
+</code></pre>
+<h3>Compute Estimation</h3>
+<pre><code>Kafka brokers: ~30 (handling 700 MB/sec with replication)
+Log processors: ~200 (parsing, enrichment, PII redaction)
+Elasticsearch/ClickHouse nodes: ~500 (hot tier, serving search)
+Warm storage nodes: ~100
+Cold storage: S3 (managed)
+</code></pre>
+<div class="note">
+
+<p>These numbers illustrate why logging is one of the most expensive infrastructure components at scale. Many organizations spend more on observability than on the applications being observed. Cost optimization is a first-class design concern, not an afterthought.</p>
+</div>
+
+
+<hr>
+<h2>3. High-Level Architecture</h2>
+<pre class="mermaid">
+graph TB
+    subgraph "Log Sources"
+        APP1[Application Pods]
+        APP2[Infrastructure<br/>Servers/VMs]
+        APP3[Cloud Services<br/>AWS/GCP Logs]
+        APP4[External<br/>CDN/DNS Logs]
+    end
+
+    subgraph "Collection Layer"
+        AG1[Log Agent<br/>Host 1]
+        AG2[Log Agent<br/>Host 2]
+        AGN[Log Agent<br/>Host N]
+        COL[Collection<br/>Service]
+    end
+
+    subgraph "Buffering Layer"
+        K1[Kafka Cluster<br/>Partitioned by<br/>tenant + service]
+    end
+
+    subgraph "Processing Layer"
+        P1[Stream Processor 1<br/>Parse + Enrich]
+        P2[Stream Processor 2<br/>Parse + Enrich]
+        PN[Stream Processor N]
+        ALERT_P[Alert Evaluator<br/>Real-time Pattern Match]
+    end
+
+    subgraph "Storage Layer"
+        HOT[Hot Storage<br/>Elasticsearch / ClickHouse<br/>Last 30 days]
+        WARM[Warm Storage<br/>Compressed / HDD<br/>30-90 days]
+        COLD[Cold Storage<br/>S3 + Parquet<br/>90 days - 1 year]
+    end
+
+    subgraph "Query Layer"
+        QE[Query Engine<br/>Search + Aggregation]
+        CACHE[Query Cache<br/>Redis]
+    end
+
+    subgraph "Presentation Layer"
+        DASH[Dashboard<br/>Service]
+        ALERT_S[Alerting<br/>Service]
+        API[REST API]
+        TAIL[Live Tail<br/>WebSocket]
+    end
+
+    APP1 --> AG1
+    APP2 --> AG2
+    APP3 --> COL
+    APP4 --> COL
+
+    AG1 --> COL
+    AG2 --> COL
+    AGN --> COL
+
+    COL --> K1
+
+    K1 --> P1
+    K1 --> P2
+    K1 --> PN
+    K1 --> ALERT_P
+    K1 --> TAIL
+
+    P1 --> HOT
+    P2 --> HOT
+    PN --> HOT
+
+    HOT --> WARM
+    WARM --> COLD
+
+    HOT --> QE
+    WARM --> QE
+    COLD --> QE
+
+    QE --> CACHE
+    CACHE --> DASH
+    CACHE --> API
+    ALERT_P --> ALERT_S
+
+    ALERT_S -->|PagerDuty/Slack| APP1
+</pre>
+<h3>Architecture Principles</h3>
+<p><strong>Decouple ingestion from processing.</strong> Kafka sits between log collection and processing. This means bursts of logs do not overwhelm the processing pipeline -- Kafka absorbs the burst and processors consume at their own pace.</p>
+<p><strong>Schema-on-read over schema-on-write.</strong> Logs arrive in diverse formats. Rather than forcing all services to emit logs in a rigid schema, we store semi-structured data (JSON) and apply schema at query time. This makes onboarding new services trivial.</p>
+<p><strong>Tiered storage by age.</strong> Recent logs are queried frequently and need fast access. Older logs are queried rarely and can tolerate slower access in exchange for dramatically lower storage costs.</p>
+<p><strong>Separate write and read paths.</strong> Ingestion and search have very different performance characteristics. The write path is optimized for throughput (batch writes, append-only). The read path is optimized for latency (indexes, caches, query optimization).</p>
+<div class="important">
+
+<p>The single most important architectural decision is the choice of storage engine for the hot tier. Elasticsearch (inverted index) excels at full-text search. ClickHouse (columnar) excels at analytical queries (aggregation, group-by). Many modern platforms use both: Elasticsearch for log search, ClickHouse or a time-series database for metrics derived from logs.</p>
+</div>
+
+
+<hr>
+<h2>4. Core Components Deep Dive</h2>
+<h3>Log Agent</h3>
+<p>The log agent runs on every host (server, VM, container) and is responsible for collecting logs and shipping them to the collection service.</p>
+<p><strong>Functions:</strong></p>
+<ul>
+<li><strong>File tailing:</strong> Monitor log files (e.g., <code>/var/log/app.log</code>) and read new lines as they are appended</li>
+<li><strong>Container log collection:</strong> Read from Docker/Kubernetes log drivers (stdout/stderr)</li>
+<li><strong>Syslog/journald integration:</strong> Collect system-level logs</li>
+<li><strong>Buffering:</strong> Store logs locally if the collection service is unavailable (local disk buffer)</li>
+<li><strong>Batching:</strong> Group log lines into batches (e.g., 100 lines or 100KB, whichever comes first) to reduce network overhead</li>
+<li><strong>Compression:</strong> Compress batches (gzip/zstd) before sending to reduce bandwidth</li>
+<li><strong>Metadata enrichment:</strong> Add host-level metadata (hostname, IP, OS, container ID, pod name)</li>
+<li><strong>Basic parsing:</strong> Extract structured fields from common log formats (Apache, nginx, JSON)</li>
+</ul>
+<p><strong>Popular agents:</strong> Fluentd, Fluent Bit, Vector, Datadog Agent, Filebeat</p>
+<pre><code>Agent Configuration Example:
+  - Source: /var/log/myapp/*.log
+  - Parser: JSON
+  - Tags: service=api-gateway, env=production, region=us-east-1
+  - Buffer: 100MB local disk
+  - Batch: 500 events or 1MB, whichever first
+  - Flush interval: 5 seconds
+  - Compression: zstd
+  - Destination: collection-service.internal:8443
+</code></pre>
+<h3>Collection Service</h3>
+<p>The collection service is the centralized entry point for all log data. It receives log batches from agents, validates them, applies tenant-level rate limiting, and publishes to Kafka.</p>
+<p><strong>Why a collection service instead of agents writing directly to Kafka?</strong></p>
+<ul>
+<li><strong>Protocol abstraction:</strong> Agents speak HTTP/gRPC; the collection service translates to Kafka&#39;s protocol</li>
+<li><strong>Authentication:</strong> The collection service validates API keys and assigns logs to tenants</li>
+<li><strong>Rate limiting:</strong> Enforces per-tenant ingestion quotas before data enters the pipeline</li>
+<li><strong>Routing:</strong> Determines which Kafka topic/partition based on tenant and service</li>
+<li><strong>Validation:</strong> Rejects malformed or oversized log events</li>
+</ul>
+<pre class="mermaid">
+graph LR
+    subgraph "Collection Service"
+        AUTH[API Key<br/>Validation]
+        RL[Rate Limiter<br/>Per Tenant]
+        VAL[Validator<br/>Size & Format]
+        ROUTE[Router<br/>Kafka Topic/Partition]
+    end
+
+    AG[Agent] -->|HTTP/gRPC<br/>Compressed Batch| AUTH
+    AUTH --> RL
+    RL --> VAL
+    VAL --> ROUTE
+    ROUTE --> K[Kafka]
+</pre>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> The collection service is a critical chokepoint. It must be horizontally scalable and highly available. Deploy it behind a load balancer with health checks. If the collection service is down, agents buffer locally. If Kafka is down, the collection service buffers in memory (bounded) and applies backpressure to agents.</p>
+</div>
+
+
+<hr>
+<h2>5. Log Ingestion Pipeline</h2>
+<h3>End-to-End Flow</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant App as Application
+    participant Agent as Log Agent
+    participant Col as Collection Service
+    participant Kafka as Kafka
+    participant Proc as Stream Processor
+    participant ES as Hot Storage
+    participant Alert as Alert Evaluator
+
+    App->>App: log.error("Payment failed", {orderId, error})
+    App->>Agent: Write to stdout / log file
+
+    Agent->>Agent: Buffer locally (5s or 500 events)
+    Agent->>Agent: Add host metadata
+    Agent->>Agent: Compress batch (zstd)
+    Agent->>Col: POST /ingest (batch of 500 events)
+
+    Col->>Col: Authenticate (API key)
+    Col->>Col: Rate limit check
+    Col->>Col: Validate events
+    Col->>Kafka: Produce to topic (tenant-service)
+    Col->>Agent: 202 Accepted
+
+    par Processing
+        Kafka->>Proc: Consume batch
+        Proc->>Proc: Parse (JSON/regex)
+        Proc->>Proc: Enrich (geo, service metadata)
+        Proc->>Proc: Redact PII (email, SSN)
+        Proc->>Proc: Compute derived fields
+        Proc->>ES: Bulk index (batch write)
+    and Alerting
+        Kafka->>Alert: Consume stream
+        Alert->>Alert: Evaluate rules in real-time
+        Alert->>Alert: Trigger if pattern matches
+    end
+
+    Note over App,ES: Total latency: 5-15 seconds
+</pre>
+<h3>Ingestion Guarantees</h3>
+<table>
+<thead>
+<tr>
+<th>Guarantee Level</th>
+<th>Description</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>At-most-once</strong></td>
+<td>Logs may be lost but never duplicated</td>
+<td>Agent fires and forgets, no retry</td>
+</tr>
+<tr>
+<td><strong>At-least-once</strong></td>
+<td>Logs are never lost but may be duplicated</td>
+<td>Agent retries on failure, Kafka acks, deduplication at storage</td>
+</tr>
+<tr>
+<td><strong>Exactly-once</strong></td>
+<td>Logs are neither lost nor duplicated</td>
+<td>Kafka transactions + idempotent writes (expensive)</td>
+</tr>
+</tbody></table>
+<p>Most logging platforms choose <strong>at-least-once</strong> delivery. Duplicate logs are tolerable (and can be deduplicated at query time using event IDs). Lost logs are not acceptable -- they could mean missing the evidence of a critical production incident.</p>
+<h3>Backpressure Handling</h3>
+<p>When the system is overwhelmed, backpressure propagates backwards:</p>
+<pre><code>Storage full → Processor backs up → Kafka lag increases → Collection service
+slows acks → Agent buffer fills → Agent applies sampling or drops oldest logs
+
+Graceful degradation strategy:
+1. First: Increase Kafka consumer parallelism (add processors)
+2. Second: Reduce processing (skip enrichment, store raw)
+3. Third: Apply sampling at collection service (keep 1 in N events)
+4. Fourth: Agent drops DEBUG/TRACE level logs (keep ERROR/WARN)
+5. Last resort: Agent drops oldest buffered logs
+</code></pre>
+<div class="warning">
+
+<p>Losing logs during an incident is the worst possible outcome -- that is exactly when you need them most. Design the backpressure strategy to preferentially drop low-severity logs (DEBUG, TRACE) and always retain high-severity logs (ERROR, FATAL). Some systems have a &quot;fast path&quot; for ERROR+ logs that bypasses the normal pipeline.</p>
+</div>
+
+
+<hr>
+<h2>6. Log Format &amp; Structuring</h2>
+<h3>Structured vs Unstructured Logs</h3>
+<p><strong>Unstructured (traditional):</strong></p>
+<pre><code>2024-03-15 14:23:45.123 ERROR [api-gateway] [req-abc123] Payment processing failed for order 12345: timeout after 30s
+</code></pre>
+<p><strong>Structured (JSON):</strong></p>
+<pre><code class="language-json">{
+  &quot;timestamp&quot;: &quot;2024-03-15T14:23:45.123Z&quot;,
+  &quot;level&quot;: &quot;ERROR&quot;,
+  &quot;service&quot;: &quot;api-gateway&quot;,
+  &quot;request_id&quot;: &quot;req-abc123&quot;,
+  &quot;trace_id&quot;: &quot;trace-xyz789&quot;,
+  &quot;span_id&quot;: &quot;span-456&quot;,
+  &quot;message&quot;: &quot;Payment processing failed&quot;,
+  &quot;order_id&quot;: 12345,
+  &quot;error_type&quot;: &quot;TimeoutException&quot;,
+  &quot;timeout_ms&quot;: 30000,
+  &quot;host&quot;: &quot;api-gw-pod-7d8f9&quot;,
+  &quot;region&quot;: &quot;us-east-1&quot;,
+  &quot;environment&quot;: &quot;production&quot;
+}
+</code></pre>
+<p>Structured logging is strictly superior for a logging platform because:</p>
+<ul>
+<li>Fields can be indexed and searched independently (<code>order_id:12345</code>)</li>
+<li>Aggregation queries work on typed fields (<code>count by error_type where level=ERROR</code>)</li>
+<li>No regex parsing needed at query time</li>
+<li>Consistent field names enable cross-service correlation</li>
+</ul>
+<h3>Schema-on-Read vs Schema-on-Write</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Description</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Schema-on-write</strong></td>
+<td>Define schema before ingestion; reject non-conforming logs</td>
+<td>Fast queries, optimized storage</td>
+<td>Rigid, hard to onboard new services, schema evolution is painful</td>
+</tr>
+<tr>
+<td><strong>Schema-on-read</strong></td>
+<td>Store raw/semi-structured data; apply schema at query time</td>
+<td>Flexible, easy onboarding, handles any format</td>
+<td>Slower queries, more storage, type conflicts possible</td>
+</tr>
+</tbody></table>
+<p>Most logging platforms use schema-on-read with some schema-on-write optimizations:</p>
+<ul>
+<li>Core fields (timestamp, level, service, host) are enforced at ingestion</li>
+<li>Application-specific fields are stored as dynamic JSON and indexed on first occurrence</li>
+<li>High-cardinality fields (request IDs, user IDs) are indexed but not aggregated</li>
+<li>Low-cardinality fields (service, level, region) are optimized for filtering and aggregation</li>
+</ul>
+<h3>Correlation IDs</h3>
+<p>For distributed systems, a single user request may generate logs across dozens of services. Correlation IDs link these logs together:</p>
+<p><strong>Request ID:</strong> Unique per user request, propagated via HTTP headers (<code>X-Request-ID</code>). All logs generated while handling this request include the same request ID.</p>
+<p><strong>Trace ID:</strong> Part of distributed tracing (OpenTelemetry). Identifies the entire distributed transaction across services. Trace IDs connect logs to traces.</p>
+<p><strong>Span ID:</strong> Identifies a specific operation within a trace. A trace contains multiple spans (one per service hop). Logs within a span share the span ID.</p>
+<pre><code>User Request → API Gateway → Auth Service → Order Service → Payment Service
+
+All services log with:
+  trace_id: &quot;trace-xyz789&quot;  (same across all services)
+  span_id:  &quot;span-001&quot; (API Gateway), &quot;span-002&quot; (Auth), etc.
+  request_id: &quot;req-abc123&quot;  (same across all services)
+
+Querying trace_id:&quot;trace-xyz789&quot; returns ALL logs for this request,
+across ALL services, in chronological order.
+</code></pre>
+<hr>
+<h2>7. Message Queue as Buffer</h2>
+<h3>Why Kafka?</h3>
+<p>Kafka sits between log collection and processing, serving as a durable buffer that decouples producers from consumers. Here is why Kafka is the standard choice for log pipelines:</p>
+<p><strong>Durability:</strong> Messages are written to disk and replicated across brokers. Even if all consumers are down, logs are not lost.</p>
+<p><strong>High throughput:</strong> Kafka achieves millions of messages per second per cluster through sequential disk writes, zero-copy transfer, and batching.</p>
+<p><strong>Consumer groups:</strong> Multiple consumer groups can independently read the same data. The processing pipeline, alerting engine, and live tail feature all consume from the same Kafka topics without interfering with each other.</p>
+<p><strong>Retention:</strong> Kafka can retain data for days or weeks, acting as a replay buffer. If you need to re-process logs (e.g., after fixing a parsing bug), you can reset the consumer offset and replay.</p>
+<p><strong>Ordering:</strong> Within a partition, messages are strictly ordered. Partitioning by service or host ensures logs from the same source are processed in order.</p>
+<h3>Topic and Partition Design</h3>
+<pre><code>Topic structure:
+  logs.{tenant_id}.raw
+    - Partition 0: service-A, service-B (hashed by service name)
+    - Partition 1: service-C, service-D
+    - ...
+    - Partition N: (total partitions = desired parallelism)
+
+  logs.{tenant_id}.processed
+    - Same partition count as raw
+    - Processor writes enriched events here
+
+  logs.alerts
+    - Alert evaluator consumes from all tenant topics
+    - Partitioned by alert rule ID
+</code></pre>
+<p><strong>Partition count:</strong> The number of partitions determines the maximum consumer parallelism. If you have 100 partitions, you can have at most 100 consumer instances in a consumer group. For 1M events/sec with each consumer handling 10K events/sec, you need ~100 partitions.</p>
+<p><strong>Partition key:</strong> Hash of <code>tenant_id + service_name</code>. This ensures all logs from the same service within a tenant go to the same partition, preserving order. It also ensures even distribution across partitions.</p>
+<h3>Kafka Sizing</h3>
+<pre><code>Cluster sizing for 1M events/sec:
+
+Event size (average): 700 bytes (with Kafka overhead)
+Throughput: 700 MB/sec ingestion
+Replication factor: 3
+Total write throughput: 2.1 GB/sec across cluster
+
+Per broker (assuming 10 Gbps NIC, 60% utilization):
+  Effective throughput per broker: ~600 MB/sec
+  Brokers needed: 2.1 GB / 0.6 GB = 4 (minimum)
+  With headroom and read traffic: ~20-30 brokers
+
+Retention: 72 hours
+Storage per broker: 700 MB/sec x 72h x 3600 / 30 brokers = ~6 TB
+</code></pre>
+<div class="note">
+
+<p>Kafka&#39;s storage is temporary -- it is a buffer, not the final destination. The 72-hour retention provides enough time to recover from processing failures and replay data if needed. The actual long-term storage is in Elasticsearch/ClickHouse/S3.</p>
+</div>
+
+
+<hr>
+<h2>8. Log Processing</h2>
+<h3>Processing Pipeline</h3>
+<p>The stream processor (Kafka consumer) transforms raw log events into indexed, searchable documents:</p>
+<pre class="mermaid">
+graph LR
+    subgraph "Stream Processor"
+        DESER[Deserialize<br/>JSON/Protobuf]
+        PARSE[Parse<br/>Extract fields]
+        ENRICH[Enrich<br/>Add metadata]
+        FILTER[Filter/Sample<br/>Drop noise]
+        PII[PII Redaction<br/>Mask sensitive data]
+        DERIVE[Derive Fields<br/>Computed values]
+        BATCH[Batch<br/>Group for bulk write]
+    end
+
+    K[Kafka] --> DESER
+    DESER --> PARSE
+    PARSE --> ENRICH
+    ENRICH --> FILTER
+    FILTER --> PII
+    PII --> DERIVE
+    DERIVE --> BATCH
+    BATCH --> ES[Hot Storage]
+</pre>
+<h3>Parsing</h3>
+<p><strong>JSON logs:</strong> Already structured, minimal parsing needed. Validate types, flatten nested objects.</p>
+<p><strong>Unstructured logs:</strong> Use regex patterns (grok patterns) to extract fields:</p>
+<pre><code>Input:  &quot;2024-03-15 14:23:45 ERROR [api-gw] Request /api/orders failed: 500&quot;
+Pattern: %{TIMESTAMP:timestamp} %{LOGLEVEL:level} \[%{WORD:service}\] %{GREEDYDATA:message}
+Output: {
+  &quot;timestamp&quot;: &quot;2024-03-15 14:23:45&quot;,
+  &quot;level&quot;: &quot;ERROR&quot;,
+  &quot;service&quot;: &quot;api-gw&quot;,
+  &quot;message&quot;: &quot;Request /api/orders failed: 500&quot;
+}
+</code></pre>
+<h3>Enrichment</h3>
+<p>The enrichment step adds contextual metadata that was not present in the original log:</p>
+<table>
+<thead>
+<tr>
+<th>Enrichment</th>
+<th>Source</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Host metadata</td>
+<td>CMDB / cloud API</td>
+<td>OS, instance type, availability zone</td>
+</tr>
+<tr>
+<td>Service metadata</td>
+<td>Service catalog</td>
+<td>Team, owner, tier, on-call rotation</td>
+</tr>
+<tr>
+<td>Geo IP</td>
+<td>MaxMind database</td>
+<td>Country, city from IP address</td>
+</tr>
+<tr>
+<td>Kubernetes metadata</td>
+<td>K8s API / labels</td>
+<td>Namespace, deployment, replica set</td>
+</tr>
+<tr>
+<td>Previous context</td>
+<td>State store</td>
+<td>Related error count in last 5 minutes</td>
+</tr>
+</tbody></table>
+<h3>PII Redaction</h3>
+<p>Logs frequently contain personally identifiable information that must be removed or masked before storage:</p>
+<pre><code>Redaction rules:
+  - Email: user@example.com → u***@example.com
+  - SSN: 123-45-6789 → ***-**-6789
+  - Credit card: 4111-1111-1111-1111 → ****-****-****-1111
+  - IP address: 192.168.1.100 → 192.168.1.xxx (optional)
+  - Custom patterns: defined per tenant
+
+Implementation:
+  - Regex-based pattern matching (fast, catches known patterns)
+  - ML-based NER (Named Entity Recognition) for unstructured text (slower, catches more)
+  - Field-level redaction rules (always redact field &quot;password&quot;, &quot;secret_key&quot;)
+</code></pre>
+<div class="important">
+
+<p>PII redaction must happen BEFORE logs are written to the hot storage. Once PII is indexed, it is very difficult to remove it from all replicas and backups. This is a compliance requirement (GDPR, CCPA) and a security best practice.</p>
+</div>
+
+
+<h3>Sampling and Filtering</h3>
+<p>Not all logs are equally valuable. Processing and storing every DEBUG log from every service is wasteful:</p>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Description</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Level-based filtering</td>
+<td>Drop DEBUG/TRACE in production</td>
+<td>Reduce volume by 50-80%</td>
+</tr>
+<tr>
+<td>Sampling</td>
+<td>Keep 1 in N events for high-volume services</td>
+<td>Control cost for noisy services</td>
+</tr>
+<tr>
+<td>Head-based sampling</td>
+<td>Keep all logs for sampled requests (by trace ID)</td>
+<td>Preserve complete request flows</td>
+</tr>
+<tr>
+<td>Dynamic sampling</td>
+<td>Increase sampling rate when errors spike</td>
+<td>Capture more detail during incidents</td>
+</tr>
+<tr>
+<td>Deduplication</td>
+<td>Collapse repeated identical messages</td>
+<td>&quot;Connection refused&quot; appearing 10,000 times becomes 1 event with count=10000</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>9. Storage Tiers</h2>
+<h3>Three-Tier Storage Architecture</h3>
+<pre class="mermaid">
+graph LR
+    subgraph "Hot Tier (0-30 days)"
+        ES[Elasticsearch / ClickHouse<br/>SSD Storage<br/>Fully indexed<br/>Sub-second search]
+    end
+
+    subgraph "Warm Tier (30-90 days)"
+        WM[Read-only replicas<br/>HDD Storage<br/>Compressed<br/>Seconds to search]
+    end
+
+    subgraph "Cold Tier (90 days - 1 year)"
+        S3[Object Storage - S3/GCS<br/>Parquet format<br/>Columnar compressed<br/>Minutes to search]
+    end
+
+    subgraph "Archive (1+ years)"
+        GL[Glacier / Coldline<br/>Regulatory retention<br/>Hours to access]
+    end
+
+    ES -->|Age out| WM
+    WM -->|Age out| S3
+    S3 -->|Age out| GL
+    GL -->|TTL| DEL[Delete]
+</pre>
+<h3>Hot Tier: Elasticsearch</h3>
+<p>Elasticsearch is the most popular choice for the hot tier because of its full-text search capabilities:</p>
+<p><strong>Inverted Index:</strong> For every word in every log message, Elasticsearch maintains a mapping from word to document IDs. Searching for &quot;payment failed&quot; finds all documents containing both words in milliseconds, even across billions of documents.</p>
+<p><strong>Index per time period:</strong> Logs are stored in time-based indices (e.g., <code>logs-2024.03.15</code>). This makes time-range queries efficient and enables easy retention (delete old indices).</p>
+<p><strong>Shard architecture:</strong> Each index is split into shards distributed across nodes. Queries run in parallel across all shards.</p>
+<pre><code>Elasticsearch Index Strategy:
+
+Index pattern: logs-{tenant}-{YYYY.MM.dd}
+  - logs-acme-2024.03.15
+  - logs-acme-2024.03.16
+  - logs-widgetcorp-2024.03.15
+
+Shard count per index: 5 (for medium-volume tenants)
+Replica count: 1 (each shard has one replica for availability)
+
+Index Lifecycle Management (ILM):
+  Hot phase (0-7 days): Primary shards on SSD, writable
+  Warm phase (7-30 days): Force merge, move to HDD, read-only
+  Delete trigger: 30 days (moved to warm tier before deletion)
+</code></pre>
+<h3>Hot Tier: ClickHouse (Alternative)</h3>
+<p>ClickHouse is a columnar database that excels at analytical queries:</p>
+<p><strong>Columnar storage:</strong> Data is stored by column rather than by row. A query like <code>SELECT count(*) WHERE level=&#39;ERROR&#39; GROUP BY service</code> only reads the <code>level</code> and <code>service</code> columns, skipping the large <code>message</code> column entirely. This provides 10-100x compression and 10-100x faster analytical queries compared to row-based storage.</p>
+<p><strong>MergeTree engine:</strong> ClickHouse&#39;s native table engine uses a log-structured merge tree with sorted data. Primary key (typically <code>timestamp, service</code>) enables fast range scans. Data is automatically partitioned by time.</p>
+<p><strong>When to choose ClickHouse over Elasticsearch:</strong></p>
+<ul>
+<li>Primary use case is analytics/aggregation, not full-text search</li>
+<li>Cost sensitivity (ClickHouse is 3-5x cheaper per GB for similar query performance)</li>
+<li>Very high cardinality dimensions (ClickHouse handles this better)</li>
+<li>SQL is preferred over Elasticsearch&#39;s query DSL</li>
+</ul>
+<p><strong>When to choose Elasticsearch over ClickHouse:</strong></p>
+<ul>
+<li>Primary use case is full-text search across log messages</li>
+<li>Need fuzzy matching, stemming, or natural language search</li>
+<li>Existing team expertise with Elastic ecosystem</li>
+<li>Need for complex text analysis pipelines</li>
+</ul>
+<h3>Warm Tier</h3>
+<p>Warm storage keeps logs that are still occasionally searched but do not need the performance of hot storage:</p>
+<pre><code>Warm tier characteristics:
+  - Storage: HDD (5-10x cheaper than SSD per TB)
+  - Compression: zstd at high level (10:1 compression ratio)
+  - Index: Sparse index (one entry per block instead of per document)
+  - Replicas: 1 (reduced from hot tier)
+  - Query latency: 5-30 seconds (acceptable for older data)
+
+Transition from hot to warm:
+  1. Force-merge Elasticsearch shards (reduce segment count)
+  2. Shrink index (reduce shard count)
+  3. Enable best_compression codec
+  4. Move to HDD-backed nodes
+  5. Set index to read-only
+</code></pre>
+<h3>Cold Tier: Object Storage + Parquet</h3>
+<p>For logs older than 90 days, store in object storage (S3, GCS) in Parquet format:</p>
+<p><strong>Parquet advantages:</strong></p>
+<ul>
+<li>Columnar format: excellent compression (20:1 typical for logs)</li>
+<li>Predicate pushdown: only read relevant columns and row groups</li>
+<li>Compatible with analytics engines (Spark, Presto, Athena)</li>
+<li>Extremely cheap storage ($0.023/GB/month on S3 Standard)</li>
+</ul>
+<p><strong>Query pattern:</strong> Cold tier queries use an analytics engine (AWS Athena, Presto, Spark) that reads Parquet files from S3. These queries take minutes, not seconds, but are acceptable for historical investigation.</p>
+<pre><code>Cold tier organization:
+  s3://logs-archive/
+    tenant=acme/
+      service=api-gateway/
+        year=2024/
+          month=03/
+            day=15/
+              hour=14/
+                part-00001.parquet (250 MB, ~500K events)
+                part-00002.parquet
+</code></pre>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> The three-tier storage architecture is the most important design decision in a logging platform. Be prepared to discuss the cost-performance trade-offs at each tier. Hot tier costs ~$0.10/GB/month (SSD + compute + replication). Cold tier costs ~$0.005/GB/month (S3 + compression). That is a 20x cost difference, which is why tiered storage is essential at scale.</p>
+</div>
+
+
+<hr>
+<h2>10. Search &amp; Query Engine</h2>
+<h3>Query Language</h3>
+<p>Most logging platforms support a structured query language. Common syntaxes include:</p>
+<p><strong>Lucene/KQL (Kibana Query Language):</strong></p>
+<pre><code>level:ERROR AND service:api-gateway AND message:&quot;payment failed&quot;
+  AND @timestamp:[2024-03-15T14:00:00 TO 2024-03-15T15:00:00]
+  AND NOT status_code:200
+</code></pre>
+<p><strong>SQL-like (ClickHouse, Loki with LogQL):</strong></p>
+<pre><code class="language-sql">SELECT timestamp, service, message
+FROM logs
+WHERE level = &#39;ERROR&#39;
+  AND service = &#39;api-gateway&#39;
+  AND message LIKE &#39;%payment failed%&#39;
+  AND timestamp BETWEEN &#39;2024-03-15 14:00:00&#39; AND &#39;2024-03-15 15:00:00&#39;
+ORDER BY timestamp DESC
+LIMIT 100
+</code></pre>
+<h3>Inverted Index (Full-Text Search)</h3>
+<p>Elasticsearch builds an inverted index for every field:</p>
+<pre><code>Inverted Index for field &quot;message&quot;:
+
+  &quot;payment&quot;  → [doc1, doc5, doc12, doc89, ...]
+  &quot;failed&quot;   → [doc1, doc5, doc23, doc89, ...]
+  &quot;timeout&quot;  → [doc5, doc12, doc34, ...]
+  &quot;success&quot;  → [doc2, doc3, doc7, ...]
+
+Query: message:&quot;payment failed&quot;
+  → Intersect posting lists for &quot;payment&quot; and &quot;failed&quot;
+  → Result: [doc1, doc5, doc89, ...]
+</code></pre>
+<p><strong>Advantages:</strong> Full-text search in milliseconds across billions of documents. Supports fuzzy matching, stemming, and relevance scoring.</p>
+<p><strong>Disadvantages:</strong> Index size is 30-50% of the raw data size. Building the index consumes significant CPU. High-cardinality fields (request IDs, UUIDs) create enormous posting lists.</p>
+<h3>Columnar Storage (Analytics Queries)</h3>
+<p>ClickHouse stores data in columns, which is optimal for aggregation queries:</p>
+<pre><code class="language-sql">-- &quot;Show me the error rate per service for the last hour&quot;
+SELECT
+  service,
+  count(*) as total,
+  countIf(level = &#39;ERROR&#39;) as errors,
+  errors / total * 100 as error_rate
+FROM logs
+WHERE timestamp &gt; now() - INTERVAL 1 HOUR
+GROUP BY service
+ORDER BY error_rate DESC
+</code></pre>
+<p>This query only reads the <code>service</code>, <code>level</code>, and <code>timestamp</code> columns. In a row-based store, it would read every column of every row. For logs where the <code>message</code> column is 10x larger than the other columns, columnar storage provides a 10x speedup.</p>
+<h3>Query Optimization</h3>
+<table>
+<thead>
+<tr>
+<th>Technique</th>
+<th>Description</th>
+<th>Benefit</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Time-range pruning</td>
+<td>Only search indices/partitions within the query&#39;s time range</td>
+<td>Skip 90%+ of data</td>
+</tr>
+<tr>
+<td>Bloom filters</td>
+<td>Quick check if a term exists in a shard before scanning</td>
+<td>Skip shards that cannot have matches</td>
+</tr>
+<tr>
+<td>Query caching</td>
+<td>Cache results of recent identical queries</td>
+<td>Sub-millisecond for repeated queries</td>
+</tr>
+<tr>
+<td>Scroll/cursor</td>
+<td>Return results in pages, fetching only what the user views</td>
+<td>Reduce memory for large result sets</td>
+</tr>
+<tr>
+<td>Pre-aggregation</td>
+<td>Pre-compute common aggregations (error count per minute per service)</td>
+<td>Instant dashboard rendering</td>
+</tr>
+<tr>
+<td>Materialized views</td>
+<td>Maintain running aggregations as data is ingested</td>
+<td>No query-time aggregation needed</td>
+</tr>
+</tbody></table>
+<h3>Live Tail</h3>
+<p>Live tail shows logs in real-time as they are ingested. Implementation:</p>
+<pre><code>Live tail architecture:
+1. Client opens WebSocket connection to live tail service
+2. Client specifies filter: service=api-gateway AND level=ERROR
+3. Live tail service subscribes to Kafka topic(s) matching the filter
+4. For each consumed event, apply the filter
+5. If event matches, forward to client via WebSocket
+6. Client renders events in real-time (similar to `tail -f`)
+
+Optimization:
+  - If filter is on a Kafka partition key (service), only consume relevant partitions
+  - Apply filter server-side to minimize WebSocket bandwidth
+  - Buffer and batch (send every 100ms) to avoid overwhelming the client
+  - Limit concurrent live tail sessions per user (expensive)
+</code></pre>
+<hr>
+<h2>11. Dashboards &amp; Visualization</h2>
+<h3>Pre-Aggregated Metrics from Logs</h3>
+<p>Rather than running aggregation queries on raw logs for every dashboard refresh, pre-compute common metrics during ingestion:</p>
+<pre><code>During log processing, maintain running aggregations:
+
+Metric: error_count
+  Dimensions: [tenant, service, level, status_code]
+  Granularity: 1 minute
+  Storage: Time-series database (InfluxDB, TimescaleDB, or ClickHouse)
+
+Example aggregated row:
+  timestamp: 2024-03-15T14:23:00Z
+  tenant: acme
+  service: api-gateway
+  level: ERROR
+  status_code: 500
+  count: 47
+  p50_latency_ms: 230
+  p99_latency_ms: 1450
+</code></pre>
+<p><strong>Benefits:</strong></p>
+<ul>
+<li>Dashboard queries read from small aggregated tables instead of scanning billions of raw logs</li>
+<li>Consistent dashboard load time regardless of log volume</li>
+<li>Historical dashboard data remains fast even when raw logs have aged into cold storage</li>
+</ul>
+<h3>Dashboard Types</h3>
+<p><strong>Log Explorer:</strong> Interactive search interface. User enters a query, sees matching log events in a table with expandable detail view. Supports time range selection, field filtering, and saved searches.</p>
+<p><strong>Time-Series Charts:</strong> Line charts showing metrics over time. Error count per minute, request rate per second, P99 latency trend. Driven by pre-aggregated data.</p>
+<p><strong>Top-N Tables:</strong> Most common error messages, services with highest error rate, hosts with most warnings. Driven by aggregation queries.</p>
+<p><strong>Log Pattern Detection:</strong> Group similar log messages automatically (e.g., &quot;Connection to X failed&quot; where X varies). Show patterns with their frequency and trend. Useful for identifying new types of errors.</p>
+<p><strong>Correlation View:</strong> Given a trace ID, show all logs from all services in chronological order. Display the request flow across services with latency breakdown.</p>
+<hr>
+<h2>12. Alerting Engine</h2>
+<h3>Alert Architecture</h3>
+<pre class="mermaid">
+graph TB
+    subgraph "Alert Pipeline"
+        K[Kafka<br/>Log Stream]
+        AE[Alert Evaluator<br/>Stream Processing]
+        RS[Rule Store<br/>Alert Definitions]
+        SS[State Store<br/>Alert Status]
+    end
+
+    subgraph "Routing & Notification"
+        AR[Alert Router<br/>Routing Rules]
+        PD[PagerDuty]
+        SL[Slack]
+        EM[Email]
+        WH[Webhook]
+    end
+
+    subgraph "Management"
+        UI[Alert Management UI]
+        ACK[Acknowledge / Resolve]
+        HIST[Alert History]
+    end
+
+    K --> AE
+    RS --> AE
+    AE --> SS
+    AE --> AR
+
+    AR --> PD
+    AR --> SL
+    AR --> EM
+    AR --> WH
+
+    UI --> RS
+    ACK --> SS
+    SS --> HIST
+</pre>
+<h3>Alert Rule Types</h3>
+<p><strong>Threshold Alerts:</strong> Trigger when a metric crosses a threshold.</p>
+<pre><code>Rule: &quot;High Error Rate&quot;
+  Query: count(level=ERROR AND service=api-gateway) / count(*) &gt; 5%
+  Window: 5 minutes
+  Severity: Critical
+  Route: PagerDuty on-call rotation
+</code></pre>
+<p><strong>Anomaly Detection:</strong> Trigger when behavior deviates from historical baseline.</p>
+<pre><code>Rule: &quot;Unusual Error Volume&quot;
+  Query: count(level=ERROR AND service=api-gateway) per 5min
+  Baseline: Rolling 7-day average for same time of day
+  Threshold: &gt; 3 standard deviations from baseline
+  Severity: Warning
+  Route: Slack #api-gateway-alerts
+</code></pre>
+<p><strong>Pattern Matching:</strong> Trigger when a specific log pattern appears.</p>
+<pre><code>Rule: &quot;Database Connection Pool Exhausted&quot;
+  Query: message:&quot;connection pool exhausted&quot; AND service:*
+  Window: Any single occurrence
+  Severity: Critical
+  Route: PagerDuty + Slack #database-team
+</code></pre>
+<p><strong>Composite Alerts:</strong> Combine multiple conditions.</p>
+<pre><code>Rule: &quot;Cascading Failure&quot;
+  Conditions:
+    - error_rate(service=api-gateway) &gt; 10% for 5min
+    - AND error_rate(service=payment-service) &gt; 10% for 5min
+    - AND p99_latency(service=order-service) &gt; 5s for 5min
+  Severity: Critical
+  Route: PagerDuty engineering-manager
+</code></pre>
+<h3>Alert Evaluation</h3>
+<p><strong>Stream-based evaluation:</strong> The alert evaluator consumes from Kafka in real-time. For each event, it checks against all matching alert rules. This provides near-real-time alerting (seconds after log generation).</p>
+<p><strong>Window-based evaluation:</strong> Many alert rules operate on time windows (&quot;error count in last 5 minutes&quot;). The evaluator maintains sliding window state for each rule:</p>
+<pre><code>Sliding Window Implementation:
+
+For rule &quot;error_rate &gt; 5% in last 5min&quot; for service=api-gateway:
+
+State:
+  window_buckets: [
+    {minute: 14:20, errors: 12, total: 300},
+    {minute: 14:21, errors: 15, total: 280},
+    {minute: 14:22, errors: 8, total: 310},
+    {minute: 14:23, errors: 45, total: 290},  ← spike
+    {minute: 14:24, errors: 52, total: 305},  ← spike continues
+  ]
+
+  sum_errors = 132, sum_total = 1485
+  error_rate = 132/1485 = 8.9% &gt; 5% threshold → ALERT!
+</code></pre>
+<h3>Alert Fatigue Mitigation</h3>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Deduplication</strong></td>
+<td>Same alert firing repeatedly is collapsed into one notification</td>
+</tr>
+<tr>
+<td><strong>Grouping</strong></td>
+<td>Related alerts (same service, same time) are grouped into one notification</td>
+</tr>
+<tr>
+<td><strong>Cooldown</strong></td>
+<td>After alerting, wait N minutes before alerting again for the same rule</td>
+</tr>
+<tr>
+<td><strong>Escalation</strong></td>
+<td>Start with Slack notification; if not acknowledged in 10 minutes, escalate to PagerDuty</td>
+</tr>
+<tr>
+<td><strong>Auto-resolve</strong></td>
+<td>If condition clears, automatically resolve the alert</td>
+</tr>
+<tr>
+<td><strong>Severity routing</strong></td>
+<td>Critical → PagerDuty page, Warning → Slack, Info → Email digest</td>
+</tr>
+</tbody></table>
+<div class="warning">
+
+<p>Alert fatigue is the number one operational problem with logging platforms. If engineers receive hundreds of alerts per day, they start ignoring them, and real incidents get missed. Design the alerting system with strong deduplication, grouping, and severity routing from the start.</p>
+</div>
+
+
+<hr>
+<h2>13. Log Retention &amp; Lifecycle</h2>
+<h3>Automatic Tier Migration</h3>
+<pre><code>Lifecycle Policy Example (per tenant):
+
+  Service: api-gateway
+  Priority: High (critical service)
+
+  Hot tier: 30 days (Elasticsearch, SSD, fully indexed)
+    → After 30 days: migrate to warm
+
+  Warm tier: 60 days (Elasticsearch, HDD, compressed, read-only)
+    → After 60 days: export to cold
+
+  Cold tier: 275 days (S3, Parquet format)
+    → After 275 days: move to archive or delete
+
+  Total retention: 1 year
+
+  ---
+
+  Service: batch-job-runner
+  Priority: Low (non-critical)
+
+  Hot tier: 7 days
+  Warm tier: 23 days
+  Cold tier: None
+  Total retention: 30 days
+</code></pre>
+<h3>Migration Process</h3>
+<p><strong>Hot to Warm:</strong></p>
+<ol>
+<li>Elasticsearch Index Lifecycle Management (ILM) triggers the transition</li>
+<li>Force-merge index segments (reduce from many small segments to 1 per shard)</li>
+<li>Enable best compression codec</li>
+<li>Shrink shards (reduce from 5 to 1 shard)</li>
+<li>Move index to warm-tier nodes (HDD storage, cheaper instances)</li>
+<li>Mark index as read-only</li>
+</ol>
+<p><strong>Warm to Cold:</strong></p>
+<ol>
+<li>Export Elasticsearch index to Parquet files</li>
+<li>Upload Parquet files to S3 with appropriate partitioning</li>
+<li>Register files in a metadata catalog (Hive Metastore, AWS Glue)</li>
+<li>Delete Elasticsearch index</li>
+<li>Update query engine to route old queries to cold tier</li>
+</ol>
+<p><strong>Cold to Archive/Delete:</strong></p>
+<ol>
+<li>Move S3 objects to Glacier storage class (or equivalent)</li>
+<li>Or delete based on retention policy</li>
+<li>Update metadata catalog</li>
+</ol>
+<h3>Compliance Considerations</h3>
+<table>
+<thead>
+<tr>
+<th>Regulation</th>
+<th>Requirement</th>
+<th>Impact</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GDPR</td>
+<td>Right to erasure</td>
+<td>Must be able to delete specific user&#39;s logs across all tiers</td>
+</tr>
+<tr>
+<td>SOC 2</td>
+<td>Audit trail retention</td>
+<td>Security-relevant logs must be retained for defined period</td>
+</tr>
+<tr>
+<td>HIPAA</td>
+<td>PHI retention</td>
+<td>Health data logs have specific retention requirements</td>
+</tr>
+<tr>
+<td>PCI DSS</td>
+<td>Cardholder data protection</td>
+<td>Payment-related logs must be encrypted and access-controlled</td>
+</tr>
+<tr>
+<td>Industry-specific</td>
+<td>Varies</td>
+<td>Financial services may require 7-year retention</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>GDPR right-to-erasure is particularly challenging for logging systems. You cannot easily delete one user&#39;s logs from a Parquet file containing millions of events. Solutions include: (1) Pseudonymization at ingestion (replace user IDs with tokens, delete the token mapping), (2) Separate storage for PII-containing fields with independent deletion, (3) Acceptance that logs are a &quot;legitimate interest&quot; retention (legal guidance varies).</p>
+</div>
+
+
+<hr>
+<h2>14. Multi-Tenancy</h2>
+<h3>Isolation Requirements</h3>
+<p>In a multi-tenant logging platform, each tenant (customer organization) must have:</p>
+<p><strong>Data isolation:</strong> Tenant A must never see Tenant B&#39;s logs. This is the most critical requirement.</p>
+<p><strong>Performance isolation:</strong> A noisy tenant generating 10x their normal log volume must not degrade search performance for other tenants.</p>
+<p><strong>Cost isolation:</strong> Each tenant&#39;s resource consumption must be independently metered for billing.</p>
+<h3>Isolation Strategies</h3>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Description</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Separate clusters</strong></td>
+<td>Each tenant gets their own Elasticsearch cluster</td>
+<td>Strongest isolation</td>
+<td>Expensive, poor resource utilization</td>
+</tr>
+<tr>
+<td><strong>Separate indices</strong></td>
+<td>Shared cluster, tenant-specific indices</td>
+<td>Good isolation, easy to manage</td>
+<td>Many indices can strain cluster</td>
+</tr>
+<tr>
+<td><strong>Shared indices with routing</strong></td>
+<td>Shared indices, tenant ID in routing key</td>
+<td>Efficient resource use</td>
+<td>Weaker isolation, noisy neighbor risk</td>
+</tr>
+<tr>
+<td><strong>Namespace isolation</strong></td>
+<td>Shared everything with tenant ID as a field</td>
+<td>Most efficient</td>
+<td>Weakest isolation, requires careful access control</td>
+</tr>
+</tbody></table>
+<p><strong>Recommended hybrid approach:</strong></p>
+<ul>
+<li>Large tenants: Dedicated indices on dedicated nodes (strong isolation)</li>
+<li>Medium tenants: Dedicated indices on shared nodes</li>
+<li>Small tenants: Shared indices with tenant routing key</li>
+</ul>
+<h3>Rate Limiting and Quotas</h3>
+<pre><code>Per-tenant quotas:
+
+  Tenant: Acme Corp
+  Plan: Enterprise
+
+  Ingestion:
+    - Rate limit: 50,000 events/sec (sustained)
+    - Burst limit: 200,000 events/sec (for 60 seconds)
+    - Daily volume limit: 2 TB/day
+    - Action on limit: Reject with 429, oldest events dropped first
+
+  Storage:
+    - Hot tier quota: 50 TB
+    - Total retention: 90 days hot, 1 year total
+    - Action on limit: Auto-archive oldest data
+
+  Query:
+    - Concurrent queries: 20
+    - Query timeout: 60 seconds
+    - Scan limit: 10 TB per query
+    - Action on limit: Query cancelled with explanation
+</code></pre>
+<h3>Access Control</h3>
+<pre><code>Role-Based Access Control (RBAC):
+
+  Tenant Admin:
+    - Full access to all tenant logs
+    - Manage alert rules and dashboards
+    - Configure retention policies
+    - Manage API keys
+
+  Team Lead (service-scoped):
+    - Access logs for assigned services only
+    - Create alert rules for assigned services
+    - View dashboards
+
+  Developer:
+    - Read-only access to assigned service logs
+    - Cannot create alert rules
+    - Cannot access PII-containing fields
+
+  Security Auditor:
+    - Read access to all logs (including PII)
+    - Cannot modify anything
+    - All queries are audit-logged
+</code></pre>
+<hr>
+<h2>15. Data Models &amp; Storage</h2>
+<h3>Core Data Models</h3>
+<p><strong>Log Event (Document)</strong></p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Indexed</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>event_id</td>
+<td>UUID</td>
+<td>Yes</td>
+<td>Unique event identifier (for deduplication)</td>
+</tr>
+<tr>
+<td>tenant_id</td>
+<td>String</td>
+<td>Yes (routing)</td>
+<td>Tenant identifier</td>
+</tr>
+<tr>
+<td>timestamp</td>
+<td>DateTime(ms)</td>
+<td>Yes (primary)</td>
+<td>Event timestamp</td>
+</tr>
+<tr>
+<td>ingested_at</td>
+<td>DateTime(ms)</td>
+<td>Yes</td>
+<td>When the platform received the event</td>
+</tr>
+<tr>
+<td>level</td>
+<td>Enum</td>
+<td>Yes</td>
+<td>DEBUG, INFO, WARN, ERROR, FATAL</td>
+</tr>
+<tr>
+<td>service</td>
+<td>String</td>
+<td>Yes</td>
+<td>Source service name</td>
+</tr>
+<tr>
+<td>host</td>
+<td>String</td>
+<td>Yes</td>
+<td>Source hostname/pod</td>
+</tr>
+<tr>
+<td>message</td>
+<td>Text</td>
+<td>Yes (full-text)</td>
+<td>Log message body</td>
+</tr>
+<tr>
+<td>trace_id</td>
+<td>String</td>
+<td>Yes</td>
+<td>Distributed trace identifier</td>
+</tr>
+<tr>
+<td>span_id</td>
+<td>String</td>
+<td>Yes</td>
+<td>Span identifier</td>
+</tr>
+<tr>
+<td>request_id</td>
+<td>String</td>
+<td>Yes</td>
+<td>Request correlation ID</td>
+</tr>
+<tr>
+<td>environment</td>
+<td>String</td>
+<td>Yes</td>
+<td>production, staging, development</td>
+</tr>
+<tr>
+<td>region</td>
+<td>String</td>
+<td>Yes</td>
+<td>Geographic region</td>
+</tr>
+<tr>
+<td>attributes</td>
+<td>JSON</td>
+<td>Yes (dynamic)</td>
+<td>Additional structured fields</td>
+</tr>
+<tr>
+<td>tags</td>
+<td>Array[String]</td>
+<td>Yes</td>
+<td>User-defined tags</td>
+</tr>
+</tbody></table>
+<p><strong>Alert Rule</strong></p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>rule_id</td>
+<td>UUID (PK)</td>
+<td>Unique rule identifier</td>
+</tr>
+<tr>
+<td>tenant_id</td>
+<td>UUID (FK)</td>
+<td>Owning tenant</td>
+</tr>
+<tr>
+<td>name</td>
+<td>String</td>
+<td>Human-readable rule name</td>
+</tr>
+<tr>
+<td>description</td>
+<td>Text</td>
+<td>What this alert detects</td>
+</tr>
+<tr>
+<td>query</td>
+<td>Text</td>
+<td>Log query / filter expression</td>
+</tr>
+<tr>
+<td>condition</td>
+<td>JSON</td>
+<td>Threshold, comparison, window</td>
+</tr>
+<tr>
+<td>window_seconds</td>
+<td>Int</td>
+<td>Time window for evaluation</td>
+</tr>
+<tr>
+<td>severity</td>
+<td>Enum</td>
+<td>INFO, WARNING, CRITICAL</td>
+</tr>
+<tr>
+<td>routing</td>
+<td>JSON</td>
+<td>Notification channels and escalation</td>
+</tr>
+<tr>
+<td>enabled</td>
+<td>Boolean</td>
+<td>Whether the rule is active</td>
+</tr>
+<tr>
+<td>cooldown_seconds</td>
+<td>Int</td>
+<td>Minimum time between notifications</td>
+</tr>
+<tr>
+<td>created_by</td>
+<td>UUID</td>
+<td>Creator user</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>Timestamp</td>
+<td>Creation time</td>
+</tr>
+<tr>
+<td>updated_at</td>
+<td>Timestamp</td>
+<td>Last modification</td>
+</tr>
+</tbody></table>
+<p><strong>Dashboard</strong></p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>dashboard_id</td>
+<td>UUID (PK)</td>
+<td>Unique identifier</td>
+</tr>
+<tr>
+<td>tenant_id</td>
+<td>UUID (FK)</td>
+<td>Owning tenant</td>
+</tr>
+<tr>
+<td>title</td>
+<td>String</td>
+<td>Dashboard name</td>
+</tr>
+<tr>
+<td>description</td>
+<td>Text</td>
+<td>Dashboard purpose</td>
+</tr>
+<tr>
+<td>layout</td>
+<td>JSON</td>
+<td>Panel positions and sizes</td>
+</tr>
+<tr>
+<td>panels</td>
+<td>JSON[]</td>
+<td>Array of panel definitions</td>
+</tr>
+<tr>
+<td>variables</td>
+<td>JSON</td>
+<td>Template variables (service, time range)</td>
+</tr>
+<tr>
+<td>permissions</td>
+<td>JSON</td>
+<td>Who can view/edit</td>
+</tr>
+<tr>
+<td>created_by</td>
+<td>UUID</td>
+<td>Creator</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>Timestamp</td>
+<td>Creation time</td>
+</tr>
+<tr>
+<td>updated_at</td>
+<td>Timestamp</td>
+<td>Last update</td>
+</tr>
+</tbody></table>
+<h3>Storage Technology Summary</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Technology</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Hot log storage</td>
+<td>Elasticsearch or ClickHouse</td>
+<td>Full-text search, recent log queries</td>
+</tr>
+<tr>
+<td>Warm log storage</td>
+<td>Elasticsearch (HDD tier)</td>
+<td>Compressed, read-only, older logs</td>
+</tr>
+<tr>
+<td>Cold log storage</td>
+<td>S3 + Parquet</td>
+<td>Archival, infrequent queries</td>
+</tr>
+<tr>
+<td>Alert rules &amp; dashboards</td>
+<td>PostgreSQL</td>
+<td>CRUD operations, relational queries</td>
+</tr>
+<tr>
+<td>Alert state</td>
+<td>Redis</td>
+<td>Real-time window state, deduplication</td>
+</tr>
+<tr>
+<td>Ingestion buffer</td>
+<td>Kafka</td>
+<td>Durable message queue</td>
+</tr>
+<tr>
+<td>Pre-aggregated metrics</td>
+<td>ClickHouse or TimescaleDB</td>
+<td>Dashboard queries</td>
+</tr>
+<tr>
+<td>Query cache</td>
+<td>Redis</td>
+<td>Frequently repeated queries</td>
+</tr>
+<tr>
+<td>User/tenant metadata</td>
+<td>PostgreSQL</td>
+<td>Account management</td>
+</tr>
+<tr>
+<td>Metadata catalog</td>
+<td>Hive Metastore / AWS Glue</td>
+<td>Cold tier Parquet file registry</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>16. Scalability Strategies</h2>
+<h3>Ingestion Scaling</h3>
+<pre><code>Scale the write path independently of the read path:
+
+Collection Service:
+  - Stateless, behind load balancer
+  - Add instances to handle more inbound connections
+  - Bottleneck: Kafka produce throughput
+
+Kafka:
+  - Add brokers for more throughput
+  - Increase partitions for more consumer parallelism
+  - Each broker handles ~200-500 MB/sec
+
+Stream Processors:
+  - One consumer per Kafka partition (maximum parallelism)
+  - Add partitions + consumers to scale processing
+  - Processing is stateless (enrichment lookups are cached)
+
+Hot Storage (Elasticsearch):
+  - Add data nodes for more indexing throughput
+  - Each node handles ~10,000-50,000 events/sec indexing
+  - Use bulk API (batch 1000-5000 events per request)
+</code></pre>
+<h3>Search Scaling</h3>
+<pre><code>Scale the read path:
+
+Elasticsearch:
+  - Add coordinating nodes (query routing, result aggregation)
+  - Increase replica count (each replica can serve queries)
+  - Separate hot and warm nodes (don&#39;t let warm queries slow hot)
+
+Query Caching:
+  - Cache results of common dashboard queries (Redis, 1-5 min TTL)
+  - Pre-compute top-N and aggregation results
+
+Cold Tier:
+  - Use serverless query engines (Athena, BigQuery) that scale automatically
+  - Partition Parquet files by tenant, service, and time for predicate pushdown
+</code></pre>
+<h3>Multi-Region Deployment</h3>
+<pre class="mermaid">
+graph TB
+    subgraph "US Region"
+        US_COL[Collection Service]
+        US_K[Kafka]
+        US_ES[Elasticsearch]
+        US_S3[S3 Cold Storage]
+    end
+
+    subgraph "EU Region"
+        EU_COL[Collection Service]
+        EU_K[Kafka]
+        EU_ES[Elasticsearch]
+        EU_S3[S3 Cold Storage]
+    end
+
+    subgraph "Global"
+        GLB_API[Global API<br/>Route to nearest region]
+        GLB_DASH[Dashboard Service<br/>Cross-region queries]
+    end
+
+    US_COL --> US_K --> US_ES --> US_S3
+    EU_COL --> EU_K --> EU_ES --> EU_S3
+
+    GLB_API --> US_COL
+    GLB_API --> EU_COL
+    GLB_DASH --> US_ES
+    GLB_DASH --> EU_ES
+</pre>
+<p><strong>Data residency:</strong> Some tenants require logs to stay in a specific region (GDPR). The collection service routes logs to the correct region based on tenant configuration.</p>
+<p><strong>Cross-region search:</strong> When a tenant&#39;s logs span multiple regions, the dashboard service runs the query against each region&#39;s storage and merges results. This adds latency but maintains data residency compliance.</p>
+<hr>
+<h2>17. Design Trade-offs</h2>
+<h3>Elasticsearch vs ClickHouse for Hot Tier</h3>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>Elasticsearch</th>
+<th>ClickHouse</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Full-text search</strong></td>
+<td>Excellent (inverted index)</td>
+<td>Limited (requires bloom filters or full scan)</td>
+</tr>
+<tr>
+<td><strong>Aggregation queries</strong></td>
+<td>Good</td>
+<td>Excellent (columnar, vectorized)</td>
+</tr>
+<tr>
+<td><strong>Storage efficiency</strong></td>
+<td>1.5-2x raw data (with index)</td>
+<td>0.3-0.5x raw data (columnar compression)</td>
+</tr>
+<tr>
+<td><strong>Write throughput</strong></td>
+<td>10-50K events/sec/node</td>
+<td>100-500K events/sec/node</td>
+</tr>
+<tr>
+<td><strong>Query language</strong></td>
+<td>Lucene/KQL + DSL</td>
+<td>SQL</td>
+</tr>
+<tr>
+<td><strong>Operational complexity</strong></td>
+<td>High (JVM tuning, shard management)</td>
+<td>Medium (simpler architecture)</td>
+</tr>
+<tr>
+<td><strong>Ecosystem</strong></td>
+<td>Kibana, Beats, Logstash (ELK)</td>
+<td>Grafana, various connectors</td>
+</tr>
+<tr>
+<td><strong>Cost at scale</strong></td>
+<td>Higher (storage + compute)</td>
+<td>Lower (better compression + throughput)</td>
+</tr>
+</tbody></table>
+<p><strong>Recommendation:</strong> Use Elasticsearch if full-text search on log messages is the primary use case. Use ClickHouse if analytics/aggregation is the primary use case. Consider using both: Elasticsearch for interactive log search, ClickHouse for dashboard metrics and aggregation.</p>
+<h3>Schema-on-Read vs Schema-on-Write</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>When to Choose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Schema-on-read</td>
+<td>Many diverse log formats, rapid onboarding needed, exploration-heavy use</td>
+</tr>
+<tr>
+<td>Schema-on-write</td>
+<td>Well-defined log schema, performance-critical queries, cost optimization</td>
+</tr>
+<tr>
+<td>Hybrid</td>
+<td>Enforce core fields (timestamp, level, service), allow dynamic application fields</td>
+</tr>
+</tbody></table>
+<h3>Push vs Pull Log Collection</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Description</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Push (agent → server)</strong></td>
+<td>Agent sends logs to collection service</td>
+<td>Real-time, guaranteed delivery with retries</td>
+<td>Agent must be installed on every host</td>
+</tr>
+<tr>
+<td><strong>Pull (server scrapes agent)</strong></td>
+<td>Server periodically pulls logs from agents</td>
+<td>Server controls collection rate</td>
+<td>Higher latency, misses events between scrapes</td>
+</tr>
+<tr>
+<td><strong>Sidecar (Kubernetes)</strong></td>
+<td>Agent runs as a sidecar container alongside app</td>
+<td>No host-level agent needed</td>
+<td>More containers, more resource overhead</td>
+</tr>
+</tbody></table>
+<p>Most modern platforms use <strong>push-based</strong> collection with agents on every host. Kubernetes environments often use a <strong>DaemonSet</strong> (one agent pod per node) rather than sidecars.</p>
+<h3>Cost Optimization Strategies</h3>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Savings</th>
+<th>Trade-off</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Aggressive tiering (7-day hot)</td>
+<td>60-70% storage cost</td>
+<td>Slower search for 7+ day old logs</td>
+</tr>
+<tr>
+<td>Sampling DEBUG/TRACE logs (1 in 10)</td>
+<td>40-50% volume reduction</td>
+<td>Missing detail for debugging</td>
+</tr>
+<tr>
+<td>Dropping log body, keeping fields</td>
+<td>50% storage</td>
+<td>Cannot search message text</td>
+</tr>
+<tr>
+<td>Short retention (30 days)</td>
+<td>70% storage</td>
+<td>No historical investigation</td>
+</tr>
+<tr>
+<td>Columnar hot tier (ClickHouse)</td>
+<td>60% vs Elasticsearch</td>
+<td>Weaker full-text search</td>
+</tr>
+<tr>
+<td>Deduplication of repeated messages</td>
+<td>10-30% volume</td>
+<td>Slight processing overhead</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Cost is a central concern in logging platform design. At 10 TB/day, even small optimizations save millions of dollars annually. Mention cost trade-offs proactively -- it shows mature engineering judgment. A common pattern is: &quot;We store structured fields in the hot tier for fast search, but we archive the raw log body to cold storage. If a user needs the full message for a specific event, we fetch it from cold storage on demand.&quot;</p>
+</div>
+
+
+<hr>
+<h2>18. Platform Comparison</h2>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>ELK Stack</th>
+<th>Grafana Loki</th>
+<th>ClickHouse</th>
+<th>Datadog</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Architecture</strong></td>
+<td>Elasticsearch + Logstash + Kibana</td>
+<td>Label-indexed, log chunks in object storage</td>
+<td>Columnar OLAP database</td>
+<td>Fully managed SaaS</td>
+</tr>
+<tr>
+<td><strong>Indexing</strong></td>
+<td>Full inverted index on all fields</td>
+<td>Index on labels only, no full-text index</td>
+<td>Sparse primary index, optional bloom</td>
+<td>Full inverted index</td>
+</tr>
+<tr>
+<td><strong>Storage model</strong></td>
+<td>Index per time period, replicated shards</td>
+<td>Chunks in S3/GCS, index in BoltDB</td>
+<td>MergeTree tables, partitioned by time</td>
+<td>Managed, multi-tier</td>
+</tr>
+<tr>
+<td><strong>Full-text search</strong></td>
+<td>Excellent</td>
+<td>Limited (grep-like on chunks)</td>
+<td>Limited</td>
+<td>Excellent</td>
+</tr>
+<tr>
+<td><strong>Analytics</strong></td>
+<td>Good</td>
+<td>Basic</td>
+<td>Excellent</td>
+<td>Good</td>
+</tr>
+<tr>
+<td><strong>Cost efficiency</strong></td>
+<td>Low (indexes are expensive)</td>
+<td>High (minimal indexing, cheap storage)</td>
+<td>High (columnar compression)</td>
+<td>Very high (SaaS pricing)</td>
+</tr>
+<tr>
+<td><strong>Operational burden</strong></td>
+<td>High (cluster management)</td>
+<td>Medium</td>
+<td>Medium</td>
+<td>None (managed)</td>
+</tr>
+<tr>
+<td><strong>Scale limit</strong></td>
+<td>100s of TB with effort</td>
+<td>PBs (object storage backed)</td>
+<td>PBs</td>
+<td>Managed, scales</td>
+</tr>
+<tr>
+<td><strong>Best for</strong></td>
+<td>Full-featured log search</td>
+<td>Cost-sensitive, Kubernetes native</td>
+<td>Analytics-heavy workloads</td>
+<td>Teams wanting managed solution</td>
+</tr>
+</tbody></table>
+<h3>When to Choose Each</h3>
+<p><strong>ELK Stack:</strong> You need powerful full-text search, have ops expertise, and budget for Elasticsearch infrastructure. Good for organizations with dedicated platform teams.</p>
+<p><strong>Grafana Loki:</strong> You want cost-effective logging with Kubernetes, do not need full-text indexing, and are already using Grafana. The &quot;grep for logs&quot; approach works well when you filter by labels first.</p>
+<p><strong>ClickHouse:</strong> Your primary use case is analytics (dashboards, aggregations, time-series analysis) rather than searching through individual log messages. Best bang for buck on compute and storage.</p>
+<p><strong>Datadog:</strong> You want a fully managed solution, have budget for SaaS pricing, and value reduced operational burden over cost optimization. Excellent for fast-moving teams that do not want to operate infrastructure.</p>
+<hr>
+<h2>19. Interview Cheat Sheet</h2>
+<h3>30-Second Summary</h3>
+<blockquote>
+<p>A logging platform ingests millions of events per second from distributed agents through a Kafka-buffered pipeline. Events are parsed, enriched, and PII-redacted by stream processors before being written to tiered storage: hot tier (Elasticsearch or ClickHouse, 30 days, fast search), warm tier (compressed, HDD, 90 days), and cold tier (S3 + Parquet, 1 year, cheap archival). Full-text search uses inverted indexes; analytics use columnar storage. Alerting evaluates rules against the real-time stream for near-instant detection. Multi-tenancy is enforced through tenant-scoped indices, rate limiting, and RBAC. Cost is managed through aggressive tiering, sampling, and compression.</p>
+</blockquote>
+<h3>Key Numbers to Remember</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Ingestion rate (sustained)</td>
+<td>1M events/sec</td>
+</tr>
+<tr>
+<td>Ingestion rate (peak)</td>
+<td>5M events/sec</td>
+</tr>
+<tr>
+<td>Average event size</td>
+<td>500 bytes</td>
+</tr>
+<tr>
+<td>Daily raw volume</td>
+<td>~43 TB/day</td>
+</tr>
+<tr>
+<td>Search latency (hot, recent)</td>
+<td>&lt; 1 second</td>
+</tr>
+<tr>
+<td>Search latency (hot, 30 days)</td>
+<td>&lt; 5 seconds</td>
+</tr>
+<tr>
+<td>Search latency (cold)</td>
+<td>Minutes</td>
+</tr>
+<tr>
+<td>Ingestion-to-searchable delay</td>
+<td>5-15 seconds</td>
+</tr>
+<tr>
+<td>Elasticsearch indexing rate/node</td>
+<td>10-50K events/sec</td>
+</tr>
+<tr>
+<td>ClickHouse ingestion rate/node</td>
+<td>100-500K events/sec</td>
+</tr>
+<tr>
+<td>Compression ratio (columnar/Parquet)</td>
+<td>5-20x</td>
+</tr>
+<tr>
+<td>Hot tier cost</td>
+<td>~$0.10/GB/month</td>
+</tr>
+<tr>
+<td>Cold tier cost (S3)</td>
+<td>~$0.005/GB/month</td>
+</tr>
+<tr>
+<td>Kafka throughput per broker</td>
+<td>200-500 MB/sec</td>
+</tr>
+</tbody></table>
+<h3>Architecture Decisions to Justify</h3>
+<table>
+<thead>
+<tr>
+<th>Decision</th>
+<th>Justification</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Kafka as ingestion buffer</td>
+<td>Decouples collection from processing; absorbs traffic bursts; enables replay</td>
+</tr>
+<tr>
+<td>Agents on every host</td>
+<td>Push-based collection provides lower latency and guaranteed delivery vs pull</td>
+</tr>
+<tr>
+<td>Three-tier storage</td>
+<td>20x cost difference between hot and cold; most logs are rarely queried after 7 days</td>
+</tr>
+<tr>
+<td>Elasticsearch for hot tier</td>
+<td>Best-in-class full-text search; inverted index enables millisecond queries</td>
+</tr>
+<tr>
+<td>Parquet for cold tier</td>
+<td>Columnar compression reduces storage 5-20x; compatible with analytics engines</td>
+</tr>
+<tr>
+<td>Per-tenant Kafka topics</td>
+<td>Isolation at the queue level; independent scaling and rate limiting</td>
+</tr>
+<tr>
+<td>Stream-based alerting</td>
+<td>Near-real-time alert evaluation; seconds from log generation to alert</td>
+</tr>
+<tr>
+<td>Pre-aggregated metrics for dashboards</td>
+<td>Avoids scanning billions of raw events for every dashboard refresh</td>
+</tr>
+<tr>
+<td>Schema-on-read with core fields</td>
+<td>Flexibility for diverse log formats while maintaining query performance for common fields</td>
+</tr>
+</tbody></table>
+<h3>Common Follow-Up Questions</h3>
+<p><strong>Q: How do you handle a sudden 10x spike in log volume?</strong>
+A: Kafka absorbs the burst (it is sized for peak, not average). If the spike persists, processors lag behind Kafka but continue processing. Auto-scaling adds more processor instances. If Kafka itself is overwhelmed, the collection service applies backpressure: it returns 429 to agents, which buffer locally. As a last resort, the collection service samples (keep 1 in N events) for low-severity logs while always accepting ERROR and above.</p>
+<p><strong>Q: How do you delete a specific user&#39;s logs for GDPR compliance?</strong>
+A: At ingestion, we pseudonymize user identifiers: the real user ID is replaced with a token, and the mapping is stored separately. To &quot;delete&quot; a user&#39;s logs, we delete the token mapping. The logs remain but are no longer linkable to the individual. For fields that cannot be pseudonymized, we use per-user encryption keys and delete the key on erasure request.</p>
+<p><strong>Q: How do you handle logs from a service that logs too much?</strong>
+A: Multiple layers of defense: (1) Per-service rate limiting at the collection service, (2) Dynamic sampling for high-volume services (keep 1 in 100 DEBUG logs), (3) Alerts to the service team when their log volume exceeds budget, (4) Automatic deduplication of repeated messages (collapse 10,000 identical errors into one event with count=10,000), (5) Quota enforcement -- when a tenant exceeds their daily volume limit, lower-priority logs are dropped.</p>
+<p><strong>Q: Why not just use a time-series database for everything?</strong>
+A: Time-series databases (InfluxDB, Prometheus) are optimized for numeric metrics with fixed schemas. Logs are unstructured text with variable schemas. A time-series DB cannot efficiently perform full-text search across log messages. The right approach is to derive metrics from logs (error count, latency percentiles) and store those in a time-series DB for dashboards, while keeping the raw logs in a text-search engine for debugging.</p>
+<p><strong>Q: How do you ensure no logs are lost during deployment of the processing pipeline?</strong>
+A: Kafka retains messages regardless of consumer state. When we deploy new processors, we gracefully drain the old consumers (they commit their offsets), then start the new consumers which resume from the committed offsets. No messages are skipped. If a consumer crashes before committing, it re-processes the last batch on restart (at-least-once delivery). Idempotent writes to storage handle duplicates.</p>
+<p><strong>Q: How do you search across hot and cold tiers in a single query?</strong>
+A: The query engine determines which tiers contain data for the requested time range. For the hot portion, it queries Elasticsearch directly. For the cold portion, it queries an analytics engine (Athena/Presto) over Parquet files in S3. Results are merged by timestamp and returned to the user. The UI shows a warning that the query spans cold storage and may take longer.</p>
+<h3>Red Flags to Avoid</h3>
+<ul>
+<li>Do NOT propose storing all logs in a single relational database -- it cannot handle the write throughput or search patterns</li>
+<li>Do NOT forget about Kafka (or equivalent buffer) -- without it, burst traffic will overwhelm the storage layer</li>
+<li>Do NOT ignore the cost dimension -- logging at scale is enormously expensive; tiered storage is essential</li>
+<li>Do NOT treat all logs equally -- log levels, sampling, and retention policies must vary by service and severity</li>
+<li>Do NOT forget about PII redaction -- logs frequently contain sensitive data that must be handled before storage</li>
+<li>Do NOT propose synchronous writes from collection to storage -- this creates a brittle pipeline with no burst handling</li>
+<li>Do NOT use a single index for all tenants without discussing isolation trade-offs</li>
+<li>Do NOT assume full-text search is free -- inverted indexes consume significant storage and CPU</li>
+<li>Do NOT forget about alerting -- it is a primary use case, not an afterthought</li>
+</ul>
+<hr>
+<div class="tip">
+
+<p><strong>Final Interview Tip:</strong> The logging platform question tests your ability to reason about write-heavy systems at massive scale. The key differentiators are: (1) understanding the cost-performance trade-off across storage tiers, (2) designing a robust ingestion pipeline with Kafka-based buffering, (3) choosing the right storage engine for the query patterns (inverted index for search, columnar for analytics), and (4) addressing multi-tenancy with proper isolation and rate limiting. Show that you think about cost per GB at each tier -- it demonstrates the operational awareness that distinguishes senior engineers.</p>
+</div>
+
+
+</body>
+</html>

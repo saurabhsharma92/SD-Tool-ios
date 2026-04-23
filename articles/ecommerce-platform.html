@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Design Interview: E-Commerce Platform</title>
+</head>
+<body>
+
+<h1>System Design Interview: E-Commerce Platform</h1>
+<h3>Amazon / Shopify Scale</h3>
+<div class="note">
+
+<p><strong>Staff Engineer Interview Preparation Guide</strong> — High Level Design Round</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-problem-clarification--requirements">Problem Clarification &amp; Requirements</a></li>
+<li><a href="#2-capacity-estimation--scale">Capacity Estimation &amp; Scale</a></li>
+<li><a href="#3-high-level-architecture">High-Level Architecture</a></li>
+<li><a href="#4-core-components-deep-dive">Core Components Deep Dive</a></li>
+<li><a href="#5-product-catalog-service">Product Catalog Service</a></li>
+<li><a href="#6-search-service">Search Service</a></li>
+<li><a href="#7-shopping-cart">Shopping Cart</a></li>
+<li><a href="#8-inventory-management">Inventory Management</a></li>
+<li><a href="#9-checkout--order-service">Checkout &amp; Order Service</a></li>
+<li><a href="#10-payment-processing">Payment Processing</a></li>
+<li><a href="#11-recommendation-engine">Recommendation Engine</a></li>
+<li><a href="#12-data-models--storage">Data Models &amp; Storage</a></li>
+<li><a href="#13-scalability-strategies">Scalability Strategies</a></li>
+<li><a href="#14-design-trade-offs--justifications">Design Trade-offs &amp; Justifications</a></li>
+<li><a href="#15-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. Problem Clarification &amp; Requirements</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> E-commerce is a breadth question. The interviewer wants to see that you can identify the critical subsystems and go deep on the ones that matter most. Do not try to design everything in equal depth. After listing the components, ask which area the interviewer wants you to focus on. If they say &quot;your choice,&quot; go deep on inventory management and checkout — that is where the interesting distributed systems challenges live.</p>
+</div>
+
+
+<h3>Questions to Ask the Interviewer</h3>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Question</th>
+<th>Why It Matters</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Scale</strong></td>
+<td>How many products? How many daily active users?</td>
+<td>Catalog storage, search index size</td>
+</tr>
+<tr>
+<td><strong>Catalog</strong></td>
+<td>Single seller or marketplace (multiple sellers)?</td>
+<td>Multi-tenancy, seller isolation</td>
+</tr>
+<tr>
+<td><strong>Inventory</strong></td>
+<td>Single warehouse or distributed fulfillment?</td>
+<td>Inventory partitioning strategy</td>
+</tr>
+<tr>
+<td><strong>Search</strong></td>
+<td>How critical is search relevance? Autocomplete?</td>
+<td>Search infrastructure complexity</td>
+</tr>
+<tr>
+<td><strong>Checkout</strong></td>
+<td>Synchronous or async order confirmation?</td>
+<td>Consistency model</td>
+</tr>
+<tr>
+<td><strong>Payment</strong></td>
+<td>Multiple payment methods? International currencies?</td>
+<td>Payment routing complexity</td>
+</tr>
+<tr>
+<td><strong>Delivery</strong></td>
+<td>In-house logistics or third-party carriers?</td>
+<td>Integration scope</td>
+</tr>
+<tr>
+<td><strong>Peak events</strong></td>
+<td>Black Friday / Prime Day scale?</td>
+<td>Capacity planning and queue-based processing</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>Functional Requirements (Agreed Upon)</h3>
+<ul>
+<li>Sellers can list products with descriptions, images, pricing, and inventory counts</li>
+<li>Users can search and browse products by category, filters, and keywords</li>
+<li>Users can add products to a shopping cart (persistent across sessions)</li>
+<li>Users can check out: select shipping, enter payment, and place an order</li>
+<li>Order tracking: users see order status from placement through delivery</li>
+<li>Users can leave reviews and ratings on purchased products</li>
+<li>Users receive product recommendations based on browsing and purchase history</li>
+<li>Sellers can manage orders and update fulfillment status</li>
+</ul>
+<h3>Non-Functional Requirements</h3>
+<ul>
+<li><strong>Availability:</strong> 99.99% uptime — revenue loss during downtime is substantial</li>
+<li><strong>Latency:</strong> Product page load &lt; 200ms, search results &lt; 300ms, checkout &lt; 2s</li>
+<li><strong>Scale:</strong> 500 million products, 100 million DAU, 5 million orders/day</li>
+<li><strong>Consistency:</strong> Inventory must be accurate — never sell a product that is out of stock</li>
+<li><strong>Durability:</strong> Orders and payments must never be lost</li>
+<li><strong>Eventual consistency acceptable for:</strong> Catalog updates, reviews, recommendations</li>
+</ul>
+<hr>
+<h2>2. Capacity Estimation &amp; Scale</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> E-commerce has extremely high read-to-write ratios. For every order placed, there are hundreds of product page views and search queries. Your architecture should be optimized for reads, with writes handled carefully for correctness.</p>
+</div>
+
+
+<h3>Traffic Estimation</h3>
+<pre><code>Daily Active Users (DAU)    = 100 Million
+Products in catalog         = 500 Million
+Orders per day              = 5 Million
+Average items per order     = 3
+
+Page views per user per day = 20
+Total page views/day        = 100M * 20 = 2 Billion
+
+Read QPS:
+  2B / 86,400 = ~23,000 reads/sec
+  Peak (3x): ~70,000 reads/sec
+
+Search queries:
+  ~40% of page views involve search = 800M/day
+  Search QPS: ~9,200/sec, peak ~28,000/sec
+
+Order QPS:
+  5M / 86,400 = ~58 orders/sec
+  Peak (5x for flash sales): ~290 orders/sec
+
+Cart operations:
+  Average 5 cart actions per order = 25M/day
+  Cart QPS: ~290/sec, peak ~1,500/sec
+
+Read:Write ratio = ~400:1 (views to orders)
+</code></pre>
+<h3>Storage Estimation</h3>
+<pre><code>Product record:
+  - Metadata (title, description, attributes) = ~5 KB
+  - Images (stored in object storage, DB has URLs) = ~200 bytes of URLs
+  - 500M products = ~2.5 TB metadata
+
+Product images:
+  - 5 images per product, avg 500 KB each
+  - 500M * 5 * 500 KB = 1.25 PB in object storage (S3)
+
+Orders:
+  - Order + items = ~2 KB per order
+  - 5M/day = 10 GB/day = ~3.6 TB/year
+
+User data:
+  - Profile + preferences = ~1 KB per user
+  - 500M total users = 500 GB
+
+Reviews:
+  - Average 200 bytes per review
+  - 2M new reviews/day = 400 MB/day = ~146 GB/year
+
+Shopping cart (active):
+  - ~10M active carts at any time
+  - ~500 bytes per cart = 5 GB (fits comfortably in Redis)
+</code></pre>
+<hr>
+<h2>3. High-Level Architecture</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> E-commerce platforms are the canonical example of microservices architecture. Each bounded context (catalog, cart, order, payment, inventory) is a separate service with its own database. This allows independent scaling, deployment, and technology choices. Call this out explicitly when drawing the architecture.</p>
+</div>
+
+
+<pre class="mermaid">
+graph TB
+    subgraph Clients
+        WEB[Web App]
+        MOB[Mobile App]
+    end
+
+    subgraph Edge
+        CDN[CDN - Images & Static]
+        LB[Load Balancer]
+    end
+
+    subgraph API Layer
+        GW[API Gateway]
+        CAT[Catalog Service]
+        SRC[Search Service]
+        CRT[Cart Service]
+        ORD[Order Service]
+        PAY[Payment Service]
+        INV[Inventory Service]
+        REC[Recommendation Service]
+        USR[User Service]
+        NOT[Notification Service]
+        REV[Review Service]
+    end
+
+    subgraph Data Layer
+        PG_CAT[(PostgreSQL - Catalog)]
+        PG_ORD[(PostgreSQL - Orders)]
+        DDB[(DynamoDB - Product Attributes)]
+        ES[(Elasticsearch - Search)]
+        RD[(Redis - Cart & Cache)]
+        S3[(S3 - Product Images)]
+        KFK[Kafka - Event Bus]
+    end
+
+    WEB --> CDN
+    MOB --> CDN
+    WEB --> LB
+    MOB --> LB
+    LB --> GW
+    GW --> CAT
+    GW --> SRC
+    GW --> CRT
+    GW --> ORD
+    GW --> PAY
+    GW --> INV
+    GW --> REC
+    GW --> USR
+    GW --> REV
+    CAT --> PG_CAT
+    CAT --> DDB
+    CAT --> S3
+    SRC --> ES
+    CRT --> RD
+    ORD --> PG_ORD
+    PAY --> PG_ORD
+    INV --> PG_CAT
+    INV --> RD
+    REC --> RD
+    REV --> PG_CAT
+    ORD --> KFK
+    KFK --> NOT
+    KFK --> INV
+    KFK --> REC
+</pre>
+<h3>Service Responsibilities</h3>
+<table>
+<thead>
+<tr>
+<th>Service</th>
+<th>Owns</th>
+<th>Database</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Catalog Service</strong></td>
+<td>Product CRUD, categories, images</td>
+<td>PostgreSQL + DynamoDB + S3</td>
+</tr>
+<tr>
+<td><strong>Search Service</strong></td>
+<td>Full-text search, autocomplete, facets</td>
+<td>Elasticsearch</td>
+</tr>
+<tr>
+<td><strong>Cart Service</strong></td>
+<td>Cart CRUD, cart persistence</td>
+<td>Redis (active) + DynamoDB (abandoned)</td>
+</tr>
+<tr>
+<td><strong>Order Service</strong></td>
+<td>Order lifecycle, state management</td>
+<td>PostgreSQL</td>
+</tr>
+<tr>
+<td><strong>Payment Service</strong></td>
+<td>Charge, refund, payment methods</td>
+<td>PostgreSQL</td>
+</tr>
+<tr>
+<td><strong>Inventory Service</strong></td>
+<td>Stock levels, reservations</td>
+<td>PostgreSQL + Redis cache</td>
+</tr>
+<tr>
+<td><strong>Recommendation Service</strong></td>
+<td>Personalized suggestions</td>
+<td>Redis + precomputed models</td>
+</tr>
+<tr>
+<td><strong>User Service</strong></td>
+<td>Auth, profiles, addresses</td>
+<td>PostgreSQL</td>
+</tr>
+<tr>
+<td><strong>Review Service</strong></td>
+<td>Reviews, ratings, moderation</td>
+<td>PostgreSQL</td>
+</tr>
+<tr>
+<td><strong>Notification Service</strong></td>
+<td>Email, push, SMS</td>
+<td>Kafka consumer</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>4. Core Components Deep Dive</h2>
+<h3>API Gateway</h3>
+<p>The API gateway is the single entry point for all client requests. It handles:</p>
+<ul>
+<li><strong>Authentication:</strong> Validates JWT tokens, attaches user context</li>
+<li><strong>Rate limiting:</strong> Per-user and per-IP limits to prevent abuse</li>
+<li><strong>Request routing:</strong> Routes to the appropriate microservice</li>
+<li><strong>Response aggregation:</strong> For pages that need data from multiple services (e.g., product page needs catalog + reviews + recommendations)</li>
+<li><strong>Circuit breaking:</strong> Prevents cascade failures when a downstream service is unhealthy</li>
+</ul>
+<div class="note">
+
+<p>For the product detail page, the API gateway makes parallel calls to Catalog Service (product info), Review Service (ratings), Recommendation Service (similar products), and Inventory Service (stock status). If any non-critical call fails (e.g., recommendations), the page still loads with the critical data.</p>
+</div>
+
+
+<hr>
+<h2>5. Product Catalog Service</h2>
+<h3>Hierarchical Categories</h3>
+<p>Products are organized in a tree structure:</p>
+<pre><code>Electronics
+  -&gt; Phones
+    -&gt; Smartphones
+      -&gt; Android Phones
+      -&gt; iPhones
+    -&gt; Feature Phones
+  -&gt; Laptops
+    -&gt; Gaming Laptops
+    -&gt; Ultrabooks
+  -&gt; Accessories
+</code></pre>
+<p><strong>Implementation:</strong> Each category has a <code>parent_id</code> reference. For efficient tree queries (find all products under &quot;Electronics&quot; including subcategories), use a materialized path or nested set model.</p>
+<pre><code>Materialized Path approach:
+  Category: &quot;iPhones&quot;
+  Path: &quot;/electronics/phones/smartphones/iphones&quot;
+
+  Query: Find all products in Electronics and below:
+  SELECT * FROM products WHERE category_path LIKE &#39;/electronics/%&#39;
+</code></pre>
+<h3>Product Variants and SKUs</h3>
+<p>A single product (e.g., &quot;iPhone 15&quot;) has multiple variants (128GB Black, 256GB Blue, etc.). Each variant is a separate SKU with its own price, inventory count, and attributes.</p>
+<pre><code>Product: iPhone 15
+  |
+  |-- SKU: IPH15-128-BLK (128GB, Black, $799)
+  |-- SKU: IPH15-128-BLU (128GB, Blue, $799)
+  |-- SKU: IPH15-256-BLK (256GB, Black, $899)
+  |-- SKU: IPH15-256-BLU (256GB, Blue, $899)
+
+Attributes are key-value pairs:
+  { &quot;storage&quot;: &quot;128GB&quot;, &quot;color&quot;: &quot;Black&quot;, &quot;display&quot;: &quot;6.1 inch&quot; }
+</code></pre>
+<h3>Why DynamoDB for Product Attributes</h3>
+<p>Products across categories have wildly different attributes (a laptop has RAM and screen size; a shirt has size and fabric). A rigid SQL schema cannot accommodate this without hundreds of nullable columns or an EAV pattern that performs poorly.</p>
+<p>DynamoDB&#39;s schemaless design stores each product&#39;s attributes as a JSON document:</p>
+<pre><code class="language-json">{
+  &quot;product_id&quot;: &quot;PROD-123&quot;,
+  &quot;title&quot;: &quot;iPhone 15&quot;,
+  &quot;category_path&quot;: &quot;/electronics/phones/smartphones/iphones&quot;,
+  &quot;base_price_cents&quot;: 79900,
+  &quot;attributes&quot;: {
+    &quot;brand&quot;: &quot;Apple&quot;,
+    &quot;display_size&quot;: &quot;6.1 inches&quot;,
+    &quot;chip&quot;: &quot;A16 Bionic&quot;,
+    &quot;water_resistant&quot;: true
+  },
+  &quot;variants&quot;: [
+    {
+      &quot;sku&quot;: &quot;IPH15-128-BLK&quot;,
+      &quot;price_cents&quot;: 79900,
+      &quot;attributes&quot;: { &quot;storage&quot;: &quot;128GB&quot;, &quot;color&quot;: &quot;Black&quot; }
+    }
+  ]
+}
+</code></pre>
+<div class="important">
+
+<p>PostgreSQL stores the relational data (product ID, seller ID, category, status, timestamps). DynamoDB stores the flexible attribute data. The product ID is the join key between them. This is a polyglot persistence pattern.</p>
+</div>
+
+
+<hr>
+<h2>6. Search Service</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Search is often the primary way users find products. A poor search experience directly impacts revenue. When discussing search, cover three layers: indexing (how data gets into the search engine), querying (how search requests are processed), and ranking (how results are ordered).</p>
+</div>
+
+
+<h3>Elasticsearch Architecture</h3>
+<pre><code>Index: products
+  Document fields:
+    - title (text, analyzed)
+    - description (text, analyzed)
+    - category (keyword, not analyzed)
+    - brand (keyword)
+    - price (float)
+    - rating (float)
+    - sales_count (integer)
+    - attributes.* (dynamic mapping)
+    - in_stock (boolean)
+</code></pre>
+<h3>Indexing Pipeline</h3>
+<pre class="mermaid">
+graph LR
+    CAT[Catalog Service] -->|Product Created/Updated| KFK[Kafka]
+    KFK --> IDX[Indexing Worker]
+    IDX --> ES[Elasticsearch]
+    IDX --> |Enrich with| INV[Inventory Service]
+    IDX --> |Enrich with| REV[Review Service]
+
+    Note1[Worker enriches product doc with<br/>stock status and avg rating<br/>before indexing]
+</pre>
+<p>When a seller updates a product, the Catalog Service publishes a <code>product.updated</code> event to Kafka. An indexing worker consumes the event, enriches the document with stock status and average rating, and upserts it into Elasticsearch.</p>
+<h3>Faceted Search</h3>
+<p>Faceted search allows users to filter results by attributes (brand, price range, color, rating). Elasticsearch aggregations power this:</p>
+<pre><code>User searches: &quot;laptop&quot;
+Response includes:
+  - Results: [MacBook Air, ThinkPad X1, Dell XPS, ...]
+  - Facets:
+    - Brand: [Apple (42), Lenovo (38), Dell (35), HP (29)]
+    - Price: [$0-500 (15), $500-1000 (67), $1000-2000 (45), $2000+ (17)]
+    - RAM: [8GB (30), 16GB (55), 32GB (40), 64GB (19)]
+    - Screen: [13&quot; (35), 14&quot; (40), 15&quot; (50), 16&quot;+ (19)]
+
+When user selects &quot;Brand: Apple&quot; + &quot;RAM: 16GB&quot;:
+  - Results are filtered to Apple laptops with 16GB RAM
+  - Other facets update to reflect the filtered set
+</code></pre>
+<h3>Autocomplete</h3>
+<p>Autocomplete suggestions appear as the user types. This requires a different data structure than full-text search:</p>
+<pre><code>Approach: Edge N-gram tokenizer + Completion Suggester
+
+When user types &quot;lap&quot;:
+  -&gt; Suggestions: &quot;laptop&quot;, &quot;laptop stand&quot;, &quot;laptop bag&quot;, &quot;laptop sleeve&quot;
+
+Implementation:
+  - Separate &quot;suggestions&quot; index with completion suggester field
+  - Populated from: popular search terms, product titles, category names
+  - Updated daily from search analytics
+  - Weighted by search frequency (popular terms rank higher)
+
+Latency requirement: &lt; 50ms (user expects instant response while typing)
+</code></pre>
+<h3>Ranking Algorithm</h3>
+<p>Results are ranked by a weighted combination of factors:</p>
+<pre><code>Score = w1 * text_relevance
+      + w2 * sales_velocity
+      + w3 * avg_rating
+      + w4 * conversion_rate
+      + w5 * recency
+      + w6 * seller_quality_score
+      - penalty_if_out_of_stock
+
+Elasticsearch function_score query combines these signals.
+Text relevance comes from BM25 scoring on title and description.
+Business metrics (sales, rating) are stored as document fields and updated periodically.
+</code></pre>
+<div class="warning">
+
+<p>Do not update Elasticsearch in real-time for every sale or rating change. Batch-update these fields every 15-30 minutes. Real-time updates at scale would overwhelm the indexing pipeline and degrade search latency.</p>
+</div>
+
+
+<hr>
+<h2>7. Shopping Cart</h2>
+<h3>Guest Cart vs Logged-In Cart</h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Guest Cart</th>
+<th>Logged-In Cart</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Storage</strong></td>
+<td>Browser localStorage + server-side Redis keyed by session ID</td>
+<td>Redis keyed by user ID</td>
+</tr>
+<tr>
+<td><strong>Persistence</strong></td>
+<td>Lost if cookies/session cleared</td>
+<td>Persistent across devices</td>
+</tr>
+<tr>
+<td><strong>Merge on login</strong></td>
+<td>Guest cart items are merged into logged-in cart</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td><strong>Expiry</strong></td>
+<td>7-day TTL in Redis</td>
+<td>30-day TTL in Redis, then archived to DynamoDB</td>
+</tr>
+</tbody></table>
+<h3>Cart Merge Strategy</h3>
+<p>When a guest user logs in and has items in both their guest cart and their persistent cart:</p>
+<pre><code>Merge Rules:
+  1. If an item exists in both carts, keep the higher quantity
+  2. If an item exists only in one cart, add it to the merged cart
+  3. Re-validate all items: check price changes, stock availability
+  4. Notify user of any changes: &quot;Price of Item X changed from $29 to $34&quot;
+</code></pre>
+<h3>Cart Data Structure in Redis</h3>
+<pre><code>Key: cart:{user_id} or cart:session:{session_id}
+Type: Hash
+
+Fields:
+  item:{sku_id} -&gt; JSON { &quot;sku_id&quot;: &quot;IPH15-128-BLK&quot;, &quot;quantity&quot;: 2, &quot;added_at&quot;: &quot;...&quot;, &quot;price_at_add&quot;: 79900 }
+
+Operations:
+  HSET cart:user123 item:IPH15-128-BLK &#39;{&quot;quantity&quot;: 2, ...}&#39;   -- Add/update item
+  HDEL cart:user123 item:IPH15-128-BLK                          -- Remove item
+  HGETALL cart:user123                                            -- Get full cart
+  HLEN cart:user123                                               -- Item count
+
+TTL: 30 days, refreshed on every cart operation
+</code></pre>
+<div class="note">
+
+<p>We store <code>price_at_add</code> in the cart to detect price changes. When the user views their cart or proceeds to checkout, we compare <code>price_at_add</code> with the current price and alert them if it changed. We always charge the current price, not the price at the time of adding.</p>
+</div>
+
+
+<h3>Cart to Checkout Transition</h3>
+<p>When the user clicks &quot;Proceed to Checkout,&quot; the cart is frozen:</p>
+<pre><code>1. Read all items from Redis cart
+2. For each item:
+   a. Verify product still exists and is active
+   b. Check current price (may differ from price_at_add)
+   c. Check stock availability
+   d. Apply any promotions or coupons
+3. Create a checkout session with the validated cart snapshot
+4. If any item is out of stock: inform user, do NOT block checkout for remaining items
+5. Checkout session has a 30-minute expiry
+</code></pre>
+<hr>
+<h2>8. Inventory Management</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Inventory management is the hardest consistency problem in e-commerce. The challenge is preventing overselling (selling more units than you have in stock) while minimizing the chance of false stock-outs (showing &quot;out of stock&quot; when stock actually exists). This is a tension between consistency and availability.</p>
+</div>
+
+
+<h3>Reservation Pattern</h3>
+<p>Inventory goes through a three-phase lifecycle during the purchase flow:</p>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> Available
+    Available --> SoftReserved: Added to cart
+    SoftReserved --> Available: Removed from cart / cart expired
+    SoftReserved --> HardReserved: Checkout initiated
+    HardReserved --> SoftReserved: Checkout timeout (30 min)
+    HardReserved --> Committed: Payment confirmed
+    Committed --> Available: Order cancelled / returned
+    Committed --> Shipped: Order shipped
+    Shipped --> [*]
+</pre>
+<p><strong>Soft Reserve (Add to Cart):</strong></p>
+<pre><code>When user adds 2 units of SKU-123 to cart:
+  - Decrement &quot;available_for_display&quot; counter in Redis
+  - This is a hint counter — it may be slightly inaccurate
+  - Purpose: show realistic stock levels to other users
+  - NOT a hard guarantee — multiple users may soft-reserve the same unit
+  - If total soft reserves &gt; actual stock, some users will see &quot;out of stock&quot; at checkout
+
+Soft reserve is intentionally loose. It&#39;s a UX optimization, not a correctness guarantee.
+</code></pre>
+<p><strong>Hard Reserve (Checkout):</strong></p>
+<pre><code>When user clicks &quot;Place Order&quot;:
+  - Database transaction:
+    BEGIN;
+    SELECT stock_count FROM inventory WHERE sku_id = ? FOR UPDATE;
+    -- If stock_count &gt;= requested_quantity:
+    UPDATE inventory SET stock_count = stock_count - ?, reserved_count = reserved_count + ?
+    WHERE sku_id = ? AND stock_count &gt;= ?;
+    -- If rows_affected = 0: out of stock
+    COMMIT;
+
+  - Hard reserve has a 30-minute timeout
+  - If payment is not confirmed within 30 minutes, a background job releases the reservation
+</code></pre>
+<p><strong>Committed (Payment Confirmed):</strong></p>
+<pre><code>After successful payment:
+  - UPDATE inventory SET reserved_count = reserved_count - ?
+    WHERE sku_id = ?;
+  - The stock_count was already decremented during hard reserve
+  - This is now a permanent deduction
+</code></pre>
+<h3>Distributed Inventory (Multiple Warehouses)</h3>
+<pre><code>Scenario: Product available in 3 warehouses
+  - Warehouse NYC: 50 units
+  - Warehouse LAX: 30 units
+  - Warehouse CHI: 20 units
+  - Total available: 100 units
+
+Fulfillment routing:
+  1. Determine customer&#39;s shipping address
+  2. Find nearest warehouse with stock
+  3. Reserve from that warehouse
+  4. If nearest warehouse is out of stock, try next-nearest
+
+Display to customer:
+  - Show aggregate availability: &quot;In Stock (100 units)&quot;
+  - Do NOT show per-warehouse breakdown
+  - Shipping estimate based on nearest warehouse with stock
+</code></pre>
+<div class="warning">
+
+<p>When inventory is distributed, you must be careful about the aggregation. If you cache the aggregate count and two warehouses sell their last units simultaneously, the aggregate cache may still show &quot;in stock.&quot; Always check the actual warehouse inventory during hard reserve.</p>
+</div>
+
+
+<hr>
+<h2>9. Checkout &amp; Order Service</h2>
+<h3>Order State Machine</h3>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> Created: User clicks Place Order
+    Created --> PaymentPending: Order saved, payment initiated
+    PaymentPending --> Confirmed: Payment successful
+    PaymentPending --> Cancelled: Payment failed / timeout
+    Confirmed --> Processing: Sent to warehouse for fulfillment
+    Processing --> Shipped: Warehouse dispatched package
+    Shipped --> OutForDelivery: Package with local carrier
+    OutForDelivery --> Delivered: Delivery confirmed
+    Delivered --> ReturnRequested: Customer requests return
+    ReturnRequested --> Returned: Return processed, refund issued
+    Confirmed --> Cancelled: Customer cancels before shipping
+    Processing --> Cancelled: Customer cancels before shipping
+    Cancelled --> [*]
+    Returned --> [*]
+    Delivered --> [*]
+</pre>
+<h3>Checkout Flow</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant ORD as Order Service
+    participant INV as Inventory Service
+    participant PAY as Payment Service
+    participant NOT as Notification Service
+    participant WH as Warehouse Service
+
+    U->>ORD: Place Order (cart items, shipping, payment)
+    ORD->>INV: Hard reserve inventory for all items
+    INV-->>ORD: Reservation confirmed (or partial failure)
+
+    alt All items reserved
+        ORD->>PAY: Charge payment
+        PAY-->>ORD: Payment success (txn_id)
+        ORD->>ORD: Update order status: Confirmed
+        ORD->>INV: Commit inventory (convert reserve to sold)
+        ORD->>NOT: Send order confirmation email
+        ORD->>WH: Create fulfillment request
+        ORD-->>U: Order confirmed (order_id)
+    else Some items out of stock
+        ORD->>INV: Release successful reservations
+        ORD-->>U: Error: items X, Y out of stock
+    else Payment failed
+        ORD->>INV: Release all reservations
+        ORD-->>U: Payment failed, please retry
+    end
+</pre>
+<h3>Event-Driven Order Processing</h3>
+<p>After the synchronous checkout completes, the remaining order lifecycle is event-driven:</p>
+<pre><code>Order Confirmed event -&gt; Kafka
+
+Consumers:
+  1. Warehouse Service: Creates pick-pack-ship order
+  2. Notification Service: Sends confirmation email
+  3. Analytics Service: Records sale for reporting
+  4. Recommendation Service: Updates purchase history
+  5. Inventory Service: Updates search index (stock status)
+
+Each consumer processes independently. If one fails, others are unaffected.
+Kafka guarantees at-least-once delivery. Each consumer must be idempotent.
+</code></pre>
+<h3>Pricing, Coupons, and Promotions</h3>
+<p>The pricing engine calculates the final price during checkout:</p>
+<pre><code>Price Calculation Pipeline:
+  1. Base price (from catalog)
+  2. - Seller discount (if any active sale)
+  3. - Coupon discount (user-applied coupon code)
+  4. - Promotion discount (buy 2 get 1 free, bundle deals)
+  5. + Tax (based on shipping address and product category)
+  6. + Shipping fee (based on weight, distance, speed)
+  7. = Final price
+
+Rules:
+  - Coupons and promotions do not stack (use the better discount)
+  - Minimum order value for free shipping
+  - Maximum discount cap per coupon
+  - Coupon usage limits (per user, total uses)
+</code></pre>
+<div class="note">
+
+<p>The pricing engine must be deterministic. Given the same inputs (cart items, coupon, shipping address), it must always produce the same total. This is critical for auditing and dispute resolution. Store the full price breakdown with each order.</p>
+</div>
+
+
+<hr>
+<h2>10. Payment Processing</h2>
+<h3>Idempotency</h3>
+<p>Every payment operation must be idempotent. The order ID serves as the natural idempotency key:</p>
+<pre><code>POST /api/payments/charge
+{
+  &quot;idempotency_key&quot;: &quot;order_ORD789_charge_1&quot;,
+  &quot;amount_cents&quot;: 15997,
+  &quot;currency&quot;: &quot;USD&quot;,
+  &quot;payment_method_id&quot;: &quot;pm_visa_4242&quot;,
+  &quot;order_id&quot;: &quot;ORD789&quot;
+}
+
+If this request is sent twice (network retry, user double-click):
+  - Payment gateway recognizes the idempotency key
+  - Returns the same result without charging again
+</code></pre>
+<h3>Multi-Method Payment</h3>
+<p>Some orders may be paid with multiple methods (e.g., gift card + credit card):</p>
+<pre><code>Order total: $150.00
+  - Gift card balance: $50.00 -&gt; Charge $50 to gift card
+  - Credit card: -&gt; Charge $100 to credit card
+
+If credit card charge fails:
+  - Reverse the gift card charge
+  - Inform user: &quot;Payment failed&quot;
+
+This is a distributed transaction across two payment methods.
+Use the Saga pattern: charge gift card first (reversible), then credit card.
+If credit card fails, compensate by reversing the gift card charge.
+</code></pre>
+<h3>Refund Handling</h3>
+<pre><code>Refund scenarios:
+  1. Full cancellation before shipping -&gt; Full refund
+  2. Partial cancellation (some items) -&gt; Partial refund
+  3. Return after delivery -&gt; Refund after return received
+  4. Damaged item -&gt; Immediate refund or replacement
+
+Refund to original payment method:
+  - Credit card: 5-10 business days
+  - Gift card: Instant
+  - Store credit: Instant (offered as faster alternative)
+</code></pre>
+<hr>
+<h2>11. Recommendation Engine</h2>
+<h3>Collaborative Filtering</h3>
+<pre><code>&quot;Customers who bought X also bought Y&quot;
+
+Implementation:
+  1. Build a user-item interaction matrix
+     - Rows: users, Columns: products
+     - Values: purchase count (or implicit signals: view, add-to-cart, buy)
+
+  2. For product X, find users who bought X
+  3. Find other products those users commonly bought
+  4. Rank by co-purchase frequency
+  5. Filter out products the current user already bought
+
+Precomputed daily:
+  - For each product, store top 20 &quot;also bought&quot; product IDs
+  - Store in Redis: reco:also_bought:{product_id} -&gt; [product_ids]
+  - Serve from Redis at request time (sub-ms latency)
+</code></pre>
+<h3>Personalized Recommendations</h3>
+<pre><code>User&#39;s home page recommendations:
+
+Signals:
+  - Recent browsing history (last 50 products viewed)
+  - Purchase history (all time)
+  - Cart contents (current)
+  - Category affinity (weighted by recency)
+  - Collaborative filtering (users similar to you)
+
+Pipeline:
+  1. Candidate generation: Pull 500 candidates from multiple sources
+  2. Filtering: Remove already purchased, out-of-stock, irrelevant
+  3. Ranking: ML model scores each candidate (CTR prediction)
+  4. Diversification: Ensure mix of categories (not all phones)
+  5. Return top 20
+
+This pipeline is computed:
+  - Real-time for logged-in users (using cached user features)
+  - Precomputed for popular segments (new users, category browsers)
+</code></pre>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> You do not need to design a full ML recommendation system. Mention collaborative filtering and content-based filtering at a high level. What matters is the system design: how recommendations are precomputed, cached, and served at low latency.</p>
+</div>
+
+
+<hr>
+<h2>12. Data Models &amp; Storage</h2>
+<h3>Database Schema</h3>
+<pre><code>Table: products
+  - product_id          UUID PRIMARY KEY
+  - seller_id           UUID REFERENCES sellers
+  - title               VARCHAR(500)
+  - description         TEXT
+  - category_path       VARCHAR(500)  -- &quot;/electronics/phones/smartphones&quot;
+  - brand               VARCHAR(100)
+  - base_price_cents    INTEGER
+  - status              VARCHAR(20)  -- active, inactive, deleted
+  - created_at          TIMESTAMP
+  - updated_at          TIMESTAMP
+
+Table: product_skus
+  - sku_id              VARCHAR(50) PRIMARY KEY
+  - product_id          UUID REFERENCES products
+  - price_cents         INTEGER
+  - attributes          JSONB  -- {&quot;color&quot;: &quot;Black&quot;, &quot;storage&quot;: &quot;128GB&quot;}
+  - weight_grams        INTEGER
+  - dimensions_cm       JSONB  -- {&quot;l&quot;: 15, &quot;w&quot;: 7, &quot;h&quot;: 1}
+  - status              VARCHAR(20)
+
+Table: inventory
+  - sku_id              VARCHAR(50) REFERENCES product_skus
+  - warehouse_id        UUID REFERENCES warehouses
+  - stock_count         INTEGER
+  - reserved_count      INTEGER
+  - PRIMARY KEY (sku_id, warehouse_id)
+  - CHECK (stock_count &gt;= 0)
+  - CHECK (reserved_count &gt;= 0)
+  - CHECK (reserved_count &lt;= stock_count)
+
+Table: orders
+  - order_id            UUID PRIMARY KEY
+  - user_id             UUID REFERENCES users
+  - status              VARCHAR(20)  -- created, confirmed, processing, shipped, delivered, cancelled, returned
+  - subtotal_cents      INTEGER
+  - tax_cents           INTEGER
+  - shipping_cents      INTEGER
+  - discount_cents      INTEGER
+  - total_cents         INTEGER
+  - currency            VARCHAR(3)
+  - shipping_address_id UUID
+  - coupon_code         VARCHAR(50)
+  - created_at          TIMESTAMP
+  - confirmed_at        TIMESTAMP
+  - shipped_at          TIMESTAMP
+  - delivered_at        TIMESTAMP
+
+Table: order_items
+  - order_id            UUID REFERENCES orders
+  - sku_id              VARCHAR(50)
+  - quantity            INTEGER
+  - unit_price_cents    INTEGER  -- price at time of purchase
+  - discount_cents      INTEGER
+  - PRIMARY KEY (order_id, sku_id)
+
+Table: payments
+  - payment_id          UUID PRIMARY KEY
+  - order_id            UUID REFERENCES orders
+  - amount_cents        INTEGER
+  - currency            VARCHAR(3)
+  - method              VARCHAR(50)  -- credit_card, gift_card, store_credit
+  - gateway_txn_id      VARCHAR(100)
+  - idempotency_key     VARCHAR(100) UNIQUE
+  - status              VARCHAR(20)  -- pending, succeeded, failed, refunded
+  - created_at          TIMESTAMP
+
+Table: reviews
+  - review_id           UUID PRIMARY KEY
+  - product_id          UUID REFERENCES products
+  - user_id             UUID REFERENCES users
+  - order_id            UUID REFERENCES orders  -- must have purchased to review
+  - rating              SMALLINT CHECK (rating BETWEEN 1 AND 5)
+  - title               VARCHAR(200)
+  - body                TEXT
+  - helpful_count       INTEGER DEFAULT 0
+  - status              VARCHAR(20)  -- pending_moderation, approved, rejected
+  - created_at          TIMESTAMP
+  - UNIQUE (user_id, product_id)  -- one review per product per user
+
+Table: categories
+  - category_id         UUID PRIMARY KEY
+  - name                VARCHAR(100)
+  - parent_id           UUID REFERENCES categories
+  - path                VARCHAR(500)  -- materialized path
+  - depth               SMALLINT
+  - display_order       INTEGER
+
+Table: users
+  - user_id             UUID PRIMARY KEY
+  - email               VARCHAR(255) UNIQUE
+  - name                VARCHAR(100)
+  - created_at          TIMESTAMP
+
+Table: addresses
+  - address_id          UUID PRIMARY KEY
+  - user_id             UUID REFERENCES users
+  - line1               VARCHAR(200)
+  - line2               VARCHAR(200)
+  - city                VARCHAR(100)
+  - state               VARCHAR(50)
+  - zip                 VARCHAR(20)
+  - country             VARCHAR(2)
+  - is_default          BOOLEAN
+</code></pre>
+<h3>Database Choice Justification</h3>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Database</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Orders, Payments</strong></td>
+<td>PostgreSQL</td>
+<td>ACID transactions for order placement and payment. Strong consistency required.</td>
+</tr>
+<tr>
+<td><strong>Product Catalog (relational)</strong></td>
+<td>PostgreSQL</td>
+<td>Relational data (product-seller, product-category relationships).</td>
+</tr>
+<tr>
+<td><strong>Product Attributes</strong></td>
+<td>DynamoDB</td>
+<td>Schemaless storage for heterogeneous product attributes across categories. Single-digit ms reads at any scale.</td>
+</tr>
+<tr>
+<td><strong>Search Index</strong></td>
+<td>Elasticsearch</td>
+<td>Full-text search, faceted filtering, autocomplete. Inverted index optimized for text matching.</td>
+</tr>
+<tr>
+<td><strong>Shopping Cart</strong></td>
+<td>Redis</td>
+<td>Low-latency reads/writes for active carts. Hash data structure maps naturally to cart items. TTL for automatic expiry.</td>
+</tr>
+<tr>
+<td><strong>Sessions</strong></td>
+<td>Redis</td>
+<td>Ephemeral, low-latency.</td>
+</tr>
+<tr>
+<td><strong>Product Images</strong></td>
+<td>S3 + CDN</td>
+<td>Object storage for binary assets. CDN for global distribution.</td>
+</tr>
+<tr>
+<td><strong>Event Bus</strong></td>
+<td>Kafka</td>
+<td>Decoupled inter-service communication. At-least-once delivery. Partitioned for parallel consumption.</td>
+</tr>
+<tr>
+<td><strong>Recommendations</strong></td>
+<td>Redis</td>
+<td>Precomputed recommendation lists served at sub-ms latency.</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>13. Scalability Strategies</h2>
+<h3>Sharding</h3>
+<p><strong>Orders: Shard by user_id</strong></p>
+<pre><code>Rationale:
+  - User views their own orders (most common query)
+  - All of a user&#39;s orders are on the same shard -&gt; single-shard query
+  - Order placement writes go to one shard (the user&#39;s shard)
+
+Cross-shard queries:
+  - Seller views their orders -&gt; fan out across shards (seller dashboard is less latency-sensitive)
+  - Analytics/reporting -&gt; use a separate OLAP replica
+</code></pre>
+<p><strong>Product catalog: Shard by product_id</strong></p>
+<pre><code>Rationale:
+  - Product page reads are by product_id
+  - Seller&#39;s product list can fan out (acceptable for management UI)
+  - Category browse uses Elasticsearch, not PostgreSQL
+</code></pre>
+<h3>Caching Strategy</h3>
+<pre class="mermaid">
+graph LR
+    subgraph L1 - CDN
+        A[Product Images]
+        B[Static JS/CSS]
+        C[Product Page HTML - short TTL]
+    end
+
+    subgraph L2 - Application Cache - Redis
+        D[Product Metadata - 5 min TTL]
+        E[Category Tree - 1 hour TTL]
+        F[Price - 1 min TTL]
+        G[Stock Status - 30 sec TTL]
+        H[User Session]
+        I[Shopping Cart]
+    end
+
+    subgraph L3 - Database
+        J[PostgreSQL - Source of Truth]
+        K[DynamoDB - Product Attributes]
+    end
+</pre>
+<h3>Event-Driven Architecture</h3>
+<pre><code>Key Events in the System:
+
+product.created       -&gt; Index in Elasticsearch, generate recommendations
+product.updated       -&gt; Re-index in Elasticsearch, invalidate cache
+product.price_changed -&gt; Update search index, notify wishlisted users
+order.placed          -&gt; Reserve inventory, charge payment
+order.confirmed       -&gt; Notify user, create fulfillment request, update analytics
+order.shipped         -&gt; Notify user, update tracking
+order.delivered       -&gt; Enable review, update delivery metrics
+order.cancelled       -&gt; Release inventory, process refund, notify user
+inventory.low         -&gt; Alert seller, update search index (boost in-stock alternatives)
+review.submitted      -&gt; Moderate, update product rating aggregate
+</code></pre>
+<div class="important">
+
+<p>Every consumer of Kafka events must be idempotent. Kafka guarantees at-least-once delivery, meaning a consumer may receive the same event twice (e.g., after a rebalance). Use the event ID as a deduplication key.</p>
+</div>
+
+
+<h3>Read Replicas</h3>
+<pre><code>PostgreSQL:
+  - 1 primary (writes)
+  - 3 read replicas (reads)
+  - Replication lag: &lt; 100ms under normal load
+
+Read routing:
+  - Order placement, payment -&gt; Primary
+  - Product browsing, order history -&gt; Read replica
+  - Seller dashboard -&gt; Read replica (stale-by-100ms is acceptable)
+  - Analytics -&gt; Dedicated analytics replica (can be minutes behind)
+</code></pre>
+<hr>
+<h2>14. Design Trade-offs &amp; Justifications</h2>
+<h3>Trade-off 1: Strong vs Eventual Consistency</h3>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Consistency Level</th>
+<th>Justification</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Inventory (hard reserve)</strong></td>
+<td>Strong</td>
+<td>Must prevent overselling</td>
+</tr>
+<tr>
+<td><strong>Inventory (display count)</strong></td>
+<td>Eventual</td>
+<td>&quot;Only 3 left!&quot; can be stale by a few seconds</td>
+</tr>
+<tr>
+<td><strong>Product catalog</strong></td>
+<td>Eventual</td>
+<td>Seller updates a price; 30-second propagation delay is acceptable</td>
+</tr>
+<tr>
+<td><strong>Search index</strong></td>
+<td>Eventual</td>
+<td>15-30 minute lag for search ranking updates is fine</td>
+</tr>
+<tr>
+<td><strong>Order status</strong></td>
+<td>Strong</td>
+<td>Customer must see accurate order state</td>
+</tr>
+<tr>
+<td><strong>Reviews</strong></td>
+<td>Eventual</td>
+<td>New review appearing a few minutes later is acceptable</td>
+</tr>
+</tbody></table>
+<h3>Trade-off 2: Monolith vs Microservices</h3>
+<p>We chose microservices because:</p>
+<ul>
+<li><strong>Independent scaling:</strong> Search traffic is 100x order traffic. Scaling them independently saves infrastructure cost.</li>
+<li><strong>Independent deployment:</strong> Catalog team can deploy without affecting checkout.</li>
+<li><strong>Technology fit:</strong> Different databases for different services (PostgreSQL vs DynamoDB vs Elasticsearch).</li>
+</ul>
+<p>The cost is operational complexity: service discovery, distributed tracing, eventual consistency between services.</p>
+<h3>Trade-off 3: Cart in Redis vs Database</h3>
+<table>
+<thead>
+<tr>
+<th>Redis Cart</th>
+<th>Database Cart</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Sub-ms latency</td>
+<td>5-10ms latency</td>
+</tr>
+<tr>
+<td>Data loss on Redis failure</td>
+<td>Durable</td>
+</tr>
+<tr>
+<td>TTL-based expiry (simple)</td>
+<td>Needs cleanup job</td>
+</tr>
+<tr>
+<td>Cannot run complex queries</td>
+<td>Full SQL power</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen:</strong> Redis for active carts (last 30 days), DynamoDB for abandoned cart recovery (marketing emails). On Redis failure, cart is reconstructed from DynamoDB backup (updated every 5 minutes).</p>
+<h3>Trade-off 4: Synchronous vs Async Checkout</h3>
+<table>
+<thead>
+<tr>
+<th>Synchronous</th>
+<th>Asynchronous</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>User gets immediate order confirmation</td>
+<td>User gets &quot;order received, confirming...&quot;</td>
+</tr>
+<tr>
+<td>Simpler UX flow</td>
+<td>Better for high-traffic spikes</td>
+</tr>
+<tr>
+<td>Fails if any downstream service is slow</td>
+<td>Degrades gracefully</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen:</strong> Synchronous for the critical path (inventory reserve + payment charge). Async for everything after confirmation (notification, fulfillment, analytics).</p>
+<h3>Trade-off 5: Inventory Accuracy vs Performance</h3>
+<table>
+<thead>
+<tr>
+<th>Strict Accuracy</th>
+<th>Relaxed Accuracy</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Check DB on every add-to-cart</td>
+<td>Use cached counts for display</td>
+</tr>
+<tr>
+<td>Higher latency, more DB load</td>
+<td>Fast, but may show &quot;in stock&quot; when out</td>
+</tr>
+<tr>
+<td>No overselling risk</td>
+<td>Rare overselling possible at checkout</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen:</strong> Relaxed for display (cached stock counts), strict at checkout (DB transaction with row lock). The worst case is a user adds an out-of-stock item to cart and finds out at checkout. This is an acceptable trade-off for 100x reduction in DB load.</p>
+<hr>
+<h2>15. Interview Cheat Sheet</h2>
+<div class="tip">
+
+<p><strong>Use this as a quick reference before your interview. The key differentiators for a Staff-level answer are: (1) articulating the inventory reservation pattern clearly, (2) explaining the event-driven architecture for order processing, (3) discussing the polyglot persistence strategy, and (4) handling the checkout flow with compensating transactions.</strong></p>
+</div>
+
+
+<h3>30-Second Pitch</h3>
+<p>&quot;An e-commerce platform is a read-heavy, eventually-consistent system with a critical strongly-consistent core: the checkout path. I would use microservices with polyglot persistence: PostgreSQL for orders and payments (ACID), DynamoDB for flexible product attributes, Elasticsearch for search, and Redis for carts and caching. The checkout flow uses the reservation pattern (soft reserve on add-to-cart, hard reserve on checkout) with compensating transactions via the Saga pattern. Everything after order confirmation is event-driven via Kafka.&quot;</p>
+<h3>Key Numbers to Remember</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Products in catalog</td>
+<td>500M</td>
+</tr>
+<tr>
+<td>DAU</td>
+<td>100M</td>
+</tr>
+<tr>
+<td>Orders/day</td>
+<td>5M</td>
+</tr>
+<tr>
+<td>Read:Write ratio</td>
+<td>400:1</td>
+</tr>
+<tr>
+<td>Product page load target</td>
+<td>&lt; 200ms</td>
+</tr>
+<tr>
+<td>Search latency target</td>
+<td>&lt; 300ms</td>
+</tr>
+<tr>
+<td>Checkout latency target</td>
+<td>&lt; 2s</td>
+</tr>
+<tr>
+<td>Cart Redis memory</td>
+<td>~5 GB for 10M active carts</td>
+</tr>
+</tbody></table>
+<h3>Common Follow-Up Questions</h3>
+<p><strong>Q: How do you handle Black Friday traffic (10x normal)?</strong>
+A: Pre-scale infrastructure based on historical data. Use queue-based checkout for overflow. Cart and browse paths are cache-heavy and scale horizontally. Rate limit checkout attempts per user.</p>
+<p><strong>Q: How do you prevent overselling during flash sales?</strong>
+A: Hard inventory reservation in PostgreSQL with row-level locking at checkout. The soft reserve on add-to-cart is best-effort. At checkout, the DB transaction is the source of truth.</p>
+<p><strong>Q: How do you handle a seller updating price while a user is checking out?</strong>
+A: Cart stores <code>price_at_add</code>. Checkout re-fetches current price. If price changed, inform user before charging. Always charge the current price, never the stale cart price.</p>
+<p><strong>Q: How do you handle partial fulfillment (one item out of stock after order)?</strong>
+A: Ship available items, refund unavailable ones. Notify user. This is why order_items has independent status tracking.</p>
+<p><strong>Q: How does search handle 500M products?</strong>
+A: Elasticsearch cluster with multiple shards. Only index active, in-stock products (reduces to ~200M). Shard by category hash for even distribution. Use routing to direct category-specific queries to relevant shards.</p>
+<p><strong>Q: How do you handle product reviews at scale?</strong>
+A: Average rating and review count are denormalized onto the product record (updated async when new reviews arrive). Individual reviews are paginated. Moderation pipeline filters spam before publishing.</p>
+<h3>Architecture Summary</h3>
+<pre><code>User -&gt; CDN (images, static) -&gt; LB -&gt; API Gateway
+  -&gt; Catalog Service -&gt; PostgreSQL + DynamoDB + S3
+  -&gt; Search Service -&gt; Elasticsearch
+  -&gt; Cart Service -&gt; Redis
+  -&gt; Order Service -&gt; PostgreSQL
+  -&gt; Payment Service -&gt; Payment Gateway
+  -&gt; Inventory Service -&gt; PostgreSQL + Redis cache
+  -&gt; Notification Service &lt;- Kafka &lt;- Order/Inventory events
+  -&gt; Recommendation Service -&gt; Redis (precomputed)
+</code></pre>
+<h3>The Three Invariants</h3>
+<ol>
+<li><strong>No overselling:</strong> Hard reserve with DB row lock at checkout</li>
+<li><strong>No lost orders:</strong> PostgreSQL durability + payment idempotency keys</li>
+<li><strong>No double charges:</strong> Idempotency key on every payment request</li>
+</ol>
+<hr>
+<div class="note">
+
+<p><strong>Final thought for the interview:</strong> E-commerce is a system where &quot;good enough&quot; consistency wins over &quot;perfect&quot; consistency for 99% of operations. The art is knowing which 1% requires strong consistency (inventory reservation, payment) and designing the system so that the strongly-consistent path is as narrow and fast as possible, while everything else is eventually consistent and heavily cached.</p>
+</div>
+
+
+</body>
+</html>

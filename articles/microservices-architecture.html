@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Microservices Architecture</title>
+</head>
+<body>
+
+<h1>Microservices Architecture</h1>
+<h2>Introduction</h2>
+<p>Microservices architecture structures an application as a collection of small, independently deployable services, each running its own process and communicating via lightweight protocols. Each service is organized around a specific business capability and can be developed, deployed, and scaled independently.</p>
+<p>But microservices are not a silver bullet. They trade one set of problems (monolith complexity) for another (distributed systems complexity). This article covers when microservices make sense, how to decompose a monolith, communication patterns between services, data management strategies, and the infrastructure that makes it all work -- from service meshes to container orchestration.</p>
+<h2>N-Tier Architecture</h2>
+<p>Before diving into microservices, it helps to understand the architecture pattern that preceded them.</p>
+<h3>What Is N-Tier?</h3>
+<p>N-tier (or layered) architecture separates an application into logical layers, each with a specific responsibility. The most common is <strong>3-tier</strong>:</p>
+<pre class="mermaid">
+graph TD
+    A[Presentation Tier<br/>Web/Mobile UI] --> B[Application Tier<br/>Business Logic & API]
+    B --> C[Data Tier<br/>Database & Storage]
+</pre>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Responsibility</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Presentation</strong></td>
+<td>UI rendering, user interaction</td>
+<td>React, iOS app, Angular</td>
+</tr>
+<tr>
+<td><strong>Application</strong></td>
+<td>Business logic, API endpoints, validation</td>
+<td>Node.js, Spring Boot, Django</td>
+</tr>
+<tr>
+<td><strong>Data</strong></td>
+<td>Persistence, queries, caching</td>
+<td>PostgreSQL, Redis, S3</td>
+</tr>
+</tbody></table>
+<h3>N-Tier vs Microservices</h3>
+<p>N-tier organizes code by <strong>technical layer</strong> (UI, logic, data). Microservices organize by <strong>business domain</strong> (users, orders, payments). In practice, many systems start as n-tier monoliths and later decompose into microservices as they grow.</p>
+<div class="tip">
+
+<p><strong>Interview framing:</strong> When asked &quot;monolith vs microservices,&quot; mention n-tier as the starting point. Most successful systems begin as a well-structured n-tier monolith and evolve into microservices when team/scale demands it. Starting with microservices is premature optimization for most startups.</p>
+</div>
+
+
+<hr>
+<h2>Monolith vs Microservices</h2>
+<h3>Honest Tradeoffs</h3>
+<p>The industry often presents microservices as universally superior to monoliths. This is wrong. Both architectures have legitimate use cases, and choosing the wrong one can cripple a team.</p>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>Monolith</th>
+<th>Microservices</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Deployment</strong></td>
+<td>Single artifact, atomic deploy</td>
+<td>Independent services, complex orchestration</td>
+</tr>
+<tr>
+<td><strong>Development speed (small team)</strong></td>
+<td>Faster -- one codebase, one IDE</td>
+<td>Slower -- multiple repos, service contracts</td>
+</tr>
+<tr>
+<td><strong>Development speed (large team)</strong></td>
+<td>Slower -- merge conflicts, coordination</td>
+<td>Faster -- teams own their services</td>
+</tr>
+<tr>
+<td><strong>Debugging</strong></td>
+<td>Stack traces, local debugging</td>
+<td>Distributed tracing, correlation IDs</td>
+</tr>
+<tr>
+<td><strong>Data consistency</strong></td>
+<td>ACID transactions across tables</td>
+<td>Saga pattern, eventual consistency</td>
+</tr>
+<tr>
+<td><strong>Latency</strong></td>
+<td>Function calls (nanoseconds)</td>
+<td>Network calls (milliseconds)</td>
+</tr>
+<tr>
+<td><strong>Operational cost</strong></td>
+<td>One server, simple ops</td>
+<td>Many servers, monitoring, service mesh</td>
+</tr>
+<tr>
+<td><strong>Scaling</strong></td>
+<td>Scale everything together</td>
+<td>Scale individual services independently</td>
+</tr>
+<tr>
+<td><strong>Technology diversity</strong></td>
+<td>One tech stack</td>
+<td>Each service can use different stack</td>
+</tr>
+<tr>
+<td><strong>Testing</strong></td>
+<td>Integration tests are straightforward</td>
+<td>Contract testing, end-to-end is hard</td>
+</tr>
+</tbody></table>
+<pre class="mermaid">
+graph LR
+    subgraph "Monolith"
+        M_UI[UI Layer]
+        M_BL[Business Logic]
+        M_DAL[Data Access]
+        M_DB[(Single Database)]
+        M_UI --> M_BL --> M_DAL --> M_DB
+    end
+    
+    subgraph "Microservices"
+        GW[API Gateway]
+        S1[User Service]
+        S2[Order Service]
+        S3[Payment Service]
+        S4[Notification Service]
+        DB1[(User DB)]
+        DB2[(Order DB)]
+        DB3[(Payment DB)]
+        
+        GW --> S1
+        GW --> S2
+        GW --> S3
+        S2 --> S4
+        S1 --> DB1
+        S2 --> DB2
+        S3 --> DB3
+    end
+    
+    style M_DB fill:#e1f5fe,stroke:#01579b
+    style DB1 fill:#fff3e0,stroke:#e65100
+    style DB2 fill:#fff3e0,stroke:#e65100
+    style DB3 fill:#fff3e0,stroke:#e65100
+</pre>
+<h3>When a Monolith Is Better</h3>
+<ul>
+<li><strong>Early-stage startups:</strong> You do not know your domain well enough to draw service boundaries. Premature decomposition leads to the wrong boundaries, which are expensive to fix.</li>
+<li><strong>Small teams (fewer than 10 engineers):</strong> The operational overhead of microservices exceeds the organizational benefits.</li>
+<li><strong>Simple domains:</strong> Not every application is Netflix. A content management system or an internal tool does not need microservices.</li>
+<li><strong>Prototyping:</strong> Iterate fast, validate the product, then decompose if needed.</li>
+</ul>
+<div class="important">
+
+<p>Martin Fowler&#39;s advice: &quot;Almost all the successful microservice stories have started with a monolith that got too big and was broken up. Almost all the cases where a system was built as a microservice from scratch, it ended up in serious trouble.&quot; Start with a well-structured monolith and decompose when the pain of the monolith exceeds the cost of distribution.</p>
+</div>
+
+
+<h3>The Modular Monolith</h3>
+<p>A middle ground: a single deployable unit with strong internal module boundaries. Each module has its own data, exposes a clear API to other modules, and could be extracted into a service later. Shopify runs a modular monolith at massive scale.</p>
+<h2>Service Decomposition Strategies</h2>
+<h3>By Business Domain (Domain-Driven Design)</h3>
+<p>The most principled approach. Use bounded contexts from DDD to define service boundaries:</p>
+<ol>
+<li><strong>Identify core domains:</strong> What are the fundamental business capabilities? (Orders, Payments, Inventory, Users, Shipping)</li>
+<li><strong>Define bounded contexts:</strong> Each domain has its own ubiquitous language and data model. &quot;Product&quot; means different things to the catalog service (name, description, images) and the inventory service (SKU, warehouse location, quantity).</li>
+<li><strong>One service per bounded context:</strong> Each service owns its domain logic and data.</li>
+</ol>
+<div class="tip">
+
+<p>In interviews, when decomposing a system into microservices, explicitly mention bounded contexts. Say: &quot;I&#39;d identify bounded contexts -- for example, in an e-commerce system, &#39;Order&#39; means something different to the fulfillment team versus the billing team. Each bounded context becomes a service with its own data model.&quot; This shows DDD awareness.</p>
+</div>
+
+
+<h3>By Team (Conway&#39;s Law)</h3>
+<p>Conway&#39;s Law states that organizations design systems that mirror their communication structures. Use this intentionally:</p>
+<ul>
+<li>Each team owns one or a few services</li>
+<li>Teams are cross-functional (frontend, backend, ops)</li>
+<li>Service boundaries align with team boundaries</li>
+<li>Services have clear ownership -- no shared ownership across teams</li>
+</ul>
+<h3>Strangler Fig Pattern</h3>
+<p>For migrating from a monolith to microservices incrementally:</p>
+<pre class="mermaid">
+graph TD
+    subgraph "Phase 1: Monolith handles everything"
+        C1[Client] --> M1[Monolith]
+    end
+    
+    subgraph "Phase 2: New feature as microservice"
+        C2[Client] --> F2[Facade/Proxy]
+        F2 -->|new feature| MS2[New Microservice]
+        F2 -->|everything else| M2[Monolith]
+    end
+    
+    subgraph "Phase 3: Migrate more features"
+        C3[Client] --> F3[Facade/Proxy]
+        F3 --> MS3A[Service A]
+        F3 --> MS3B[Service B]
+        F3 -->|shrinking| M3[Monolith]
+    end
+    
+    subgraph "Phase 4: Monolith retired"
+        C4[Client] --> F4[API Gateway]
+        F4 --> MS4A[Service A]
+        F4 --> MS4B[Service B]
+        F4 --> MS4C[Service C]
+    end
+    
+    style M1 fill:#ffcdd2,stroke:#c62828
+    style M2 fill:#ffcdd2,stroke:#c62828
+    style M3 fill:#fff3e0,stroke:#e65100
+    style MS2 fill:#c8e6c9,stroke:#2e7d32
+    style MS3A fill:#c8e6c9,stroke:#2e7d32
+    style MS3B fill:#c8e6c9,stroke:#2e7d32
+    style MS4A fill:#c8e6c9,stroke:#2e7d32
+    style MS4B fill:#c8e6c9,stroke:#2e7d32
+    style MS4C fill:#c8e6c9,stroke:#2e7d32
+</pre>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Place a routing layer (facade) in front of the monolith</li>
+<li>Build new features as microservices behind the facade</li>
+<li>Gradually extract existing features from the monolith into services</li>
+<li>The monolith &quot;shrinks&quot; over time, like a tree being strangled by a fig vine</li>
+<li>Eventually, the monolith is small enough to rewrite or retire</li>
+</ol>
+<div class="note">
+
+<p>The strangler fig pattern is the safest migration strategy. You never do a &quot;big bang&quot; rewrite. Each extracted service is independently testable and deployable. If something goes wrong, the facade routes back to the monolith.</p>
+</div>
+
+
+<h2>Service Discovery</h2>
+<p>In a microservices environment, services need to find each other. Hardcoded URLs break when services scale horizontally or move across hosts. Service discovery solves this.</p>
+<h3>Client-Side Discovery</h3>
+<p>The client queries a <strong>service registry</strong> (a database of available service instances and their addresses), then selects an instance and makes the request directly.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant Client as Order Service
+    participant SR as Service Registry<br/>(Consul, Eureka)
+    participant S1 as Payment Service<br/>Instance 1
+    participant S2 as Payment Service<br/>Instance 2
+    
+    Client->>SR: Where is Payment Service?
+    SR-->>Client: [Instance 1: 10.0.1.5:8080,<br/>Instance 2: 10.0.1.6:8080]
+    Client->>Client: Load balance (round-robin)
+    Client->>S1: POST /charge
+    S1-->>Client: 200 OK
+</pre>
+<p><strong>Pros:</strong> No intermediate hop, lower latency, client controls load balancing algorithm.
+<strong>Cons:</strong> Every client needs discovery logic, language-specific client libraries.
+<strong>Examples:</strong> Netflix Eureka, HashiCorp Consul (with client library).</p>
+<h3>Server-Side Discovery</h3>
+<p>The client sends requests to a <strong>load balancer</strong>, which queries the service registry and forwards the request to an available instance.</p>
+<p><strong>Pros:</strong> Client is simple (just knows the load balancer address), language-agnostic.
+<strong>Cons:</strong> Extra network hop, load balancer can become a bottleneck.
+<strong>Examples:</strong> AWS ALB with ECS, Kubernetes Services (kube-proxy).</p>
+<h3>Service Mesh (Sidecar-Based)</h3>
+<p>A dedicated infrastructure layer that handles service-to-service communication. Each service instance has a sidecar proxy deployed alongside it. The sidecar handles discovery, load balancing, retries, circuit breaking, mTLS, and observability -- transparently to the application.</p>
+<pre class="mermaid">
+graph TD
+    subgraph "Pod A"
+        SA[Service A] <-->|localhost| PA[Sidecar Proxy<br/>Envoy]
+    end
+    
+    subgraph "Pod B"
+        SB[Service B] <-->|localhost| PB[Sidecar Proxy<br/>Envoy]
+    end
+    
+    subgraph "Control Plane"
+        CP[Istio/Linkerd<br/>Control Plane]
+    end
+    
+    PA <-->|mTLS| PB
+    CP -->|configuration,<br/>certificates| PA
+    CP -->|configuration,<br/>certificates| PB
+    
+    style PA fill:#e1f5fe,stroke:#01579b
+    style PB fill:#e1f5fe,stroke:#01579b
+    style CP fill:#fff3e0,stroke:#e65100
+</pre>
+<p><strong>How the sidecar works:</strong></p>
+<ol>
+<li>Service A wants to call Service B</li>
+<li>The call goes to A&#39;s sidecar proxy (running on localhost)</li>
+<li>The sidecar resolves B&#39;s address via the control plane</li>
+<li>The sidecar handles load balancing, retry, circuit breaking, and mTLS</li>
+<li>The call arrives at B&#39;s sidecar, which forwards it to Service B</li>
+<li>Neither service has any networking logic in application code</li>
+</ol>
+<p><strong>Service mesh implementations:</strong></p>
+<ul>
+<li><strong>Istio:</strong> Feature-rich, uses Envoy sidecars, complex to operate</li>
+<li><strong>Linkerd:</strong> Lightweight, Rust-based proxy, easier to operate</li>
+<li><strong>Consul Connect:</strong> HashiCorp&#39;s offering, integrates with Consul service registry</li>
+</ul>
+<h2>API Gateway Pattern</h2>
+<h3>What an API Gateway Does</h3>
+<p>An API Gateway is a single entry point for all client requests. It handles cross-cutting concerns so that individual services do not have to.</p>
+<p><strong>Responsibilities:</strong></p>
+<ul>
+<li><strong>Request routing:</strong> Route <code>/api/users</code> to the user service, <code>/api/orders</code> to the order service</li>
+<li><strong>Authentication/Authorization:</strong> Validate JWTs, API keys before requests reach services</li>
+<li><strong>Rate limiting:</strong> Throttle clients to prevent abuse</li>
+<li><strong>Response aggregation:</strong> Combine responses from multiple services into a single response</li>
+<li><strong>Protocol translation:</strong> Accept REST from clients, forward as gRPC to internal services</li>
+<li><strong>Caching:</strong> Cache common responses at the edge</li>
+<li><strong>Monitoring:</strong> Log all requests, track latency, error rates</li>
+</ul>
+<p><strong>Examples:</strong> Kong, AWS API Gateway, Nginx, Envoy (as edge proxy).</p>
+<h3>API Gateway vs BFF (Backend for Frontend)</h3>
+<p>The BFF pattern creates a separate backend for each frontend type (web, mobile, IoT). Each BFF is tailored to the needs of its specific client.</p>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Single API Gateway</th>
+<th>BFF Pattern</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Number</strong></td>
+<td>One gateway for all clients</td>
+<td>One BFF per client type</td>
+</tr>
+<tr>
+<td><strong>Tailoring</strong></td>
+<td>Generic API, all clients get same shape</td>
+<td>Each BFF returns exactly what its client needs</td>
+</tr>
+<tr>
+<td><strong>Team ownership</strong></td>
+<td>Platform/infra team</td>
+<td>Frontend team owns their BFF</td>
+</tr>
+<tr>
+<td><strong>Complexity</strong></td>
+<td>Simpler infrastructure</td>
+<td>More services to manage</td>
+</tr>
+<tr>
+<td><strong>Best for</strong></td>
+<td>Uniform clients, small team</td>
+<td>Diverse clients (web, mobile, TV, watch)</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>In interviews, if the system has both web and mobile clients with different data needs, propose BFF: &quot;I&#39;d create separate Backend-for-Frontend services. The mobile BFF returns compact payloads optimized for limited bandwidth. The web BFF returns richer data for the desktop experience. Each is owned by the respective frontend team.&quot;</p>
+</div>
+
+
+<h2>Inter-Service Communication</h2>
+<h3>Synchronous Communication</h3>
+<p><strong>REST (HTTP/JSON):</strong></p>
+<ul>
+<li>Ubiquitous, well-tooled, human-readable</li>
+<li>Higher overhead (text-based serialization, HTTP headers)</li>
+<li>Good for request-response patterns, external APIs</li>
+</ul>
+<p><strong>gRPC (HTTP/2, Protocol Buffers):</strong></p>
+<ul>
+<li>Binary serialization (smaller payloads, faster parsing)</li>
+<li>Strong typing with <code>.proto</code> files (code generation for client/server)</li>
+<li>Bidirectional streaming</li>
+<li>Better for internal service-to-service communication</li>
+<li>Less human-readable, harder to debug with curl</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>REST</th>
+<th>gRPC</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Serialization</strong></td>
+<td>JSON (text)</td>
+<td>Protocol Buffers (binary)</td>
+</tr>
+<tr>
+<td><strong>Contract</strong></td>
+<td>OpenAPI/Swagger (optional)</td>
+<td>.proto files (required)</td>
+</tr>
+<tr>
+<td><strong>Streaming</strong></td>
+<td>Limited (SSE, WebSocket separate)</td>
+<td>Native bidirectional streaming</td>
+</tr>
+<tr>
+<td><strong>Browser support</strong></td>
+<td>Full</td>
+<td>Requires grpc-web proxy</td>
+</tr>
+<tr>
+<td><strong>Performance</strong></td>
+<td>Good</td>
+<td>Better (2-10x for serialization)</td>
+</tr>
+<tr>
+<td><strong>Tooling</strong></td>
+<td>Excellent (Postman, curl)</td>
+<td>Growing (grpcurl, BloomRPC)</td>
+</tr>
+</tbody></table>
+<h3>Asynchronous Communication</h3>
+<p><strong>Message Queues (RabbitMQ, SQS):</strong></p>
+<ul>
+<li>Fire-and-forget: producer does not wait for response</li>
+<li>Temporal decoupling: consumer processes when ready</li>
+<li>Good for task queues, work distribution</li>
+</ul>
+<p><strong>Event Streams (Kafka):</strong></p>
+<ul>
+<li>Broadcast events to multiple consumers</li>
+<li>Replay capability</li>
+<li>Good for event-driven architecture, data pipelines</li>
+</ul>
+<p><strong>When to use which:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Use Synchronous When</th>
+<th>Use Asynchronous When</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Client needs immediate response</td>
+<td>Result is not needed immediately</td>
+</tr>
+<tr>
+<td>Simple request-response</td>
+<td>Multiple services need the same event</td>
+</tr>
+<tr>
+<td>Low latency required</td>
+<td>Need to absorb load spikes</td>
+</tr>
+<tr>
+<td>Strong consistency needed</td>
+<td>Eventual consistency is acceptable</td>
+</tr>
+<tr>
+<td>Debugging simplicity matters</td>
+<td>Resilience to downstream failures matters</td>
+</tr>
+</tbody></table>
+<div class="warning">
+
+<p>Synchronous chains are fragile. If Service A calls B, which calls C, which calls D, and D is slow, the entire chain is slow. This is a distributed monolith -- you have all the complexity of microservices with none of the benefits. Prefer asynchronous communication for anything that does not require an immediate response.</p>
+</div>
+
+
+<h2>Data Management</h2>
+<h3>Database Per Service</h3>
+<p>Each microservice owns its data and exposes it only through its API. No other service can directly access another service&#39;s database.</p>
+<p><strong>Why this matters:</strong></p>
+<ul>
+<li>Services can choose the best database for their needs (SQL, document, graph, time-series)</li>
+<li>Schema changes in one service do not break others</li>
+<li>Services can be deployed independently without database migration coordination</li>
+<li>Data ownership is clear</li>
+</ul>
+<p><strong>The hard part:</strong> Cross-service queries. If the order service needs user details, it cannot just JOIN across databases. It must call the user service API (synchronous) or maintain a local cache of user data (eventually consistent).</p>
+<h3>The Shared Database Anti-Pattern</h3>
+<p>Multiple services reading from and writing to the same database.</p>
+<p><strong>Why it is an anti-pattern:</strong></p>
+<ul>
+<li><strong>Tight coupling:</strong> Schema changes require coordinating all services</li>
+<li><strong>Unclear ownership:</strong> Who is responsible for data integrity?</li>
+<li><strong>Performance bottleneck:</strong> All services compete for the same database resources</li>
+<li><strong>Deployment coupling:</strong> Cannot independently deploy services that share a schema</li>
+</ul>
+<p><strong>When it might be acceptable:</strong> During migration from monolith to microservices (as a temporary state), or for read-only reference data that changes infrequently.</p>
+<h2>Saga Pattern for Distributed Transactions</h2>
+<h3>The Problem</h3>
+<p>In a monolith, you can wrap a multi-step business operation in a single ACID transaction:</p>
+<pre><code>BEGIN TRANSACTION
+  debit account A
+  credit account B
+  record transfer
+COMMIT
+</code></pre>
+<p>In microservices, these steps span multiple services with separate databases. There is no distributed transaction coordinator (2PC is too slow and creates availability problems). The saga pattern provides an alternative.</p>
+<h3>What Is a Saga?</h3>
+<p>A saga is a sequence of local transactions. Each local transaction updates a single service&#39;s database and publishes an event or message to trigger the next step. If any step fails, compensating transactions undo the preceding steps.</p>
+<h3>Choreography vs Orchestration</h3>
+<pre class="mermaid">
+graph TD
+    subgraph "Choreography (event-driven)"
+        OS1[Order Service<br/>Create Order] -->|OrderCreated| PS1[Payment Service<br/>Process Payment]
+        PS1 -->|PaymentProcessed| IS1[Inventory Service<br/>Reserve Stock]
+        IS1 -->|StockReserved| SS1[Shipping Service<br/>Schedule Delivery]
+        
+        IS1 -->|StockFailed| PS1C[Payment Service<br/>Refund Payment]
+        PS1C -->|PaymentRefunded| OS1C[Order Service<br/>Cancel Order]
+    end
+    
+    subgraph "Orchestration (central coordinator)"
+        ORC[Saga Orchestrator] -->|1. Create Order| OS2[Order Service]
+        ORC -->|2. Process Payment| PS2[Payment Service]
+        ORC -->|3. Reserve Stock| IS2[Inventory Service]
+        ORC -->|4. Schedule Delivery| SS2[Shipping Service]
+        
+        IS2 -->|Failed| ORC
+        ORC -->|Compensate: Refund| PS2
+        ORC -->|Compensate: Cancel| OS2
+    end
+    
+    style ORC fill:#e1f5fe,stroke:#01579b
+</pre>
+<p><strong>Choreography:</strong></p>
+<ul>
+<li>Each service listens for events and reacts independently</li>
+<li>No central coordinator</li>
+<li>Pros: Loose coupling, simple for small sagas</li>
+<li>Cons: Hard to understand the full flow, difficult to debug, circular dependencies possible</li>
+</ul>
+<p><strong>Orchestration:</strong></p>
+<ul>
+<li>A central orchestrator directs the saga, telling each service what to do</li>
+<li>The orchestrator maintains saga state</li>
+<li>Pros: Easy to understand, centralized error handling, clear flow</li>
+<li>Cons: Orchestrator can become a single point of failure, slightly more coupling</li>
+</ul>
+<div class="tip">
+
+<p>In interviews, for sagas with 3 or fewer steps, choreography works well. For complex sagas with 4+ steps, branches, or conditional logic, orchestration is safer. Always mention compensating transactions -- the interviewer wants to hear how you handle failures, not just the happy path.</p>
+</div>
+
+
+<h3>Compensating Transactions</h3>
+<p>Every step in a saga must have a compensating transaction that semantically undoes its effect:</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Action</th>
+<th>Compensation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1. Create order</td>
+<td>Insert order record</td>
+<td>Cancel order (mark as cancelled)</td>
+</tr>
+<tr>
+<td>2. Reserve inventory</td>
+<td>Decrement stock</td>
+<td>Release inventory (increment stock)</td>
+</tr>
+<tr>
+<td>3. Process payment</td>
+<td>Charge credit card</td>
+<td>Refund credit card</td>
+</tr>
+<tr>
+<td>4. Schedule shipping</td>
+<td>Create shipment</td>
+<td>Cancel shipment</td>
+</tr>
+</tbody></table>
+<div class="warning">
+
+<p>Compensating transactions do not &quot;undo&quot; in the database sense (like a rollback). They are new transactions that semantically reverse the effect. A payment refund is a new transaction, not a deletion of the charge. This means sagas require careful design of compensating logic for each step.</p>
+</div>
+
+
+<h2>Serverless Architecture</h2>
+<h3>Function as a Service (FaaS)</h3>
+<p>Serverless functions (AWS Lambda, Google Cloud Functions, Azure Functions) execute code in response to events without managing servers.</p>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>You upload a function (a single unit of business logic)</li>
+<li>Define a trigger (HTTP request, message queue event, cron schedule, file upload)</li>
+<li>The cloud provider handles provisioning, scaling, and billing</li>
+<li>You pay only for execution time (per millisecond)</li>
+</ol>
+<p><strong>Advantages:</strong></p>
+<ul>
+<li>Zero server management</li>
+<li>Automatic scaling (from 0 to thousands of concurrent executions)</li>
+<li>Pay-per-use pricing (no cost when idle)</li>
+<li>Focus on business logic, not infrastructure</li>
+</ul>
+<h3>Cold Starts</h3>
+<p>When a function has not been invoked recently, the provider must spin up a new container, load the runtime, and initialize the function. This adds latency (100ms to several seconds depending on runtime and package size).</p>
+<p><strong>Mitigation strategies:</strong></p>
+<ul>
+<li>Keep functions lightweight (small deployment packages)</li>
+<li>Use provisioned concurrency (pre-warmed instances, costs more)</li>
+<li>Choose lightweight runtimes (Go, Rust: ~10ms cold start vs Java: ~1-5s cold start)</li>
+<li>Keep functions warm with periodic pings (hack, not recommended)</li>
+</ul>
+<h3>Limitations of Serverless</h3>
+<table>
+<thead>
+<tr>
+<th>Limitation</th>
+<th>Impact</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Cold starts</strong></td>
+<td>Latency-sensitive paths may be unacceptable</td>
+</tr>
+<tr>
+<td><strong>Execution timeout</strong></td>
+<td>AWS Lambda: 15 min max; not for long-running tasks</td>
+</tr>
+<tr>
+<td><strong>Stateless</strong></td>
+<td>No local state between invocations; must use external storage</td>
+</tr>
+<tr>
+<td><strong>Vendor lock-in</strong></td>
+<td>Each provider&#39;s triggers and APIs are different</td>
+</tr>
+<tr>
+<td><strong>Debugging</strong></td>
+<td>Cannot attach a debugger to production; reliant on logging</td>
+</tr>
+<tr>
+<td><strong>Cost at scale</strong></td>
+<td>At high throughput, dedicated servers can be cheaper</td>
+</tr>
+</tbody></table>
+<h2>Containers and Orchestration</h2>
+<h3>Docker Basics</h3>
+<p>A container packages an application with all its dependencies (libraries, runtime, OS utilities) into a single, portable image. Containers are lightweight (share the host OS kernel) compared to VMs (each has its own OS).</p>
+<p><strong>Key concepts:</strong></p>
+<ul>
+<li><strong>Image:</strong> A read-only template (blueprint) for creating containers</li>
+<li><strong>Container:</strong> A running instance of an image</li>
+<li><strong>Dockerfile:</strong> Instructions for building an image (base image, copy files, install dependencies, set entrypoint)</li>
+<li><strong>Registry:</strong> Storage for images (Docker Hub, ECR, GCR)</li>
+</ul>
+<h3>Kubernetes Overview</h3>
+<p>Kubernetes (K8s) orchestrates containers at scale: deployment, scaling, networking, and self-healing.</p>
+<p><strong>Core objects:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Object</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Pod</strong></td>
+<td>Smallest deployable unit; one or more containers sharing network/storage</td>
+</tr>
+<tr>
+<td><strong>Service</strong></td>
+<td>Stable network endpoint for a set of pods; load balances across them</td>
+</tr>
+<tr>
+<td><strong>Deployment</strong></td>
+<td>Declares desired state (image version, replica count); handles rolling updates</td>
+</tr>
+<tr>
+<td><strong>ReplicaSet</strong></td>
+<td>Ensures a specified number of pod replicas are running</td>
+</tr>
+<tr>
+<td><strong>Namespace</strong></td>
+<td>Logical isolation within a cluster (dev, staging, prod)</td>
+</tr>
+<tr>
+<td><strong>ConfigMap/Secret</strong></td>
+<td>Externalized configuration and sensitive data</td>
+</tr>
+<tr>
+<td><strong>Ingress</strong></td>
+<td>Routes external HTTP traffic to services based on URL paths/hostnames</td>
+</tr>
+</tbody></table>
+<p><strong>Self-healing:</strong></p>
+<ul>
+<li>If a pod crashes, Kubernetes restarts it</li>
+<li>If a node dies, Kubernetes reschedules pods to healthy nodes</li>
+<li>Liveness probes detect stuck processes; readiness probes control traffic routing</li>
+</ul>
+<div class="note">
+
+<p>Kubernetes is powerful but complex. For small teams or simple deployments, managed container services (AWS ECS, Google Cloud Run, Azure Container Apps) provide 80% of the benefits with 20% of the operational burden. Do not default to Kubernetes without considering simpler alternatives.</p>
+</div>
+
+
+<h2>ESB vs Event-Driven Architecture</h2>
+<h3>Enterprise Service Bus (ESB)</h3>
+<p>An ESB is a centralized middleware layer that mediates all communication between services. It handles message routing, transformation, protocol translation, and orchestration.</p>
+<p><strong>Why ESB fell out of favor:</strong></p>
+<ol>
+<li><strong>Single point of failure:</strong> All communication flows through the bus. If it goes down, everything stops.</li>
+<li><strong>Centralized bottleneck:</strong> The bus becomes a performance bottleneck as traffic grows.</li>
+<li><strong>Complexity:</strong> Business logic leaks into the bus (transformation rules, routing logic). The bus becomes a monolith of integration logic.</li>
+<li><strong>Vendor lock-in:</strong> ESBs (MuleSoft, IBM Integration Bus, TIBCO) are often expensive proprietary products.</li>
+<li><strong>Deployment coupling:</strong> Changing routing rules in the bus requires redeploying the bus, affecting all services.</li>
+</ol>
+<h3>Event-Driven Alternative</h3>
+<p>Instead of a centralized bus, services communicate through a distributed event backbone (Kafka, event mesh). Each service publishes and subscribes to events independently.</p>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>ESB</th>
+<th>Event-Driven</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Topology</strong></td>
+<td>Hub-and-spoke (centralized)</td>
+<td>Mesh (decentralized)</td>
+</tr>
+<tr>
+<td><strong>Intelligence</strong></td>
+<td>In the bus (smart pipes)</td>
+<td>In the services (smart endpoints, dumb pipes)</td>
+</tr>
+<tr>
+<td><strong>Coupling</strong></td>
+<td>Services coupled to bus</td>
+<td>Services coupled only to event schema</td>
+</tr>
+<tr>
+<td><strong>Failure blast radius</strong></td>
+<td>Bus down = everything down</td>
+<td>One service down = only that service affected</td>
+</tr>
+<tr>
+<td><strong>Scaling</strong></td>
+<td>Scale the bus (hard)</td>
+<td>Scale individual services (easy)</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>If an interviewer asks about ESB, acknowledge its historical role: &quot;ESBs solved real integration problems in the 2000s -- connecting legacy systems with different protocols. But they centralized too much intelligence in the middleware. The modern approach pushes logic to the edges (services) and uses simple, scalable event backbones like Kafka.&quot;</p>
+</div>
+
+
+<h2>Cross-Cutting Concerns</h2>
+<h3>Observability</h3>
+<p>In a microservices architecture, observability is not optional -- it is survival.</p>
+<p><strong>Three pillars:</strong></p>
+<ol>
+<li><strong>Logging:</strong> Structured logs with correlation IDs that trace a request across all services</li>
+<li><strong>Metrics:</strong> Service-level indicators (latency, error rate, throughput) per service, aggregated in dashboards (Grafana, Datadog)</li>
+<li><strong>Distributed tracing:</strong> Trace a single request through all services it touches (Jaeger, Zipkin, AWS X-Ray)</li>
+</ol>
+<h3>Circuit Breaker Pattern</h3>
+<p>When a downstream service is failing, continuing to send requests wastes resources and can cascade the failure. A circuit breaker stops calling the failing service and returns a fallback response.</p>
+<p><strong>States:</strong></p>
+<ol>
+<li><strong>Closed (normal):</strong> Requests flow through. Failures are counted.</li>
+<li><strong>Open (tripped):</strong> After N failures in a window, the circuit opens. All requests immediately return a fallback (cached data, default response, error).</li>
+<li><strong>Half-open (testing):</strong> After a timeout, allow a few test requests through. If they succeed, close the circuit. If they fail, stay open.</li>
+</ol>
+<h3>Retry with Exponential Backoff</h3>
+<p>When a call fails, retry with increasing delays: 100ms, 200ms, 400ms, 800ms, etc. Add jitter (random variation) to prevent thundering herd when many clients retry simultaneously.</p>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Open: Failure count >= threshold<br/>within time window
+    Open --> HalfOpen: Timeout expires<br/>(e.g., 30 seconds)
+    HalfOpen --> Closed: Test requests succeed
+    HalfOpen --> Open: Test requests fail
+    
+    Closed: Normal operation
+    Closed: Count failures
+    Open: Reject all requests
+    Open: Return fallback
+    HalfOpen: Allow limited requests
+    HalfOpen: Test if service recovered
+</pre>
+<h3>Bulkhead Pattern</h3>
+<p>Named after ship bulkheads that prevent a single breach from sinking the entire vessel. The pattern isolates failures to prevent cascading.</p>
+<p><strong>Thread pool bulkhead:</strong> Assign separate thread pools to different downstream services. If the payment service is slow and its thread pool is exhausted, the inventory service&#39;s thread pool is unaffected. Without bulkheads, all threads would be consumed waiting on the slow payment service, blocking everything.</p>
+<p><strong>Connection pool bulkhead:</strong> Separate connection pools per downstream service. A misbehaving service cannot exhaust connections needed by other services.</p>
+<p><strong>Implementation:</strong> Libraries like Resilience4j (Java) and Polly (.NET) provide bulkhead implementations alongside circuit breakers and retries.</p>
+<h3>Health Checks and Graceful Degradation</h3>
+<p>Every microservice should expose health check endpoints:</p>
+<ul>
+<li><strong>Liveness probe:</strong> &quot;Is the process alive?&quot; If no, restart it. (Kubernetes liveness probe)</li>
+<li><strong>Readiness probe:</strong> &quot;Can this instance accept traffic?&quot; If no, remove from load balancer. (Kubernetes readiness probe)</li>
+<li><strong>Startup probe:</strong> &quot;Has the application finished initializing?&quot; Prevents premature liveness checks during slow startups.</li>
+</ul>
+<p><strong>Graceful degradation:</strong> When a non-critical dependency fails, the service continues with reduced functionality rather than failing entirely. If the recommendation engine is down, the product page still loads -- it just shows popular products instead of personalized recommendations.</p>
+<div class="note">
+
+<p>Graceful degradation requires explicitly classifying each dependency as critical or non-critical at design time. If the payment gateway is down, you cannot complete a purchase (critical). If the analytics service is down, you can still complete a purchase and log the analytics event later (non-critical).</p>
+</div>
+
+
+<h3>Configuration Management</h3>
+<p>In a microservices environment, managing configuration across dozens or hundreds of services is a first-class concern.</p>
+<p><strong>Externalized configuration:</strong> Store configuration outside the application code (environment variables, config files, external config services). Never hardcode connection strings, API keys, or feature flags.</p>
+<p><strong>Configuration services:</strong> Centralized systems like Consul KV, Spring Cloud Config, or AWS Parameter Store that services query at startup or periodically. Changes can be pushed without redeploying.</p>
+<p><strong>Feature flags:</strong> Toggle features on/off without deployment. Enables canary releases (enable for 1% of users), A/B testing, and kill switches for problematic features.</p>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Environment variables</td>
+<td>Simple, language-agnostic</td>
+<td>Requires restart to change</td>
+</tr>
+<tr>
+<td>Config files (mounted)</td>
+<td>Structured, version-controlled</td>
+<td>Requires restart or file watcher</td>
+</tr>
+<tr>
+<td>Config service (Consul, etc.)</td>
+<td>Dynamic updates, centralized</td>
+<td>Additional infrastructure to manage</td>
+</tr>
+<tr>
+<td>Feature flag service (LaunchDarkly)</td>
+<td>Real-time toggles, targeting</td>
+<td>Cost, dependency on external service</td>
+</tr>
+</tbody></table>
+<h2>Interview Cheat Sheet</h2>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>One-Liner</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Monolith first</td>
+<td>Start with a monolith; decompose when organizational pain exceeds distributed systems cost</td>
+</tr>
+<tr>
+<td>Bounded context</td>
+<td>Service boundary = DDD bounded context; each service owns its domain language and data</td>
+</tr>
+<tr>
+<td>Strangler fig</td>
+<td>Incrementally extract services from monolith; facade routes between old and new</td>
+</tr>
+<tr>
+<td>Service discovery</td>
+<td>Clients find service instances via registry (client-side) or load balancer (server-side)</td>
+</tr>
+<tr>
+<td>Service mesh</td>
+<td>Sidecar proxies handle networking (mTLS, retries, load balancing) transparently to app code</td>
+</tr>
+<tr>
+<td>API Gateway</td>
+<td>Single entry point; handles auth, rate limiting, routing, response aggregation</td>
+</tr>
+<tr>
+<td>BFF</td>
+<td>One backend per frontend type; tailored payloads for web, mobile, IoT</td>
+</tr>
+<tr>
+<td>Database per service</td>
+<td>Each service owns its data; no direct cross-service DB access</td>
+</tr>
+<tr>
+<td>Saga pattern</td>
+<td>Distributed transaction via sequence of local transactions + compensating transactions on failure</td>
+</tr>
+<tr>
+<td>Choreography vs orchestration</td>
+<td>Choreography: services react to events. Orchestration: central coordinator directs the saga</td>
+</tr>
+<tr>
+<td>Serverless</td>
+<td>FaaS; auto-scaling, pay-per-use; watch out for cold starts and execution limits</td>
+</tr>
+<tr>
+<td>Kubernetes</td>
+<td>Container orchestration; pods, services, deployments; self-healing and rolling updates</td>
+</tr>
+<tr>
+<td>Circuit breaker</td>
+<td>Stop calling a failing service; return fallback; test periodically to see if it recovered</td>
+</tr>
+<tr>
+<td>gRPC vs REST</td>
+<td>gRPC: binary, fast, streaming, typed contracts. REST: text, ubiquitous, human-readable</td>
+</tr>
+<tr>
+<td>Distributed monolith</td>
+<td>Microservices that are tightly coupled (sync chains, shared DB) = worst of both worlds</td>
+</tr>
+<tr>
+<td>ESB vs events</td>
+<td>ESB centralizes logic in middleware (fell out of favor). Events decentralize to smart endpoints</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>The most common microservices interview mistake is jumping straight to microservices without justifying why. Always start with: &quot;For a startup or small team, I&#39;d begin with a modular monolith. As the team and product grow, I&#39;d extract services along bounded context lines using the strangler fig pattern.&quot; This shows engineering judgment, not just technical knowledge.</p>
+</div>
+
+
+</body>
+</html>

@@ -1,0 +1,1481 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Design Interview: Distributed Job Scheduler</title>
+</head>
+<body>
+
+<h1>System Design Interview: Distributed Job Scheduler</h1>
+<h3>Cron at Scale</h3>
+<div class="note">
+
+<p><strong>Staff Engineer Interview Preparation Guide</strong> — High Level Design Round</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-problem-clarification--requirements">Problem Clarification &amp; Requirements</a></li>
+<li><a href="#2-capacity-estimation--scale">Capacity Estimation &amp; Scale</a></li>
+<li><a href="#3-high-level-architecture">High-Level Architecture</a></li>
+<li><a href="#4-core-components-deep-dive">Core Components Deep Dive</a></li>
+<li><a href="#5-job-types">Job Types</a></li>
+<li><a href="#6-job-store-design">Job Store Design</a></li>
+<li><a href="#7-distributed-locking-for-job-pickup">Distributed Locking for Job Pickup</a></li>
+<li><a href="#8-worker-pool-management">Worker Pool Management</a></li>
+<li><a href="#9-job-execution-guarantees">Job Execution Guarantees</a></li>
+<li><a href="#10-retry--backoff">Retry &amp; Backoff</a></li>
+<li><a href="#11-dag-execution">DAG Execution</a></li>
+<li><a href="#12-monitoring--alerting">Monitoring &amp; Alerting</a></li>
+<li><a href="#13-data-models--storage">Data Models &amp; Storage</a></li>
+<li><a href="#14-scalability-strategies">Scalability Strategies</a></li>
+<li><a href="#15-design-trade-offs--justifications">Design Trade-offs &amp; Justifications</a></li>
+<li><a href="#16-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. Problem Clarification &amp; Requirements</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> A distributed job scheduler is an infrastructure component, not a user-facing product. The &quot;users&quot; are internal engineering teams who submit jobs. The core challenge is executing the right job at the right time exactly once, even when machines fail. Frame your answer around reliability and exactly-once semantics from the beginning.</p>
+</div>
+
+
+<h3>Questions to Ask the Interviewer</h3>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Question</th>
+<th>Why It Matters</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Scale</strong></td>
+<td>How many jobs? What is peak execution rate?</td>
+<td>Determines scheduler architecture complexity</td>
+</tr>
+<tr>
+<td><strong>Job types</strong></td>
+<td>Only time-triggered, or also event-triggered?</td>
+<td>Expands scope to include event bus integration</td>
+</tr>
+<tr>
+<td><strong>Execution</strong></td>
+<td>How long do jobs run? Seconds, minutes, or hours?</td>
+<td>Worker pool sizing and timeout strategy</td>
+</tr>
+<tr>
+<td><strong>Dependencies</strong></td>
+<td>Do jobs have dependencies on other jobs (DAGs)?</td>
+<td>Adds DAG orchestration layer</td>
+</tr>
+<tr>
+<td><strong>Multi-tenancy</strong></td>
+<td>Single team or shared platform (many teams)?</td>
+<td>Fairness, isolation, quota management</td>
+</tr>
+<tr>
+<td><strong>Idempotency</strong></td>
+<td>Can jobs be safely retried?</td>
+<td>Affects execution guarantee model</td>
+</tr>
+<tr>
+<td><strong>Environment</strong></td>
+<td>Kubernetes, bare metal, or cloud functions?</td>
+<td>Worker deployment model</td>
+</tr>
+<tr>
+<td><strong>Priority</strong></td>
+<td>Are some jobs more important than others?</td>
+<td>Priority queue implementation</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>Functional Requirements (Agreed Upon)</h3>
+<ul>
+<li>Users can schedule one-time delayed jobs (run at a specific time in the future)</li>
+<li>Users can schedule recurring jobs using cron expressions (e.g., &quot;every 5 minutes&quot;, &quot;daily at 2 AM&quot;)</li>
+<li>Users can define event-triggered jobs (run when a specific event occurs)</li>
+<li>Users can define DAG workflows: jobs with dependencies where job B runs only after job A completes</li>
+<li>Failed jobs are retried with configurable retry count and backoff strategy</li>
+<li>Users can monitor job status, view execution history, and set up alerts</li>
+<li>Users can pause, resume, and cancel scheduled jobs</li>
+<li>Jobs that exceed their timeout are terminated and marked as failed</li>
+</ul>
+<h3>Non-Functional Requirements</h3>
+<ul>
+<li><strong>Exactly-once execution:</strong> A job must execute exactly once per scheduled occurrence (no missed executions, no duplicates)</li>
+<li><strong>Fault tolerance:</strong> The system continues to operate if any single component fails</li>
+<li><strong>Low scheduling latency:</strong> Time between when a job is due and when it begins executing should be &lt; 5 seconds</li>
+<li><strong>Scale:</strong> 10 million scheduled job definitions, 100K job executions per minute at peak</li>
+<li><strong>Isolation:</strong> A misbehaving job from one team must not affect jobs from other teams</li>
+<li><strong>Observability:</strong> Full audit trail of every job execution (who, when, duration, result)</li>
+</ul>
+<hr>
+<h2>2. Capacity Estimation &amp; Scale</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> The key scaling dimension for a job scheduler is the execution rate, not the number of job definitions. Having 10 million job definitions that each run once a day is very different from 10 million definitions that each run every minute. Clarify the execution frequency distribution early.</p>
+</div>
+
+
+<h3>Traffic Estimation</h3>
+<pre><code>Job definitions                = 10 Million
+Execution frequency distribution:
+  - 40% run daily              = 4M executions/day
+  - 30% run hourly             = 3M * 24 = 72M executions/day
+  - 20% run every 5 minutes    = 2M * 288 = 576M executions/day
+  - 10% run once (delayed)     = 1M one-time executions/day
+
+Total executions/day           = ~653M
+Executions per second (avg)    = 653M / 86,400 = ~7,500/sec
+Peak (2x): ~15,000/sec
+
+Job scheduling (reads from job store):
+  - Scheduler polls for due jobs every 1 second
+  - Each poll returns up to 1000 jobs
+  - 15 scheduler instances * 1000 jobs/poll = 15,000 jobs/sec capacity
+
+Worker capacity needed:
+  - Average job execution time: 30 seconds
+  - Peak: 15,000 new jobs/sec
+  - Concurrent jobs needed: 15,000 * 30 = 450,000 concurrent workers
+  - With worker pods handling 10 concurrent jobs each: 45,000 worker pods
+</code></pre>
+<h3>Storage Estimation</h3>
+<pre><code>Job definition:
+  - Name, cron expression, handler, config = ~2 KB
+  - 10M definitions = 20 GB
+
+Job execution record:
+  - job_id, execution_id, status, timestamps, result = ~500 bytes
+  - 653M/day = ~326 GB/day
+  - With 90-day retention = ~29 TB
+  - Compressed: ~6 TB
+
+Job execution logs:
+  - Average 5 KB per execution (stdout/stderr capture)
+  - 653M * 5 KB/day = 3.2 TB/day
+  - Stored in object storage (S3) with 30-day hot, 1-year cold retention
+</code></pre>
+<hr>
+<h2>3. High-Level Architecture</h2>
+<pre class="mermaid">
+graph TB
+    subgraph Clients
+        UI[Scheduler UI / Dashboard]
+        CLI[CLI / SDK]
+        API_CLIENT[Internal Services via API]
+    end
+
+    subgraph Scheduler Layer
+        API[Scheduler API]
+        SCH1[Scheduler Instance 1]
+        SCH2[Scheduler Instance 2]
+        SCH3[Scheduler Instance N]
+    end
+
+    subgraph Execution Layer
+        Q[Job Queue - Priority Queue]
+        WP1[Worker Pool 1]
+        WP2[Worker Pool 2]
+        WP3[Worker Pool N]
+    end
+
+    subgraph Data Layer
+        PG[(PostgreSQL - Job Definitions)]
+        RD[(Redis - Distributed Locks & Lease)]
+        KFK[Kafka - Event Triggers]
+        S3[(S3 - Execution Logs)]
+        TSDB[(TimescaleDB - Metrics)]
+    end
+
+    subgraph Monitoring
+        MON[Monitoring Service]
+        ALERT[Alerting Service]
+    end
+
+    UI --> API
+    CLI --> API
+    API_CLIENT --> API
+    API --> PG
+    API --> RD
+
+    SCH1 --> PG
+    SCH2 --> PG
+    SCH3 --> PG
+    SCH1 --> RD
+    SCH2 --> RD
+    SCH3 --> RD
+    SCH1 --> Q
+    SCH2 --> Q
+    SCH3 --> Q
+
+    KFK --> SCH1
+
+    Q --> WP1
+    Q --> WP2
+    Q --> WP3
+
+    WP1 --> PG
+    WP2 --> PG
+    WP3 --> PG
+    WP1 --> S3
+    WP2 --> S3
+    WP3 --> S3
+
+    WP1 --> TSDB
+    MON --> TSDB
+    MON --> ALERT
+</pre>
+<h3>Component Responsibilities</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Scheduler API</strong></td>
+<td>CRUD for job definitions, manual triggers, pause/resume</td>
+</tr>
+<tr>
+<td><strong>Scheduler Instances</strong></td>
+<td>Poll job store for due jobs, enqueue them for execution</td>
+</tr>
+<tr>
+<td><strong>Job Queue</strong></td>
+<td>Priority queue holding jobs ready for execution</td>
+</tr>
+<tr>
+<td><strong>Worker Pools</strong></td>
+<td>Execute jobs, report results, capture logs</td>
+</tr>
+<tr>
+<td><strong>Redis</strong></td>
+<td>Distributed locks for scheduler leader election and job pickup deduplication</td>
+</tr>
+<tr>
+<td><strong>PostgreSQL</strong></td>
+<td>Source of truth for job definitions and execution history</td>
+</tr>
+<tr>
+<td><strong>Kafka</strong></td>
+<td>Event bus for event-triggered jobs</td>
+</tr>
+<tr>
+<td><strong>Monitoring Service</strong></td>
+<td>Track execution metrics, detect stuck jobs, alert on failures</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>4. Core Components Deep Dive</h2>
+<h3>How the Scheduler Works — The Big Picture</h3>
+<p>The scheduler&#39;s job is deceptively simple: at the right time, run the right code. The complexity comes from doing this reliably across multiple machines without missing or duplicating executions.</p>
+<pre><code>Scheduler Loop (runs on each scheduler instance):
+
+every 1 second:
+  1. Attempt to acquire a partition lock (I am responsible for jobs A-D)
+  2. Query job store: SELECT jobs WHERE next_execution_time &lt;= NOW()
+                       AND partition IN (my_partitions)
+                       AND status = &#39;scheduled&#39;
+  3. For each due job:
+     a. Attempt to claim the job (SET status = &#39;queued&#39; with version check)
+     b. If claim successful: enqueue job into the priority queue
+     c. If claim fails (another scheduler claimed it): skip
+  4. Compute next_execution_time for recurring jobs
+</code></pre>
+<div class="important">
+
+<p>Multiple scheduler instances run simultaneously for fault tolerance. The partition-based approach ensures that each job is the responsibility of exactly one scheduler instance at any given time. If a scheduler instance dies, its partitions are redistributed to surviving instances.</p>
+</div>
+
+
+<hr>
+<h2>5. Job Types</h2>
+<h3>One-Time Delayed Jobs</h3>
+<pre><code>Example: &quot;Send a reminder email to user X in 24 hours&quot;
+
+Job definition:
+  {
+    &quot;job_id&quot;: &quot;job_001&quot;,
+    &quot;type&quot;: &quot;one_time&quot;,
+    &quot;handler&quot;: &quot;email.send_reminder&quot;,
+    &quot;payload&quot;: { &quot;user_id&quot;: &quot;U123&quot;, &quot;template&quot;: &quot;reminder_v2&quot; },
+    &quot;execute_at&quot;: &quot;2026-04-12T14:00:00Z&quot;,
+    &quot;timeout_sec&quot;: 60,
+    &quot;max_retries&quot;: 3
+  }
+
+After execution:
+  - Job status changes to &quot;completed&quot; or &quot;failed&quot;
+  - No next_execution_time computed
+  - Job definition archived after 30 days
+</code></pre>
+<h3>Recurring / Cron Jobs</h3>
+<pre><code>Example: &quot;Generate daily sales report at 2 AM UTC every day&quot;
+
+Job definition:
+  {
+    &quot;job_id&quot;: &quot;job_002&quot;,
+    &quot;type&quot;: &quot;recurring&quot;,
+    &quot;handler&quot;: &quot;reports.daily_sales&quot;,
+    &quot;payload&quot;: { &quot;report_type&quot;: &quot;sales&quot;, &quot;format&quot;: &quot;csv&quot; },
+    &quot;cron_expression&quot;: &quot;0 2 * * *&quot;,
+    &quot;timezone&quot;: &quot;UTC&quot;,
+    &quot;timeout_sec&quot;: 3600,
+    &quot;max_retries&quot;: 2,
+    &quot;next_execution_time&quot;: &quot;2026-04-12T02:00:00Z&quot;
+  }
+
+After each execution:
+  - Compute next_execution_time from cron expression
+  - Update job definition with new next_execution_time
+  - Keep execution history
+</code></pre>
+<h3>Event-Triggered Jobs</h3>
+<pre><code>Example: &quot;When a user signs up, send a welcome email series&quot;
+
+Job definition:
+  {
+    &quot;job_id&quot;: &quot;job_003&quot;,
+    &quot;type&quot;: &quot;event_triggered&quot;,
+    &quot;handler&quot;: &quot;onboarding.welcome_series&quot;,
+    &quot;trigger_event&quot;: &quot;user.signed_up&quot;,
+    &quot;event_filter&quot;: { &quot;plan&quot;: &quot;premium&quot; },
+    &quot;timeout_sec&quot;: 120,
+    &quot;max_retries&quot;: 3
+  }
+
+Flow:
+  1. User signs up -&gt; &quot;user.signed_up&quot; event published to Kafka
+  2. Scheduler&#39;s event consumer receives the event
+  3. Matches against registered event-triggered job definitions
+  4. Creates a job execution with the event payload
+  5. Enqueues for immediate execution by a worker
+</code></pre>
+<h3>DAG-Based Workflows</h3>
+<pre><code>Example: &quot;ETL pipeline: Extract -&gt; Transform -&gt; Load -&gt; Validate&quot;
+
+Workflow definition:
+  {
+    &quot;workflow_id&quot;: &quot;wf_001&quot;,
+    &quot;name&quot;: &quot;daily_etl_pipeline&quot;,
+    &quot;schedule&quot;: &quot;0 3 * * *&quot;,
+    &quot;jobs&quot;: [
+      { &quot;job_id&quot;: &quot;extract&quot;, &quot;handler&quot;: &quot;etl.extract&quot;, &quot;depends_on&quot;: [] },
+      { &quot;job_id&quot;: &quot;transform_a&quot;, &quot;handler&quot;: &quot;etl.transform_users&quot;, &quot;depends_on&quot;: [&quot;extract&quot;] },
+      { &quot;job_id&quot;: &quot;transform_b&quot;, &quot;handler&quot;: &quot;etl.transform_orders&quot;, &quot;depends_on&quot;: [&quot;extract&quot;] },
+      { &quot;job_id&quot;: &quot;load&quot;, &quot;handler&quot;: &quot;etl.load&quot;, &quot;depends_on&quot;: [&quot;transform_a&quot;, &quot;transform_b&quot;] },
+      { &quot;job_id&quot;: &quot;validate&quot;, &quot;handler&quot;: &quot;etl.validate&quot;, &quot;depends_on&quot;: [&quot;load&quot;] }
+    ]
+  }
+
+DAG structure:
+  extract --&gt; transform_a --&gt; load --&gt; validate
+          \-&gt; transform_b --/
+
+  transform_a and transform_b run in parallel after extract completes.
+  load runs only after both transforms complete.
+</code></pre>
+<hr>
+<h2>6. Job Store Design</h2>
+<h3>Database Schema for Job Definitions</h3>
+<p>The job store is the source of truth for all job definitions and their scheduling state.</p>
+<pre><code class="language-sql">CREATE TABLE job_definitions (
+    job_id              UUID PRIMARY KEY,
+    tenant_id           UUID NOT NULL,           -- multi-tenancy
+    name                VARCHAR(255) NOT NULL,
+    type                VARCHAR(20) NOT NULL,     -- one_time, recurring, event_triggered
+    handler             VARCHAR(500) NOT NULL,    -- fully qualified handler name
+    payload             JSONB,                    -- arguments passed to the handler
+    cron_expression     VARCHAR(100),             -- for recurring jobs
+    timezone            VARCHAR(50) DEFAULT &#39;UTC&#39;,
+    trigger_event       VARCHAR(200),             -- for event-triggered jobs
+    event_filter        JSONB,                    -- for event-triggered jobs
+    next_execution_time TIMESTAMP WITH TIME ZONE, -- computed from cron
+    timeout_sec         INTEGER DEFAULT 300,
+    max_retries         INTEGER DEFAULT 3,
+    retry_backoff       VARCHAR(20) DEFAULT &#39;exponential&#39;, -- linear, exponential, fixed
+    priority            SMALLINT DEFAULT 5,       -- 1 (highest) to 10 (lowest)
+    partition_key       SMALLINT NOT NULL,        -- for scheduler partitioning
+    status              VARCHAR(20) DEFAULT &#39;scheduled&#39;, -- scheduled, paused, disabled
+    created_at          TIMESTAMP DEFAULT NOW(),
+    updated_at          TIMESTAMP DEFAULT NOW(),
+    created_by          VARCHAR(100),
+
+    INDEX idx_due_jobs (partition_key, status, next_execution_time)
+        WHERE status = &#39;scheduled&#39;
+);
+</code></pre>
+<h3>Cron Expression Parsing and Next Execution Time</h3>
+<pre><code>Cron expression: &quot;*/5 * * * *&quot; (every 5 minutes)
+
+Parsing:
+  minute: */5 -&gt; [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]
+  hour:   *   -&gt; [0-23]
+  day:    *   -&gt; [1-31]
+  month:  *   -&gt; [1-12]
+  dow:    *   -&gt; [0-6]
+
+Computing next execution:
+  current_time = 2026-04-11 14:23:45 UTC
+  next_execution = 2026-04-11 14:25:00 UTC
+
+Algorithm:
+  1. Start from current_time
+  2. Round up to next matching minute
+  3. Check if hour, day, month, dow match
+  4. If not, advance to next matching combination
+  5. Handle timezone correctly (DST transitions)
+</code></pre>
+<div class="warning">
+
+<p>Daylight Saving Time transitions are a common source of bugs in cron schedulers. When clocks spring forward, the 2 AM hour does not exist. When clocks fall back, the 1 AM hour occurs twice. Your scheduler must handle both cases: skip the non-existent occurrence and avoid duplicate execution during the repeated hour.</p>
+</div>
+
+
+<h3>Partition-Based Job Assignment</h3>
+<pre><code>Job Partitioning:
+  - Total partitions: 64 (power of 2 for easy rebalancing)
+  - Each job is assigned a partition: partition_key = hash(job_id) % 64
+  - Each scheduler instance owns a subset of partitions
+
+Example with 4 scheduler instances:
+  Scheduler 1: partitions 0-15  (16 partitions)
+  Scheduler 2: partitions 16-31 (16 partitions)
+  Scheduler 3: partitions 32-47 (16 partitions)
+  Scheduler 4: partitions 48-63 (16 partitions)
+
+If Scheduler 3 dies:
+  - Its partitions (32-47) are redistributed:
+  Scheduler 1: partitions 0-15, 32-37  (22 partitions)
+  Scheduler 2: partitions 16-31, 38-42 (21 partitions)
+  Scheduler 4: partitions 48-63, 43-47 (21 partitions)
+
+Rebalancing is managed by a coordination service (ZooKeeper or Redis-based leader election).
+</code></pre>
+<hr>
+<h2>7. Distributed Locking for Job Pickup</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> This is the most critical correctness component of the system. If two scheduler instances both pick up the same job, it executes twice. If neither picks it up, it never executes. The distributed lock must guarantee mutual exclusion while being resilient to lock-holder failures.</p>
+</div>
+
+
+<h3>The Problem: Duplicate Execution</h3>
+<pre><code>Without locking:
+  T=0: Job &quot;daily_report&quot; is due (next_execution_time = NOW)
+  T=0: Scheduler 1 reads job from DB -&gt; sees it is due -&gt; enqueues
+  T=0: Scheduler 2 reads job from DB -&gt; sees it is due -&gt; enqueues
+  T=1: Worker A picks up from queue -&gt; executes
+  T=1: Worker B picks up from queue -&gt; executes AGAIN (duplicate!)
+</code></pre>
+<h3>Solution 1: Database Row Lock with Lease</h3>
+<pre><code class="language-sql">-- Scheduler attempts to claim a job
+UPDATE job_definitions
+SET status = &#39;queued&#39;,
+    claimed_by = &#39;scheduler-1&#39;,
+    claimed_at = NOW(),
+    version = version + 1
+WHERE job_id = ?
+  AND status = &#39;scheduled&#39;
+  AND next_execution_time &lt;= NOW()
+  AND version = ?;
+
+-- If rows_affected = 1: we got it. Enqueue for execution.
+-- If rows_affected = 0: someone else got it, or it&#39;s not due. Skip.
+</code></pre>
+<p><strong>Pros:</strong> Simple, uses existing PostgreSQL, no additional infrastructure.
+<strong>Cons:</strong> Database becomes the bottleneck under high throughput. Every job pickup requires a write to the DB.</p>
+<h3>Solution 2: Redis Distributed Lock with Fencing Token</h3>
+<pre><code>Lock acquisition:
+  lock_key = &quot;job_lock:{job_id}:{execution_time}&quot;
+  fencing_token = Redis.INCR(&quot;fencing_token:{job_id}&quot;)
+  result = Redis.SET(lock_key, fencing_token, NX, EX, 300)
+
+  if result == OK:
+    // We hold the lock with fencing token N
+    // Enqueue job with fencing_token = N
+    return ACQUIRED(fencing_token)
+  else:
+    return ALREADY_LOCKED
+</code></pre>
+<p><strong>Fencing Tokens Explained:</strong></p>
+<pre><code>Why fencing tokens are needed:
+
+  T=0: Scheduler 1 acquires lock, fencing_token = 42
+  T=1: Scheduler 1 becomes slow (GC pause, network delay)
+  T=5: Lock expires (TTL)
+  T=6: Scheduler 2 acquires lock, fencing_token = 43
+  T=6: Scheduler 2 enqueues job with fencing_token = 43
+  T=7: Scheduler 1 &quot;wakes up&quot; and tries to enqueue with fencing_token = 42
+
+  Worker receives two enqueue requests:
+    - fencing_token = 43 (from Scheduler 2) -&gt; ACCEPT (highest token)
+    - fencing_token = 42 (from Scheduler 1) -&gt; REJECT (stale token)
+
+  The fencing token establishes a total order. Only the highest token is valid.
+</code></pre>
+<pre class="mermaid">
+sequenceDiagram
+    participant S1 as Scheduler 1
+    participant R as Redis
+    participant Q as Job Queue
+    participant W as Worker
+
+    S1->>R: INCR fencing_token:job_X -> 42
+    S1->>R: SET job_lock:job_X:T1 42 NX EX 300
+    R-->>S1: OK (lock acquired)
+    S1->>Q: Enqueue job_X with fencing_token=42
+
+    Note over S1: GC pause, lock expires
+
+    participant S2 as Scheduler 2
+    S2->>R: INCR fencing_token:job_X -> 43
+    S2->>R: SET job_lock:job_X:T1 43 NX EX 300
+    R-->>S2: OK (lock acquired after TTL expiry)
+    S2->>Q: Enqueue job_X with fencing_token=43
+
+    Note over S1: S1 wakes up, tries to enqueue
+    S1->>Q: Enqueue job_X with fencing_token=42
+
+    W->>Q: Dequeue job_X
+    Q-->>W: fencing_token=43
+    W->>W: Execute job (highest token wins)
+    W->>Q: Dequeue job_X (duplicate)
+    Q-->>W: fencing_token=42
+    W->>W: REJECT (42 < 43, stale token)
+</pre>
+<div class="important">
+
+<p><strong>Recommended approach:</strong> Use Redis locks for the fast path (low latency, high throughput) with the database version check as a safety net. The Redis lock prevents most duplicates. The fencing token catches the edge cases where locks expire due to GC pauses or network partitions.</p>
+</div>
+
+
+<h3>Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Criteria</th>
+<th>DB Row Lock</th>
+<th>Redis Lock</th>
+<th>Redis Lock + Fencing</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Latency</strong></td>
+<td>~5ms</td>
+<td>~1ms</td>
+<td>~2ms</td>
+</tr>
+<tr>
+<td><strong>Throughput</strong></td>
+<td>~5K/sec</td>
+<td>~50K/sec</td>
+<td>~40K/sec</td>
+</tr>
+<tr>
+<td><strong>Correctness</strong></td>
+<td>Strong (ACID)</td>
+<td>Weak (lock expiry race)</td>
+<td>Strong (fencing token)</td>
+</tr>
+<tr>
+<td><strong>Failure mode</strong></td>
+<td>DB down = no scheduling</td>
+<td>Redis down = fallback to DB</td>
+<td>Same as Redis lock</td>
+</tr>
+<tr>
+<td><strong>Complexity</strong></td>
+<td>Low</td>
+<td>Medium</td>
+<td>Medium-High</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>8. Worker Pool Management</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> The worker pool is where jobs actually execute. The two main architectural choices are push-based (scheduler assigns jobs to specific workers) and pull-based (workers poll a queue for available jobs). Be prepared to discuss both and justify your choice.</p>
+</div>
+
+
+<h3>Pull-Based vs Push-Based</h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Pull-Based (Workers Poll Queue)</th>
+<th>Push-Based (Scheduler Assigns)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Load balancing</strong></td>
+<td>Natural — idle workers pick up jobs</td>
+<td>Scheduler must track worker load</td>
+</tr>
+<tr>
+<td><strong>Worker failures</strong></td>
+<td>Job returns to queue, another worker picks it up</td>
+<td>Scheduler must detect failure and reassign</td>
+</tr>
+<tr>
+<td><strong>Scaling</strong></td>
+<td>Add more workers, they start pulling</td>
+<td>Scheduler must know about new workers</td>
+</tr>
+<tr>
+<td><strong>Complexity</strong></td>
+<td>Simpler (stateless scheduler)</td>
+<td>More complex (stateful scheduler)</td>
+</tr>
+<tr>
+<td><strong>Latency</strong></td>
+<td>Slight polling delay</td>
+<td>Immediate dispatch</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen: Pull-based</strong> — Workers pull from a priority queue. This is simpler, more resilient to worker failures, and naturally load-balances.</p>
+<h3>Worker Heartbeat Mechanism</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant W as Worker
+    participant Q as Job Queue
+    participant R as Redis (Heartbeat Store)
+    participant MON as Monitor
+
+    W->>Q: Pull job (BRPOP with timeout)
+    Q-->>W: Job: { job_id, execution_id, handler, payload, timeout }
+    W->>R: SET worker:W1:heartbeat NOW() EX 30
+
+    loop Every 10 seconds
+        W->>R: SET worker:W1:heartbeat NOW() EX 30
+        W->>R: SET execution:EX123:heartbeat NOW() EX 60
+    end
+
+    Note over W: Job completes
+    W->>Q: Report result (success/failure)
+    W->>R: DEL worker:W1:heartbeat
+    W->>R: DEL execution:EX123:heartbeat
+
+    Note over MON: Monitors check for stale heartbeats
+    MON->>R: SCAN for expired heartbeats
+    MON->>MON: If execution heartbeat expired:<br/>mark as failed, requeue
+</pre>
+<h3>Worker Lifecycle</h3>
+<pre><code>Worker Startup:
+  1. Register with the worker registry (Redis SET)
+  2. Report capabilities: { &quot;queues&quot;: [&quot;default&quot;, &quot;reports&quot;], &quot;concurrency&quot;: 10 }
+  3. Start heartbeat loop (every 10 seconds)
+  4. Start polling job queue
+
+Job Execution:
+  1. Pull job from priority queue
+  2. Set execution heartbeat
+  3. Invoke handler with payload
+  4. Capture stdout/stderr, upload to S3
+  5. Report result to job store (PostgreSQL)
+  6. Update execution record with status, duration, result
+  7. Clear execution heartbeat
+  8. Pull next job
+
+Worker Shutdown (graceful):
+  1. Stop pulling new jobs
+  2. Wait for in-progress jobs to complete (with timeout)
+  3. Deregister from worker registry
+  4. Stop heartbeat
+
+Worker Crash (ungraceful):
+  1. Heartbeat stops
+  2. After 60 seconds, monitor detects stale heartbeat
+  3. In-progress jobs are marked as &quot;timed_out&quot;
+  4. Jobs are requeued for retry (if retries remain)
+</code></pre>
+<h3>Resource Isolation</h3>
+<pre><code>Worker Pool Segregation:
+
+Pool: &quot;default&quot;
+  - Handles: standard jobs (email sending, data sync)
+  - Workers: 100 pods, 10 concurrent jobs each
+  - Max job duration: 5 minutes
+
+Pool: &quot;reports&quot;
+  - Handles: report generation, data export
+  - Workers: 20 pods, 2 concurrent jobs each (CPU-intensive)
+  - Max job duration: 1 hour
+
+Pool: &quot;critical&quot;
+  - Handles: payment processing, billing
+  - Workers: 50 pods, 5 concurrent jobs each
+  - Max job duration: 2 minutes
+  - Dedicated infrastructure (no resource contention)
+
+Jobs specify their target pool:
+  { &quot;handler&quot;: &quot;reports.daily_sales&quot;, &quot;queue&quot;: &quot;reports&quot; }
+</code></pre>
+<div class="note">
+
+<p>Pool segregation prevents a flood of low-priority jobs from starving high-priority ones. Even if the &quot;default&quot; pool is completely saturated, &quot;critical&quot; jobs execute on their dedicated pool without delay.</p>
+</div>
+
+
+<hr>
+<h2>9. Job Execution Guarantees</h2>
+<h3>At-Least-Once with Idempotent Workers</h3>
+<pre><code>The system guarantees at-least-once execution:
+  - Every scheduled occurrence will be executed AT LEAST once
+  - In rare failure scenarios (lock expiry race, worker crash after partial completion),
+    a job may execute more than once
+
+To achieve effectively-once behavior:
+  - Workers must be idempotent
+  - Each execution has a unique execution_id
+  - The worker checks: &quot;Has execution_id X already been processed?&quot;
+
+Example: Payment processing job
+  BAD (not idempotent):
+    def process_payment(user_id, amount):
+      charge_credit_card(user_id, amount)  // duplicate execution = double charge!
+
+  GOOD (idempotent):
+    def process_payment(user_id, amount, execution_id):
+      if already_processed(execution_id):
+        return previous_result(execution_id)
+      result = charge_credit_card(user_id, amount, idempotency_key=execution_id)
+      mark_processed(execution_id, result)
+      return result
+</code></pre>
+<h3>Deduplication via Execution ID</h3>
+<pre><code>Execution ID generation:
+  execution_id = &quot;{job_id}_{scheduled_time_epoch}&quot;
+
+  Example:
+    job_id = &quot;daily_report&quot;
+    scheduled_time = 2026-04-12T02:00:00Z (epoch: 1776139200)
+    execution_id = &quot;daily_report_1776139200&quot;
+
+  This ID is deterministic: the same scheduled occurrence always produces
+  the same execution_id, regardless of which scheduler instance processes it.
+
+  Worker-side deduplication:
+    - Before executing, check: does execution &quot;daily_report_1776139200&quot; already exist
+      in the executions table with status &quot;completed&quot;?
+    - If yes: skip (already done by another worker)
+    - If no: execute and record
+</code></pre>
+<div class="warning">
+
+<p>Execution ID deduplication has a race condition: two workers might both check the table, both see &quot;not completed,&quot; and both execute. To prevent this, use a unique constraint on execution_id in the database and catch the constraint violation. The second INSERT fails, and that worker skips execution.</p>
+</div>
+
+
+<hr>
+<h2>10. Retry &amp; Backoff</h2>
+<h3>Configurable Retry Strategy</h3>
+<pre><code>Job definition includes:
+  {
+    &quot;max_retries&quot;: 5,
+    &quot;retry_backoff&quot;: &quot;exponential&quot;,
+    &quot;retry_initial_delay_sec&quot;: 10,
+    &quot;retry_max_delay_sec&quot;: 3600,
+    &quot;retry_on&quot;: [&quot;timeout&quot;, &quot;handler_error&quot;],  -- which failures trigger retry
+    &quot;no_retry_on&quot;: [&quot;invalid_payload&quot;]          -- which failures are permanent
+  }
+</code></pre>
+<h3>Backoff Strategies</h3>
+<pre><code>Fixed backoff:
+  Retry 1: wait 60s
+  Retry 2: wait 60s
+  Retry 3: wait 60s
+  Use when: job failure is likely transient and delay does not help
+
+Exponential backoff:
+  Retry 1: wait 10s
+  Retry 2: wait 20s
+  Retry 3: wait 40s
+  Retry 4: wait 80s
+  Retry 5: wait 160s (capped at max_delay)
+  Use when: failure might be caused by downstream overload
+
+Exponential backoff with jitter:
+  Retry 1: wait random(0, 10s)
+  Retry 2: wait random(0, 20s)
+  Retry 3: wait random(0, 40s)
+  Use when: many jobs might fail simultaneously and retry at the same time (thundering herd)
+  The jitter spreads retries across time to avoid synchronized load spikes
+</code></pre>
+<h3>Dead Letter Queue</h3>
+<pre><code>After max_retries exhausted:
+  1. Job execution marked as &quot;permanently_failed&quot;
+  2. Job moved to Dead Letter Queue (DLQ)
+  3. Alert sent to job owner (team Slack channel, PagerDuty)
+  4. Job remains in DLQ for manual investigation
+
+DLQ operations:
+  - View: list all permanently failed jobs with failure reasons
+  - Retry: manually resubmit a DLQ job after fixing the root cause
+  - Discard: acknowledge and remove from DLQ
+  - Bulk retry: resubmit all DLQ jobs (after a dependency is fixed)
+</code></pre>
+<h3>Retry State Machine</h3>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> Queued: Job scheduled
+    Queued --> Running: Worker picks up job
+    Running --> Completed: Handler returns success
+    Running --> Failed: Handler throws error
+    Running --> TimedOut: Exceeds timeout_sec
+
+    Failed --> RetryScheduled: retries_remaining > 0
+    TimedOut --> RetryScheduled: retries_remaining > 0
+    RetryScheduled --> Queued: After backoff delay
+
+    Failed --> PermanentlyFailed: retries_remaining = 0
+    TimedOut --> PermanentlyFailed: retries_remaining = 0
+    PermanentlyFailed --> DeadLetterQueue: Move to DLQ
+    DeadLetterQueue --> Queued: Manual retry
+
+    Completed --> [*]
+</pre>
+<hr>
+<h2>11. DAG Execution</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> DAG (Directed Acyclic Graph) execution is what transforms a simple job scheduler into a workflow orchestration engine. The key challenges are: (1) detecting when all dependencies of a job are satisfied, (2) handling partial failures (one branch fails, other branches succeed), and (3) maximizing parallelism.</p>
+</div>
+
+
+<h3>DAG Representation</h3>
+<pre><code>Workflow: ETL Pipeline
+
+     extract
+      / \
+     /   \
+transform_a  transform_b
+     \   /
+      \ /
+     load
+      |
+   validate
+
+Stored as:
+  job_dependencies table:
+    | job_id       | depends_on_job_id |
+    |-------------|-------------------|
+    | transform_a | extract           |
+    | transform_b | extract           |
+    | load        | transform_a       |
+    | load        | transform_b       |
+    | validate    | load              |
+</code></pre>
+<h3>DAG Execution Flow</h3>
+<pre class="mermaid">
+graph TD
+    subgraph Workflow Execution
+        A[extract] -->|completed| B[Check dependents]
+        B --> C{transform_a ready?}
+        B --> D{transform_b ready?}
+        C -->|all deps met| E[Enqueue transform_a]
+        D -->|all deps met| F[Enqueue transform_b]
+        E --> G[transform_a completes]
+        F --> H[transform_b completes]
+        G --> I{load ready?}
+        H --> I
+        I -->|all deps met| J[Enqueue load]
+        J --> K[load completes]
+        K --> L{validate ready?}
+        L -->|all deps met| M[Enqueue validate]
+        M --> N[validate completes]
+        N --> O[Workflow Complete]
+    end
+</pre>
+<h3>Dependency Resolution Algorithm</h3>
+<pre><code>When a job in a DAG completes:
+
+def on_job_completed(workflow_id, completed_job_id):
+    # Find all jobs that depend on the completed job
+    dependents = get_dependents(workflow_id, completed_job_id)
+
+    for dependent in dependents:
+        # Check if ALL dependencies of this dependent are completed
+        all_deps = get_dependencies(workflow_id, dependent.job_id)
+        all_completed = all(
+            get_execution_status(workflow_id, dep.job_id) == &#39;completed&#39;
+            for dep in all_deps
+        )
+
+        if all_completed:
+            enqueue_job(workflow_id, dependent.job_id)
+
+Implementation detail:
+  - Use a database query to check dependency status
+  - Protected by a distributed lock on the workflow_id
+    (prevents race condition when two dependencies complete simultaneously)
+</code></pre>
+<h3>Failure Propagation in DAGs</h3>
+<pre><code>Scenario: transform_a fails in the ETL pipeline
+
+Options:
+  1. Fail the entire workflow immediately
+     - load and validate are cancelled
+     - transform_b may still be running -&gt; cancel it too
+     - Simplest approach, but wastes completed work
+
+  2. Fail only downstream jobs, let parallel branches continue
+     - transform_b continues to completion
+     - load is blocked (one dependency failed)
+     - validate is blocked (transitive dependency failed)
+     - Workflow status: &quot;partially_failed&quot;
+     - User can fix transform_a and retry just the failed branch
+
+  3. Retry the failed job before failing downstream
+     - transform_a retried according to its retry policy
+     - If retry succeeds, pipeline continues normally
+     - If all retries exhausted, fall back to option 2
+
+Recommended: Option 3 (retry first), then option 2 (partial failure with retry of branch).
+This maximizes the chance of completion while preserving completed work.
+</code></pre>
+<h3>Topological Sort for Execution Planning</h3>
+<pre><code>Before executing a DAG, validate it:
+  1. Perform topological sort to detect cycles
+     - If a cycle exists (A -&gt; B -&gt; C -&gt; A), reject the workflow definition
+  2. Identify root nodes (no dependencies) -&gt; these execute first
+  3. Identify leaf nodes (no dependents) -&gt; workflow is complete when all leaves complete
+  4. Compute the critical path (longest chain) -&gt; minimum possible execution time
+
+Topological order for ETL pipeline:
+  Level 0: [extract]
+  Level 1: [transform_a, transform_b]  -- parallel
+  Level 2: [load]
+  Level 3: [validate]
+
+  Minimum execution time = sum of critical path durations
+  = extract_time + max(transform_a_time, transform_b_time) + load_time + validate_time
+</code></pre>
+<hr>
+<h2>12. Monitoring &amp; Alerting</h2>
+<h3>Key Metrics</h3>
+<pre><code>Job-level metrics:
+  - Execution count (total, success, failure) per job per time window
+  - Execution duration (p50, p95, p99) per job
+  - Retry count distribution
+  - Time-in-queue (scheduling latency): time between due and start
+
+System-level metrics:
+  - Queue depth (total, per priority, per pool)
+  - Worker utilization (busy workers / total workers)
+  - Scheduler lag (max age of unprocessed due jobs)
+  - Lock contention rate
+  - DLQ size
+
+Tenant-level metrics:
+  - Execution count per tenant
+  - Resource consumption per tenant
+  - Failure rate per tenant
+</code></pre>
+<h3>Stuck Job Detection</h3>
+<pre><code>A stuck job is one that started executing but never completed:
+
+Detection:
+  - Worker heartbeat for execution has expired (no heartbeat for 60 seconds)
+  - But execution record still shows status = &quot;running&quot;
+  - This means the worker crashed or became unresponsive
+
+Resolution:
+  1. Monitor queries: SELECT * FROM executions
+     WHERE status = &#39;running&#39; AND started_at &lt; NOW() - timeout_sec * interval &#39;1 second&#39;
+  2. For each stuck job:
+     a. Mark as &quot;timed_out&quot;
+     b. If retries remaining: requeue
+     c. If no retries: move to DLQ, alert
+  3. Check if the worker is still alive (heartbeat)
+  4. If worker is dead: remove from registry, requeue all its jobs
+</code></pre>
+<h3>Alert Rules</h3>
+<table>
+<thead>
+<tr>
+<th>Alert</th>
+<th>Condition</th>
+<th>Severity</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Job failure rate spike</strong></td>
+<td>Failure rate &gt; 20% in last 5 min</td>
+<td>Warning</td>
+<td>Investigate handler errors</td>
+</tr>
+<tr>
+<td><strong>Scheduler lag</strong></td>
+<td>Oldest due job &gt; 30 seconds old</td>
+<td>Critical</td>
+<td>Scale up schedulers</td>
+</tr>
+<tr>
+<td><strong>Queue depth growing</strong></td>
+<td>Queue size increasing for 10 min</td>
+<td>Warning</td>
+<td>Scale up workers</td>
+</tr>
+<tr>
+<td><strong>DLQ growth</strong></td>
+<td>New DLQ entries &gt; 10 in last hour</td>
+<td>Warning</td>
+<td>Investigate root cause</td>
+</tr>
+<tr>
+<td><strong>Worker pool exhaustion</strong></td>
+<td>Worker utilization &gt; 90% for 5 min</td>
+<td>Critical</td>
+<td>Auto-scale workers</td>
+</tr>
+<tr>
+<td><strong>Stuck job detected</strong></td>
+<td>Execution running &gt; 2x timeout</td>
+<td>Critical</td>
+<td>Kill and requeue</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>13. Data Models &amp; Storage</h2>
+<h3>Complete Database Schema</h3>
+<pre><code>Table: job_definitions
+  - job_id              UUID PRIMARY KEY
+  - tenant_id           UUID NOT NULL
+  - name                VARCHAR(255) NOT NULL
+  - type                VARCHAR(20)       -- one_time, recurring, event_triggered
+  - handler             VARCHAR(500)
+  - payload             JSONB
+  - cron_expression     VARCHAR(100)
+  - timezone            VARCHAR(50) DEFAULT &#39;UTC&#39;
+  - trigger_event       VARCHAR(200)
+  - event_filter        JSONB
+  - next_execution_time TIMESTAMP WITH TIME ZONE
+  - timeout_sec         INTEGER DEFAULT 300
+  - max_retries         INTEGER DEFAULT 3
+  - retry_backoff       VARCHAR(20) DEFAULT &#39;exponential&#39;
+  - retry_initial_delay INTEGER DEFAULT 10
+  - retry_max_delay     INTEGER DEFAULT 3600
+  - priority            SMALLINT DEFAULT 5
+  - queue               VARCHAR(50) DEFAULT &#39;default&#39;
+  - partition_key       SMALLINT
+  - status              VARCHAR(20) DEFAULT &#39;scheduled&#39;
+  - version             INTEGER DEFAULT 0
+  - created_by          VARCHAR(100)
+  - created_at          TIMESTAMP DEFAULT NOW()
+  - updated_at          TIMESTAMP DEFAULT NOW()
+  - INDEX idx_due_jobs (partition_key, status, next_execution_time)
+
+Table: job_executions
+  - execution_id        VARCHAR(200) PRIMARY KEY  -- &quot;{job_id}_{scheduled_epoch}&quot;
+  - job_id              UUID REFERENCES job_definitions
+  - tenant_id           UUID
+  - workflow_run_id     UUID                      -- for DAG executions
+  - status              VARCHAR(20)               -- queued, running, completed, failed, timed_out, cancelled
+  - attempt_number      SMALLINT DEFAULT 1
+  - fencing_token       BIGINT
+  - scheduled_at        TIMESTAMP WITH TIME ZONE
+  - queued_at           TIMESTAMP
+  - started_at          TIMESTAMP
+  - completed_at        TIMESTAMP
+  - duration_ms         INTEGER
+  - worker_id           VARCHAR(100)
+  - result              JSONB                     -- handler return value or error
+  - error_message       TEXT
+  - log_url             VARCHAR(500)              -- S3 URL for execution logs
+  - INDEX idx_job_executions (job_id, scheduled_at DESC)
+  - INDEX idx_execution_status (status, queued_at)
+  - INDEX idx_tenant_executions (tenant_id, scheduled_at DESC)
+
+Table: job_dependencies
+  - workflow_id         UUID
+  - job_id              VARCHAR(100)
+  - depends_on_job_id   VARCHAR(100)
+  - PRIMARY KEY (workflow_id, job_id, depends_on_job_id)
+  - INDEX idx_dependents (workflow_id, depends_on_job_id)
+
+Table: workflow_definitions
+  - workflow_id         UUID PRIMARY KEY
+  - tenant_id           UUID
+  - name                VARCHAR(255)
+  - cron_expression     VARCHAR(100)
+  - status              VARCHAR(20)
+  - created_at          TIMESTAMP
+
+Table: workflow_runs
+  - run_id              UUID PRIMARY KEY
+  - workflow_id         UUID REFERENCES workflow_definitions
+  - status              VARCHAR(20)  -- running, completed, partially_failed, failed
+  - started_at          TIMESTAMP
+  - completed_at        TIMESTAMP
+
+Table: dead_letter_queue
+  - dlq_id              UUID PRIMARY KEY
+  - execution_id        VARCHAR(200)
+  - job_id              UUID
+  - tenant_id           UUID
+  - failure_reason      TEXT
+  - last_attempt_at     TIMESTAMP
+  - retry_count         INTEGER
+  - acknowledged        BOOLEAN DEFAULT FALSE
+  - acknowledged_by     VARCHAR(100)
+  - created_at          TIMESTAMP
+</code></pre>
+<h3>Database Choice Justification</h3>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Database</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Job definitions</strong></td>
+<td>PostgreSQL</td>
+<td>ACID for status transitions, version-based optimistic locking, complex queries for scheduling</td>
+</tr>
+<tr>
+<td><strong>Job executions</strong></td>
+<td>PostgreSQL (partitioned by month)</td>
+<td>Relational queries for monitoring, audit trail. Partitioned for efficient cleanup of old data.</td>
+</tr>
+<tr>
+<td><strong>Distributed locks</strong></td>
+<td>Redis</td>
+<td>Sub-ms lock acquisition, TTL-based expiry, fencing token support</td>
+</tr>
+<tr>
+<td><strong>Job queue</strong></td>
+<td>Redis (sorted set by priority) or Kafka</td>
+<td>Priority ordering, fast dequeue, at-least-once delivery</td>
+</tr>
+<tr>
+<td><strong>Event triggers</strong></td>
+<td>Kafka</td>
+<td>Durable event stream, consumer groups for parallel processing, replay capability</td>
+</tr>
+<tr>
+<td><strong>Execution logs</strong></td>
+<td>S3</td>
+<td>Cheap, durable object storage for large text blobs</td>
+</tr>
+<tr>
+<td><strong>Metrics</strong></td>
+<td>TimescaleDB</td>
+<td>Time-series optimized for metrics aggregation and dashboards</td>
+</tr>
+</tbody></table>
+<h3>Comparison with Existing Systems</h3>
+<table>
+<thead>
+<tr>
+<th>System</th>
+<th>Strengths</th>
+<th>Limitations</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Airflow</strong></td>
+<td>Rich DAG support, extensive operator library, large community</td>
+<td>Single scheduler bottleneck (pre-2.x), heavyweight Python processes</td>
+</tr>
+<tr>
+<td><strong>Temporal</strong></td>
+<td>Durable execution, strong consistency, workflow-as-code</td>
+<td>Complex to operate, steep learning curve</td>
+</tr>
+<tr>
+<td><strong>Kubernetes CronJob</strong></td>
+<td>Native K8s integration, simple for cron workloads</td>
+<td>No DAG support, limited retry control, no priority queues</td>
+</tr>
+<tr>
+<td><strong>Celery</strong></td>
+<td>Simple Python task queue, widely adopted</td>
+<td>No native cron scheduling, limited monitoring, Redis/RabbitMQ dependent</td>
+</tr>
+<tr>
+<td><strong>Our design</strong></td>
+<td>Scalable scheduling, DAG support, multi-tenant, priority queues</td>
+<td>More infrastructure to operate than any single system above</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>In a real-world scenario, you would likely build on top of an existing system rather than building from scratch. The value of this design exercise is understanding the underlying distributed systems principles, which apply regardless of which specific tool you use.</p>
+</div>
+
+
+<hr>
+<h2>14. Scalability Strategies</h2>
+<h3>Scaling the Scheduler</h3>
+<pre><code>Scaling dimensions:
+  1. More job definitions -&gt; more partitions, more scheduler instances
+  2. Higher execution rate -&gt; more workers, larger queues
+  3. Longer-running jobs -&gt; more concurrent worker capacity
+  4. More tenants -&gt; better isolation, per-tenant quotas
+
+Scheduler scaling:
+  - Each scheduler instance handles a subset of partitions
+  - Adding a scheduler instance triggers partition rebalancing
+  - Target: each scheduler polls ~1000 jobs per second
+  - 15 scheduler instances * 1000 = 15K jobs/sec capacity
+  - Scale by adding instances (linear scaling)
+</code></pre>
+<h3>Worker Auto-Scaling</h3>
+<pre><code>Auto-scaling rules:
+  - Queue depth &gt; 10,000 for 2 minutes -&gt; scale up workers by 50%
+  - Worker utilization &lt; 30% for 10 minutes -&gt; scale down workers by 25%
+  - Minimum workers: 20 (always ready for burst)
+  - Maximum workers: 5000 (cost cap)
+
+Scaling speed:
+  - Kubernetes HPA with custom metrics (queue depth, worker utilization)
+  - Pod startup time: ~30 seconds (pre-warmed container images)
+  - KEDA for event-driven scaling (scale to zero during off-hours)
+</code></pre>
+<h3>Job Priority and Fair Scheduling</h3>
+<pre><code>Priority Queue Implementation (Redis Sorted Set):
+  Key: job_queue:{pool_name}
+  Score: priority * 1_000_000_000 + enqueue_timestamp
+  Member: serialized job payload
+
+  Lower score = higher priority (processed first)
+  Within same priority, earlier enqueue time wins (FIFO within priority)
+
+  Example scores:
+    Priority 1 job enqueued at T=100: score = 1_000_000_100
+    Priority 5 job enqueued at T=50:  score = 5_000_000_050
+    Priority 1 job dequeued first (lower score)
+
+Tenant-level fairness:
+  - Each tenant has a quota: max N concurrent executions
+  - Before enqueuing, check: current_running(tenant) &lt; quota
+  - If over quota, job waits in a per-tenant overflow queue
+  - Prevents one tenant from consuming all worker capacity
+</code></pre>
+<h3>Execution History Retention</h3>
+<pre><code>Data lifecycle:
+  - Hot (last 7 days): PostgreSQL primary, fast queries
+  - Warm (7-90 days): PostgreSQL partitioned tables, queryable but slower
+  - Cold (90-365 days): Exported to S3 as Parquet files
+  - Archive (365+ days): Deleted or moved to Glacier
+
+Partitioning strategy:
+  - job_executions table partitioned by month
+  - DROP PARTITION for old months (instant, no row-by-row delete)
+  - Each month&#39;s partition: ~30 * 653M * 500B = ~9.8 TB (compressed ~2 TB)
+</code></pre>
+<hr>
+<h2>15. Design Trade-offs &amp; Justifications</h2>
+<h3>Trade-off 1: Exactly-Once vs At-Least-Once Execution</h3>
+<table>
+<thead>
+<tr>
+<th>Exactly-Once</th>
+<th>At-Least-Once</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>No duplicate executions ever</td>
+<td>Rare duplicates possible</td>
+</tr>
+<tr>
+<td>Requires distributed consensus (expensive)</td>
+<td>Simple lock + deduplication</td>
+</tr>
+<tr>
+<td>Higher latency (consensus round-trip)</td>
+<td>Lower latency</td>
+</tr>
+<tr>
+<td>Single point of failure risk</td>
+<td>More resilient</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen:</strong> At-least-once execution with idempotent workers and fencing tokens. True exactly-once in a distributed system requires consensus protocols (Paxos/Raft) which add latency and operational complexity. The combination of Redis locks + fencing tokens + execution ID deduplication achieves effectively-once in practice.</p>
+<h3>Trade-off 2: Pull vs Push Worker Model</h3>
+<p><strong>Chosen: Pull-based.</strong> Workers pull jobs from a shared queue. This naturally load-balances (idle workers pull first), handles worker failures gracefully (job returns to queue), and allows workers to control their own concurrency. The trade-off is slightly higher latency (polling interval) compared to push, but this is negligible (&lt; 100ms).</p>
+<h3>Trade-off 3: Database vs Queue for Job Store</h3>
+<table>
+<thead>
+<tr>
+<th>Jobs in Database</th>
+<th>Jobs in Message Queue (Kafka)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Rich querying (find all failed jobs for tenant X)</td>
+<td>Limited query capability</td>
+</tr>
+<tr>
+<td>Complex scheduling logic (cron, priority)</td>
+<td>Simple FIFO</td>
+</tr>
+<tr>
+<td>Higher latency per operation</td>
+<td>Lower latency</td>
+</tr>
+<tr>
+<td>ACID guarantees on state transitions</td>
+<td>At-least-once delivery</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen:</strong> Database (PostgreSQL) as the source of truth for job definitions and execution state. Redis Sorted Set or Kafka as the execution queue. The database provides the queryability needed for monitoring, debugging, and complex scheduling. The queue provides the throughput needed for execution dispatch.</p>
+<h3>Trade-off 4: Partition-Based vs Polling-All Scheduler</h3>
+<table>
+<thead>
+<tr>
+<th>Partition-Based</th>
+<th>All Schedulers Poll All Jobs</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Each job checked by one scheduler</td>
+<td>All schedulers check all jobs</td>
+</tr>
+<tr>
+<td>Requires partition management</td>
+<td>Simpler, no coordination</td>
+</tr>
+<tr>
+<td>Scales linearly</td>
+<td>Quadratic load (N schedulers * M jobs)</td>
+</tr>
+<tr>
+<td>Partition rebalancing on failure</td>
+<td>Natural redundancy</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen:</strong> Partition-based. With 10M job definitions, having every scheduler instance scan all jobs every second is not feasible. Partitioning divides the work linearly.</p>
+<h3>Trade-off 5: Centralized vs Decentralized DAG Orchestration</h3>
+<table>
+<thead>
+<tr>
+<th>Centralized DAG Orchestrator</th>
+<th>Decentralized (each worker checks deps)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Single point of coordination</td>
+<td>No single point of failure</td>
+</tr>
+<tr>
+<td>Clear view of workflow state</td>
+<td>State scattered across workers</td>
+</tr>
+<tr>
+<td>Easier to implement correctly</td>
+<td>Race conditions on dependency checks</td>
+</tr>
+<tr>
+<td>Bottleneck under high workflow count</td>
+<td>Scales with workers</td>
+</tr>
+</tbody></table>
+<p><strong>Chosen:</strong> Centralized DAG orchestrator (a dedicated service or scheduler responsibility). The correctness guarantees (checking all dependencies atomically) are much easier to implement centrally. The orchestrator uses a distributed lock per workflow to prevent race conditions.</p>
+<hr>
+<h2>16. Interview Cheat Sheet</h2>
+<div class="tip">
+
+<p><strong>Use this as a quick reference before your interview. The key differentiators for a Staff-level answer are: (1) explaining the distributed locking mechanism with fencing tokens, (2) the partition-based scheduler design, (3) at-least-once execution with idempotent workers, and (4) DAG execution with failure propagation strategies.</strong></p>
+</div>
+
+
+<h3>30-Second Pitch</h3>
+<p>&quot;A distributed job scheduler must execute the right job at the right time exactly once, even when machines fail. I would partition job definitions across multiple scheduler instances, each polling its partition for due jobs. Jobs are enqueued into a priority queue (Redis Sorted Set) and pulled by worker pods. Duplicate execution is prevented by Redis distributed locks with fencing tokens and execution ID-based deduplication in the database. Failed jobs are retried with exponential backoff, and permanently failed jobs go to a dead letter queue. For DAG workflows, a centralized orchestrator tracks dependency completion and triggers downstream jobs when all dependencies are met.&quot;</p>
+<h3>Key Numbers to Remember</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Job definitions</td>
+<td>10M</td>
+</tr>
+<tr>
+<td>Peak execution rate</td>
+<td>15K/sec</td>
+</tr>
+<tr>
+<td>Scheduling latency target</td>
+<td>&lt; 5 seconds</td>
+</tr>
+<tr>
+<td>Worker heartbeat interval</td>
+<td>10 seconds</td>
+</tr>
+<tr>
+<td>Heartbeat expiry</td>
+<td>60 seconds</td>
+</tr>
+<tr>
+<td>Default job timeout</td>
+<td>5 minutes</td>
+</tr>
+<tr>
+<td>Lock TTL</td>
+<td>300 seconds</td>
+</tr>
+<tr>
+<td>Partitions</td>
+<td>64</td>
+</tr>
+<tr>
+<td>Execution history retention</td>
+<td>90 days hot, 1 year cold</td>
+</tr>
+</tbody></table>
+<h3>Common Follow-Up Questions</h3>
+<p><strong>Q: How do you handle time zones and DST in cron scheduling?</strong>
+A: Store the timezone with each job definition. When computing next_execution_time, use a timezone-aware library. For DST spring-forward, skip the non-existent time. For fall-back, execute once (using UTC internally to avoid ambiguity).</p>
+<p><strong>Q: What happens if the Redis lock service goes down?</strong>
+A: Fall back to PostgreSQL-based locking (SELECT FOR UPDATE with version check). Higher latency but still correct. Redis Cluster with replicas makes full outage unlikely.</p>
+<p><strong>Q: How do you prevent a single tenant from monopolizing resources?</strong>
+A: Per-tenant concurrent execution quotas. Jobs exceeding the quota wait in a per-tenant overflow queue. Fair scheduler round-robins across tenants when dequeuing from overflow.</p>
+<p><strong>Q: How would you handle a job that runs for 12 hours?</strong>
+A: Long-running jobs need periodic checkpointing. The worker saves intermediate state to a durable store. On failure, the retried execution resumes from the last checkpoint rather than restarting. Heartbeat interval must be shorter than the execution timeout.</p>
+<p><strong>Q: How do you handle clock skew across scheduler instances?</strong>
+A: Use NTP for clock synchronization (drift &lt; 50ms). Scheduling tolerance is 1 second, so sub-100ms skew is acceptable. For the distributed lock, use Redis server time (not client time) for TTL enforcement.</p>
+<p><strong>Q: How would this system handle 100x growth?</strong>
+A: Increase partitions from 64 to 256. Add more scheduler instances. Auto-scale worker pools. Shard the PostgreSQL job store by tenant_id. Separate hot execution data from cold history. All components are designed to scale horizontally.</p>
+<h3>Architecture Summary</h3>
+<pre><code>Users (UI/CLI/API)
+  -&gt; Scheduler API -&gt; PostgreSQL (job definitions)
+  -&gt; Scheduler Instances (partitioned) poll DB for due jobs
+  -&gt; Redis (distributed locks + fencing tokens)
+  -&gt; Priority Queue (Redis Sorted Set)
+  -&gt; Worker Pools (pull-based, heartbeat-monitored)
+  -&gt; Execution results -&gt; PostgreSQL + S3 (logs)
+  -&gt; Kafka (event triggers) -&gt; Scheduler (creates executions)
+  -&gt; DAG Orchestrator (dependency resolution)
+  -&gt; Monitoring -&gt; TimescaleDB -&gt; Alerting
+</code></pre>
+<h3>The Three Guarantees</h3>
+<ol>
+<li><strong>No missed executions:</strong> Partition-based scheduling with health checks; if a scheduler dies, its partitions are redistributed</li>
+<li><strong>No duplicate executions:</strong> Redis locks with fencing tokens + execution ID deduplication in the database</li>
+<li><strong>No stuck jobs:</strong> Worker heartbeat monitoring + automatic timeout and requeue</li>
+</ol>
+<hr>
+<div class="note">
+
+<p><strong>Final thought for the interview:</strong> A distributed job scheduler is a foundational piece of infrastructure that every large-scale system needs. The design challenge is not in the happy path (scheduling and running a job) but in the failure modes: what happens when a scheduler crashes mid-poll, a worker dies mid-execution, a lock expires during a GC pause, or a DAG job fails midway through a pipeline. A Staff-level answer demonstrates mastery of these failure modes and the mechanisms (fencing tokens, heartbeats, compensating transactions, idempotent execution) that handle them correctly.</p>
+</div>
+
+
+</body>
+</html>

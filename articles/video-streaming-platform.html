@@ -1,0 +1,1544 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Design Interview: Video Streaming Platform</title>
+</head>
+<body>
+
+<h1>System Design Interview: Video Streaming Platform</h1>
+<h3>Netflix / YouTube Scale</h3>
+<div class="note">
+
+<p><strong>Staff Engineer Interview Preparation Guide</strong> — High Level Design Round</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-problem-clarification--requirements">Problem Clarification &amp; Requirements</a></li>
+<li><a href="#2-capacity-estimation--scale">Capacity Estimation &amp; Scale</a></li>
+<li><a href="#3-high-level-architecture">High-Level Architecture</a></li>
+<li><a href="#4-core-components-deep-dive">Core Components Deep Dive</a></li>
+<li><a href="#5-video-upload-pipeline">Video Upload Pipeline</a></li>
+<li><a href="#6-transcoding-service">Transcoding Service</a></li>
+<li><a href="#7-cdn-strategy--video-delivery">CDN Strategy &amp; Video Delivery</a></li>
+<li><a href="#8-data-models--storage">Data Models &amp; Storage</a></li>
+<li><a href="#9-search--discovery">Search &amp; Discovery</a></li>
+<li><a href="#10-recommendation-engine">Recommendation Engine</a></li>
+<li><a href="#11-live-streaming">Live Streaming</a></li>
+<li><a href="#12-drm--content-protection">DRM &amp; Content Protection</a></li>
+<li><a href="#13-scalability-strategies">Scalability Strategies</a></li>
+<li><a href="#14-design-trade-offs--justifications">Design Trade-offs &amp; Justifications</a></li>
+<li><a href="#15-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. Problem Clarification &amp; Requirements</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Video streaming is one of the most infrastructure-heavy system design questions. The key insight to lead with is that video storage and bandwidth dwarf all other concerns by orders of magnitude. A single hour of 4K video is ~7 GB. Everything in this design flows from that reality.</p>
+</div>
+
+
+<h3>Questions to Ask the Interviewer</h3>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Question</th>
+<th>Why It Matters</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Scale</strong></td>
+<td>YouTube scale (billions DAU) or Netflix scale (hundreds of millions)?</td>
+<td>YouTube is UGC + massive, Netflix is curated + smaller</td>
+</tr>
+<tr>
+<td><strong>Content type</strong></td>
+<td>User-generated content or licensed/curated?</td>
+<td>Affects upload pipeline and content moderation</td>
+</tr>
+<tr>
+<td><strong>Live streaming</strong></td>
+<td>Do we need live streaming support?</td>
+<td>Entirely different pipeline from VOD</td>
+</tr>
+<tr>
+<td><strong>Devices</strong></td>
+<td>TV, mobile, web, gaming consoles?</td>
+<td>Adaptive bitrate and codec support varies</td>
+</tr>
+<tr>
+<td><strong>Global</strong></td>
+<td>Global audience or single region?</td>
+<td>CDN and multi-region architecture</td>
+</tr>
+<tr>
+<td><strong>Quality</strong></td>
+<td>Up to 4K? HDR? Dolby Atmos?</td>
+<td>Storage and transcoding complexity</td>
+</tr>
+<tr>
+<td><strong>Offline</strong></td>
+<td>Support offline downloads?</td>
+<td>DRM and licensing constraints</td>
+</tr>
+<tr>
+<td><strong>Interactions</strong></td>
+<td>Comments, likes, subscriptions?</td>
+<td>Social features add complexity</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>Functional Requirements (Agreed Upon)</h3>
+<ul>
+<li>Users can upload videos (up to 4 hours, up to 4K resolution)</li>
+<li>Users can stream videos on any device with adaptive quality</li>
+<li>Search for videos by title, description, tags</li>
+<li>Video recommendations based on watch history</li>
+<li>Subscriptions/follows to content creators</li>
+<li>Comments and likes on videos</li>
+<li>Watch history and resume-from-where-you-left-off</li>
+</ul>
+<h3>Non-Functional Requirements</h3>
+<ul>
+<li><strong>Latency:</strong> Video playback must start within 2 seconds of pressing play</li>
+<li><strong>Buffering:</strong> Less than 1% of watch time should be spent buffering</li>
+<li><strong>Availability:</strong> 99.99% uptime for the streaming service</li>
+<li><strong>Scale:</strong> 1 billion DAU (YouTube scale), 500 hours of video uploaded per minute</li>
+<li><strong>Durability:</strong> Uploaded videos must never be lost</li>
+<li><strong>Global reach:</strong> Low latency streaming from any continent</li>
+</ul>
+<hr>
+<h2>2. Capacity Estimation &amp; Scale</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Video streaming numbers are massive. Do not try to be precise — round aggressively. The point is to demonstrate that you understand the order of magnitude of storage and bandwidth, which is what drives every architectural decision.</p>
+</div>
+
+
+<h3>Traffic Estimation</h3>
+<pre><code>DAU                      = 1 Billion
+Average watch time/day   = 30 minutes per user
+Average video length     = 5 minutes
+Videos watched per user  = 6 per day
+
+Total video views/day    = 1B × 6 = 6 Billion views/day
+View QPS                 = 6B / 86,400 ≈ 70,000 views/sec
+
+Uploads:
+  500 hours of video uploaded per minute
+  = 30,000 hours/day
+  = 360,000 videos/day (avg 5 min each)
+  Upload QPS = 360,000 / 86,400 ≈ 4 uploads/sec
+
+Read:Write ratio ≈ 17,000:1 (extremely read-heavy)
+</code></pre>
+<h3>Storage Estimation</h3>
+<pre><code>Video Storage (after transcoding):
+  Each video is transcoded to multiple resolutions:
+    - 240p, 360p, 480p, 720p, 1080p, 1440p, 4K
+  
+  Average original video: 5 min × 500 MB = 500 MB
+  After transcoding all resolutions: ~3x original = 1.5 GB per video
+  
+  Daily uploads: 360,000 × 1.5 GB = 540 TB/day
+  Annual:        540 TB × 365      = ~197 PB/year
+  
+  With 3x replication across data centers: ~600 PB/year
+
+Metadata Storage (negligible by comparison):
+  Video metadata per video ≈ 2 KB
+  360,000 × 2 KB = 720 MB/day → trivial
+</code></pre>
+<h3>Bandwidth Estimation</h3>
+<pre><code>Streaming bandwidth:
+  Average bitrate across all viewers ≈ 5 Mbps (mix of resolutions)
+  Concurrent viewers (peak) = 200M (20% of DAU at peak)
+  
+  Peak bandwidth = 200M × 5 Mbps = 1,000 Petabits/sec = 1 Exabit/sec
+  
+  This is distributed across thousands of CDN edge nodes globally.
+  Per edge node (assuming 10,000 nodes): 100 Gbps per node
+  
+Upload bandwidth:
+  4 uploads/sec × 500 MB average = 2 GB/sec = 16 Gbps ingest
+  Much smaller than streaming — upload is not the bottleneck.
+</code></pre>
+<h3>Cost Perspective</h3>
+<pre><code>Storage cost (S3): ~$20/TB/month
+  600 PB = 600,000 TB × $20 = $12M/month for storage alone
+  
+Bandwidth cost: ~$0.05/GB (CDN)
+  Daily streaming: 200M concurrent × 5 Mbps × 8 hours peak × 3600 sec
+                 = ~450 PB/day
+  450,000 TB × $0.05/GB × 1000 = $22.5M/day → $8B/year bandwidth
+  
+This is why Netflix and YouTube operate their own CDN infrastructure
+(Netflix Open Connect, Google&#39;s edge network).
+</code></pre>
+<div class="warning">
+
+<p>These bandwidth numbers explain why no company other than the largest tech giants can build a YouTube competitor from scratch. The CDN infrastructure cost alone is in the billions per year. In an interview, mentioning this shows you understand real-world economics, not just architecture.</p>
+</div>
+
+
+<hr>
+<h2>3. High-Level Architecture</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Split the architecture into two separate systems: the Upload/Processing pipeline and the Streaming/Playback pipeline. These have completely different characteristics and constraints.</p>
+</div>
+
+
+<pre class="mermaid">
+graph TB
+    subgraph Clients
+        WEB[Web Player]
+        MOBILE[Mobile App]
+        TV[Smart TV App]
+    end
+
+    subgraph API Layer
+        GW[API Gateway]
+    end
+
+    subgraph Upload Pipeline
+        UPLOAD[Upload Service]
+        OBJ_STORE[Object Storage<br/>Raw Videos]
+        QUEUE[Message Queue<br/>Kafka]
+        TRANSCODE[Transcoding Service<br/>Worker Fleet]
+        TRANSCODE_STORE[Object Storage<br/>Transcoded Videos]
+        THUMB[Thumbnail Generator]
+    end
+
+    subgraph Streaming Pipeline
+        VIDEO_SVC[Video Service<br/>Metadata + Manifest]
+        CDN[CDN Edge Network<br/>Global PoPs]
+    end
+
+    subgraph Core Services
+        SEARCH[Search Service<br/>Elasticsearch]
+        RECOMMEND[Recommendation<br/>Service]
+        USER_SVC[User Service]
+        COMMENT_SVC[Comment Service]
+    end
+
+    subgraph Data Layer
+        META_DB[(Video Metadata DB<br/>MySQL)]
+        USER_DB[(User DB)]
+        WATCH_DB[(Watch History<br/>Cassandra)]
+        CACHE[Redis Cache]
+    end
+
+    WEB --> GW
+    MOBILE --> GW
+    TV --> GW
+
+    GW --> UPLOAD
+    GW --> VIDEO_SVC
+    GW --> SEARCH
+    GW --> RECOMMEND
+    GW --> USER_SVC
+    GW --> COMMENT_SVC
+
+    UPLOAD --> OBJ_STORE
+    OBJ_STORE --> QUEUE
+    QUEUE --> TRANSCODE
+    TRANSCODE --> TRANSCODE_STORE
+    TRANSCODE --> THUMB
+
+    VIDEO_SVC --> CACHE
+    CACHE --> META_DB
+    VIDEO_SVC --> CDN
+    CDN --> TRANSCODE_STORE
+
+    SEARCH --> META_DB
+    RECOMMEND --> WATCH_DB
+    COMMENT_SVC --> META_DB
+</pre>
+<hr>
+<h2>4. Core Components Deep Dive</h2>
+<h3>4.1 Upload Service</h3>
+<p>The Upload Service handles ingesting raw video files from creators. At 500 hours per minute, this is not trivial — large files on unreliable network connections require special handling.</p>
+<p><strong>Chunked Upload Protocol:</strong></p>
+<ol>
+<li>Client sends a <code>POST /upload/init</code> request with video metadata (title, description, file size, content type)</li>
+<li>Server responds with an <code>upload_id</code> and chunk size (e.g., 5 MB per chunk)</li>
+<li>Client splits the file into chunks and uploads each chunk with <code>PUT /upload/{upload_id}/chunk/{chunk_number}</code></li>
+<li>Each chunk is acknowledged individually</li>
+<li>Client sends <code>POST /upload/{upload_id}/complete</code> when all chunks are uploaded</li>
+<li>Server reassembles chunks and validates integrity (checksum)</li>
+</ol>
+<p><strong>Resumable Uploads:</strong>
+If the connection drops mid-upload, the client can query <code>GET /upload/{upload_id}/status</code> to determine which chunks have been received, then resume from the first missing chunk. The server stores chunk metadata in Redis with a 24-hour TTL.</p>
+<p><strong>Pre-Signed URLs:</strong>
+For efficiency, the Upload Service generates pre-signed S3 URLs for each chunk. The client uploads directly to S3 (bypassing our servers), which dramatically reduces bandwidth costs and server load.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Creator Client
+    participant US as Upload Service
+    participant S3 as Object Storage
+    participant K as Kafka
+    participant T as Transcoding Service
+
+    C->>US: POST /upload/init (metadata)
+    US-->>C: upload_id, pre-signed URLs for each chunk
+
+    loop For each chunk
+        C->>S3: PUT chunk directly to S3
+        S3-->>C: 200 OK
+    end
+
+    C->>US: POST /upload/{id}/complete
+    US->>S3: Validate all chunks present, assemble
+    US->>K: Publish VideoUploaded event
+    US-->>C: 202 Accepted (processing started)
+
+    K->>T: Consume VideoUploaded event
+    T->>S3: Download raw video
+    T->>T: Transcode to multiple resolutions
+    T->>S3: Upload transcoded segments
+    T->>K: Publish VideoReady event
+</pre>
+<h3>4.2 Video Service (Metadata + Manifest)</h3>
+<p>When a user clicks play on a video, the Video Service:</p>
+<ol>
+<li>Returns the video metadata (title, description, view count, etc.)</li>
+<li>Returns the <strong>manifest file</strong> (HLS <code>.m3u8</code> or DASH <code>.mpd</code>) that tells the video player which segments are available and at what resolutions</li>
+<li>The player then fetches video segments directly from the CDN</li>
+</ol>
+<p>The Video Service itself does NOT stream video data. It only serves metadata and the manifest. All actual video bytes flow through the CDN.</p>
+<h3>4.3 User Service</h3>
+<p>Manages user accounts, subscriptions, and preferences. Notable features:</p>
+<ul>
+<li><strong>Subscription management:</strong> When user A subscribes to creator B, store this relationship (similar to the social graph in the feed design)</li>
+<li><strong>Watch history:</strong> Record every video the user watches, including the timestamp where they stopped (for &quot;continue watching&quot;)</li>
+<li><strong>Preferences:</strong> Language, preferred quality, autoplay settings</li>
+</ul>
+<hr>
+<h2>5. Video Upload Pipeline</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> The upload pipeline is where you demonstrate understanding of distributed processing. The key insight is that video processing is a DAG (Directed Acyclic Graph) of tasks, not a linear pipeline.</p>
+</div>
+
+
+<h3>Processing DAG</h3>
+<p>When a raw video is uploaded, it must go through multiple processing stages. Some stages depend on others, and some can run in parallel:</p>
+<pre class="mermaid">
+graph TD
+    RAW[Raw Video<br/>Uploaded to S3]
+
+    RAW --> VALIDATE[Validation<br/>Format check, virus scan<br/>content policy]
+
+    VALIDATE --> SPLIT[Split into Segments<br/>GOP-aligned chunks]
+
+    SPLIT --> T_4K[Transcode 4K]
+    SPLIT --> T_1080[Transcode 1080p]
+    SPLIT --> T_720[Transcode 720p]
+    SPLIT --> T_480[Transcode 480p]
+    SPLIT --> T_360[Transcode 360p]
+    SPLIT --> T_240[Transcode 240p]
+
+    SPLIT --> AUDIO[Extract Audio<br/>Multiple bitrates]
+    SPLIT --> SUBTITLE[Subtitle Extraction<br/>Auto-caption via ML]
+
+    T_4K --> ENCRYPT[DRM Encryption<br/>Widevine / FairPlay]
+    T_1080 --> ENCRYPT
+    T_720 --> ENCRYPT
+    T_480 --> ENCRYPT
+    T_360 --> ENCRYPT
+    T_240 --> ENCRYPT
+
+    RAW --> THUMB[Thumbnail Generation<br/>Multiple timestamps]
+    RAW --> META_EXTRACT[Metadata Extraction<br/>Duration, resolution, codec]
+
+    ENCRYPT --> MANIFEST[Generate Manifest<br/>HLS .m3u8 / DASH .mpd]
+    AUDIO --> MANIFEST
+    SUBTITLE --> MANIFEST
+
+    MANIFEST --> PUBLISH[Publish to CDN<br/>Mark video as ready]
+
+    THUMB --> PUBLISH
+    META_EXTRACT --> PUBLISH
+</pre>
+<h3>Why DAG-Based Processing?</h3>
+<p>A linear pipeline (validate → transcode 4K → transcode 1080p → ...) would be extremely slow because each transcoding step is sequential. A video that takes 10 minutes to transcode at one resolution would take 60+ minutes total for all resolutions.</p>
+<p>With a DAG:</p>
+<ul>
+<li>All resolutions transcode in parallel (6 workers simultaneously)</li>
+<li>Thumbnail generation runs in parallel with transcoding</li>
+<li>Subtitle extraction runs in parallel</li>
+<li>Only DRM encryption and manifest generation wait for transcoding to complete</li>
+</ul>
+<p><strong>Result:</strong> A 10-minute video can be fully processed in ~15-20 minutes instead of 60+ minutes.</p>
+<h3>DAG Orchestration</h3>
+<p>We use a task orchestration system (similar to Apache Airflow or a custom solution) to manage the DAG:</p>
+<ol>
+<li>Each node in the DAG is a task with defined inputs, outputs, and dependencies</li>
+<li>When a task completes, the orchestrator checks if any dependent tasks now have all their inputs satisfied</li>
+<li>Satisfied tasks are dispatched to worker queues</li>
+<li>Workers pull tasks from queues, process them, and report completion</li>
+<li>The orchestrator tracks the overall progress and marks the video as &quot;ready&quot; when the final task completes</li>
+</ol>
+<div class="note">
+
+<p>Failure handling is critical in the DAG. If a single transcoding task fails (e.g., worker crashes), only that task needs to be retried — not the entire pipeline. The orchestrator maintains a retry count per task and alerts on repeated failures.</p>
+</div>
+
+
+<h3>Content Moderation</h3>
+<p>Before making a video publicly available, automated content moderation runs:</p>
+<ul>
+<li><strong>Visual analysis:</strong> Frame sampling + ML model to detect nudity, violence, copyrighted content</li>
+<li><strong>Audio analysis:</strong> Copyright detection (similar to YouTube&#39;s Content ID)</li>
+<li><strong>Metadata analysis:</strong> Title and description checked against policy violations</li>
+</ul>
+<p>If automated moderation flags the video, it is queued for human review. The video remains in &quot;processing&quot; state until cleared.</p>
+<hr>
+<h2>6. Transcoding Service</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Transcoding is computationally expensive and is the bottleneck of the upload pipeline. Understanding adaptive bitrate streaming is essential for this question.</p>
+</div>
+
+
+<h3>Why Transcode?</h3>
+<p>The raw uploaded video might be a 4K ProRes file that only works on one specific device. We transcode to ensure:</p>
+<ol>
+<li><strong>Multiple resolutions:</strong> Users on different devices and network speeds get appropriate quality</li>
+<li><strong>Standard codecs:</strong> Convert to widely supported codecs (H.264, H.265/HEVC, VP9, AV1)</li>
+<li><strong>Segment alignment:</strong> Break videos into small segments (2-10 seconds each) for adaptive streaming</li>
+<li><strong>Consistent format:</strong> Normalize frame rate, pixel aspect ratio, color space</li>
+</ol>
+<h3>Adaptive Bitrate Streaming</h3>
+<p>The core concept: instead of streaming a single continuous video file, we break the video into small segments (typically 4-6 seconds each), each available at multiple quality levels. The video player dynamically selects the appropriate quality for each segment based on current network conditions.</p>
+<p><strong>HLS (HTTP Live Streaming) — Apple&#39;s Protocol:</strong></p>
+<ul>
+<li>Master playlist (<code>.m3u8</code>) lists available quality levels</li>
+<li>Each quality level has its own playlist listing segments</li>
+<li>Segments are <code>.ts</code> (Transport Stream) files</li>
+<li>Widely supported on iOS, macOS, most browsers</li>
+</ul>
+<p><strong>DASH (Dynamic Adaptive Streaming over HTTP) — Industry Standard:</strong></p>
+<ul>
+<li>MPD (Media Presentation Description) file lists available representations</li>
+<li>Segments are <code>.m4s</code> files</li>
+<li>More flexible than HLS (supports more codecs)</li>
+<li>Better suited for Android and web</li>
+</ul>
+<h3>Transcoding Output Matrix</h3>
+<table>
+<thead>
+<tr>
+<th>Resolution</th>
+<th>Bitrate (H.264)</th>
+<th>Bitrate (H.265)</th>
+<th>Segment Size (6s)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>240p</td>
+<td>400 Kbps</td>
+<td>250 Kbps</td>
+<td>300 KB</td>
+</tr>
+<tr>
+<td>360p</td>
+<td>800 Kbps</td>
+<td>500 Kbps</td>
+<td>600 KB</td>
+</tr>
+<tr>
+<td>480p</td>
+<td>1.5 Mbps</td>
+<td>1 Mbps</td>
+<td>1.1 MB</td>
+</tr>
+<tr>
+<td>720p</td>
+<td>3 Mbps</td>
+<td>2 Mbps</td>
+<td>2.3 MB</td>
+</tr>
+<tr>
+<td>1080p</td>
+<td>6 Mbps</td>
+<td>4 Mbps</td>
+<td>4.5 MB</td>
+</tr>
+<tr>
+<td>1440p</td>
+<td>12 Mbps</td>
+<td>8 Mbps</td>
+<td>9 MB</td>
+</tr>
+<tr>
+<td>4K</td>
+<td>25 Mbps</td>
+<td>16 Mbps</td>
+<td>18.8 MB</td>
+</tr>
+</tbody></table>
+<h3>Transcoding Worker Architecture</h3>
+<pre><code>Worker Fleet:
+  - GPU-accelerated instances (NVIDIA T4 or A10G) for hardware-accelerated encoding
+  - Each worker handles one transcoding job at a time (single segment, single resolution)
+  - Workers pull jobs from SQS/Kafka queues
+  - Auto-scaling based on queue depth
+
+Processing one video (5 min, 50 segments):
+  - 50 segments × 7 resolutions = 350 transcoding tasks
+  - With 350 parallel workers: all tasks complete in ~1 task duration
+  - Typical task duration: 10-30 seconds
+  - Total wall-clock time: ~30 seconds (massively parallel)
+  
+  Without parallelism: 350 × 20 seconds = ~2 hours
+</code></pre>
+<div class="important">
+
+<p>The key to fast transcoding is parallelism at the segment level. Each segment of each resolution is an independent task. This is why we split the video into segments before transcoding, not after.</p>
+</div>
+
+
+<h3>Codec Selection Strategy</h3>
+<table>
+<thead>
+<tr>
+<th>Codec</th>
+<th>Pro</th>
+<th>Con</th>
+<th>When to Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>H.264 (AVC)</td>
+<td>Universal support</td>
+<td>Larger file sizes</td>
+<td>Default fallback, legacy devices</td>
+</tr>
+<tr>
+<td>H.265 (HEVC)</td>
+<td>50% smaller than H.264 at same quality</td>
+<td>Patent licensing costs, limited browser support</td>
+<td>iOS, smart TVs, Apple devices</td>
+</tr>
+<tr>
+<td>VP9</td>
+<td>Royalty-free, good quality</td>
+<td>Slower encoding</td>
+<td>Android, Chrome, YouTube default</td>
+</tr>
+<tr>
+<td>AV1</td>
+<td>Best compression, royalty-free</td>
+<td>Very slow encoding, limited hardware decode support</td>
+<td>Future default, used for popular content</td>
+</tr>
+</tbody></table>
+<p><strong>Strategy:</strong> Encode in H.264 (universal) and one advanced codec (H.265 for Apple ecosystem, VP9 for Android/Chrome). For the most popular videos (top 1%), also encode in AV1 — the encoding cost is justified by bandwidth savings.</p>
+<hr>
+<h2>7. CDN Strategy &amp; Video Delivery</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> The CDN is not an optimization — it IS the streaming infrastructure. Without a CDN, a centralized origin serving 200M concurrent viewers at 5 Mbps each is physically impossible. Make sure the interviewer understands this.</p>
+</div>
+
+
+<h3>CDN Architecture for Video</h3>
+<pre class="mermaid">
+graph TB
+    subgraph Origin
+        S3[Object Storage<br/>All transcoded segments]
+    end
+
+    subgraph CDN Layer 1 - Shield
+        SHIELD_US[Shield PoP<br/>US]
+        SHIELD_EU[Shield PoP<br/>EU]
+        SHIELD_ASIA[Shield PoP<br/>Asia]
+    end
+
+    subgraph CDN Layer 2 - Edge
+        EDGE_NYC[Edge NYC]
+        EDGE_LA[Edge LA]
+        EDGE_LON[Edge London]
+        EDGE_FRA[Edge Frankfurt]
+        EDGE_TOK[Edge Tokyo]
+        EDGE_MUM[Edge Mumbai]
+    end
+
+    subgraph Users
+        U1[Users NYC area]
+        U2[Users LA area]
+        U3[Users London area]
+        U4[Users Frankfurt area]
+        U5[Users Tokyo area]
+        U6[Users Mumbai area]
+    end
+
+    S3 --> SHIELD_US
+    S3 --> SHIELD_EU
+    S3 --> SHIELD_ASIA
+
+    SHIELD_US --> EDGE_NYC
+    SHIELD_US --> EDGE_LA
+    SHIELD_EU --> EDGE_LON
+    SHIELD_EU --> EDGE_FRA
+    SHIELD_ASIA --> EDGE_TOK
+    SHIELD_ASIA --> EDGE_MUM
+
+    EDGE_NYC --> U1
+    EDGE_LA --> U2
+    EDGE_LON --> U3
+    EDGE_FRA --> U4
+    EDGE_TOK --> U5
+    EDGE_MUM --> U6
+</pre>
+<h3>Push vs Pull CDN Strategy</h3>
+<p><strong>Popular Content (Push):</strong></p>
+<ul>
+<li>When a video is newly released by a major creator or is trending, proactively push it to edge nodes</li>
+<li>Pre-warm the CDN before a scheduled release (e.g., new Netflix show dropping at midnight)</li>
+<li>Reduces first-viewer latency (the content is already at the edge)</li>
+</ul>
+<p><strong>Long-Tail Content (Pull):</strong></p>
+<ul>
+<li>Most videos are rarely watched. Pre-populating them on all edge nodes would waste storage.</li>
+<li>Use pull-through caching: the first viewer triggers a cache miss, the edge node fetches from the origin (via the shield), and subsequent viewers are served from the edge cache</li>
+<li>TTL-based eviction ensures infrequently accessed content does not consume edge storage</li>
+</ul>
+<h3>Video Playback Flow</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant P as Video Player
+    participant VS as Video Service
+    participant CDN as CDN Edge
+
+    P->>VS: GET /video/{id}/metadata
+    VS-->>P: Video metadata + manifest URL
+
+    P->>CDN: GET manifest.m3u8 (HLS) or manifest.mpd (DASH)
+    CDN-->>P: Manifest with available quality levels
+
+    Note over P: Player analyzes network speed<br/>and selects initial quality
+
+    loop For each segment
+        P->>CDN: GET segment_001_720p.ts
+        CDN-->>P: Video segment data
+
+        Note over P: Player measures download speed<br/>and adjusts quality if needed
+
+        alt Network improved
+            P->>CDN: GET segment_002_1080p.ts
+        else Network degraded
+            P->>CDN: GET segment_002_480p.ts
+        end
+    end
+</pre>
+<h3>Multi-CDN Strategy</h3>
+<p>At YouTube/Netflix scale, relying on a single CDN provider is risky and expensive. A multi-CDN strategy uses multiple providers simultaneously:</p>
+<ul>
+<li><strong>Performance-based routing:</strong> Measure latency and throughput from each CDN provider in each region. Route traffic to the best-performing CDN.</li>
+<li><strong>Failover:</strong> If one CDN has an outage, automatically route traffic to alternatives.</li>
+<li><strong>Cost optimization:</strong> Negotiate volume discounts with multiple providers and shift traffic based on pricing tiers.</li>
+<li><strong>Netflix approach:</strong> Netflix operates its own CDN (Open Connect) with appliances co-located in ISP data centers. This eliminates transit costs and provides the best possible latency.</li>
+</ul>
+<hr>
+<h2>8. Data Models &amp; Storage</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> The video metadata is tiny compared to the video itself, but it is accessed orders of magnitude more frequently. Treat metadata storage as a separate concern from video storage.</p>
+</div>
+
+
+<h3>Core Data Models</h3>
+<p><strong>Video Table (MySQL, sharded by creator_id)</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>video_id</td>
+<td>BIGINT PK</td>
+<td>Snowflake-style unique ID</td>
+</tr>
+<tr>
+<td>creator_id</td>
+<td>BIGINT</td>
+<td>FK to User table</td>
+</tr>
+<tr>
+<td>title</td>
+<td>VARCHAR(100)</td>
+<td>Video title</td>
+</tr>
+<tr>
+<td>description</td>
+<td>TEXT</td>
+<td>Video description</td>
+</tr>
+<tr>
+<td>tags</td>
+<td>JSON</td>
+<td>Array of tags</td>
+</tr>
+<tr>
+<td>duration_seconds</td>
+<td>INT</td>
+<td>Video duration</td>
+</tr>
+<tr>
+<td>original_resolution</td>
+<td>VARCHAR(10)</td>
+<td>e.g., &quot;3840x2160&quot;</td>
+</tr>
+<tr>
+<td>thumbnail_url</td>
+<td>VARCHAR(512)</td>
+<td>Default thumbnail S3 URL</td>
+</tr>
+<tr>
+<td>manifest_url</td>
+<td>VARCHAR(512)</td>
+<td>HLS/DASH manifest URL</td>
+</tr>
+<tr>
+<td>status</td>
+<td>ENUM</td>
+<td>uploading, processing, ready, failed, removed</td>
+</tr>
+<tr>
+<td>visibility</td>
+<td>ENUM</td>
+<td>public, unlisted, private</td>
+</tr>
+<tr>
+<td>view_count</td>
+<td>BIGINT</td>
+<td>Denormalized view count</td>
+</tr>
+<tr>
+<td>like_count</td>
+<td>BIGINT</td>
+<td>Denormalized like count</td>
+</tr>
+<tr>
+<td>comment_count</td>
+<td>BIGINT</td>
+<td>Denormalized comment count</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>Upload timestamp</td>
+</tr>
+<tr>
+<td>published_at</td>
+<td>TIMESTAMP</td>
+<td>When the video became public</td>
+</tr>
+</tbody></table>
+<p><strong>User Table (MySQL)</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>user_id</td>
+<td>BIGINT PK</td>
+<td>Unique user ID</td>
+</tr>
+<tr>
+<td>username</td>
+<td>VARCHAR(30)</td>
+<td>Display name</td>
+</tr>
+<tr>
+<td>email</td>
+<td>VARCHAR(255)</td>
+<td>Email address</td>
+</tr>
+<tr>
+<td>subscriber_count</td>
+<td>BIGINT</td>
+<td>Number of subscribers</td>
+</tr>
+<tr>
+<td>total_views</td>
+<td>BIGINT</td>
+<td>Total views across all videos</td>
+</tr>
+<tr>
+<td>channel_description</td>
+<td>TEXT</td>
+<td>Channel about text</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>Account creation</td>
+</tr>
+</tbody></table>
+<p><strong>Watch History Table (Cassandra)</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>user_id</td>
+<td>BIGINT</td>
+<td>Partition key</td>
+</tr>
+<tr>
+<td>video_id</td>
+<td>BIGINT</td>
+<td>Clustering key</td>
+</tr>
+<tr>
+<td>watch_timestamp</td>
+<td>TIMESTAMP</td>
+<td>When the user last watched</td>
+</tr>
+<tr>
+<td>progress_seconds</td>
+<td>INT</td>
+<td>Where the user stopped</td>
+</tr>
+<tr>
+<td>completed</td>
+<td>BOOLEAN</td>
+<td>Did they watch &gt;90%?</td>
+</tr>
+</tbody></table>
+<p>Cassandra is ideal here because:</p>
+<ul>
+<li>Write-heavy (every play/pause/stop generates a write)</li>
+<li>Partition by user_id enables fast &quot;continue watching&quot; queries</li>
+<li>No need for complex queries or joins</li>
+</ul>
+<p><strong>Subscription Table (Cassandra)</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>subscriber_id</td>
+<td>BIGINT</td>
+<td>Partition key</td>
+</tr>
+<tr>
+<td>creator_id</td>
+<td>BIGINT</td>
+<td>Clustering key</td>
+</tr>
+<tr>
+<td>subscribed_at</td>
+<td>TIMESTAMP</td>
+<td>When the subscription started</td>
+</tr>
+</tbody></table>
+<h3>Storage Architecture Summary</h3>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Storage</th>
+<th>Volume</th>
+<th>Access Pattern</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Raw videos</td>
+<td>S3 (cold tier)</td>
+<td>~500 MB each</td>
+<td>Rarely accessed after processing</td>
+</tr>
+<tr>
+<td>Transcoded segments</td>
+<td>S3 (standard) + CDN</td>
+<td>~1.5 GB per video</td>
+<td>Very frequent, served via CDN</td>
+</tr>
+<tr>
+<td>Video metadata</td>
+<td>MySQL + Redis cache</td>
+<td>~2 KB per video</td>
+<td>Every video view reads this</td>
+</tr>
+<tr>
+<td>Watch history</td>
+<td>Cassandra</td>
+<td>~50 bytes per entry</td>
+<td>Write on every play event</td>
+</tr>
+<tr>
+<td>View counts</td>
+<td>Redis (real-time) + MySQL (persistent)</td>
+<td>8 bytes per video</td>
+<td>Increment on every view</td>
+</tr>
+<tr>
+<td>Comments</td>
+<td>MySQL (sharded by video_id)</td>
+<td>~500 bytes each</td>
+<td>Read-heavy per video page</td>
+</tr>
+<tr>
+<td>Search index</td>
+<td>Elasticsearch</td>
+<td>~1 KB per video</td>
+<td>Every search query</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>9. Search &amp; Discovery</h2>
+<h3>Video Search</h3>
+<p>Search is powered by Elasticsearch with an inverted index on video metadata:</p>
+<p><strong>Indexed Fields:</strong></p>
+<ul>
+<li>Title (full-text, boosted 3x)</li>
+<li>Description (full-text, boosted 1x)</li>
+<li>Tags (keyword, exact match, boosted 2x)</li>
+<li>Creator username (keyword)</li>
+<li>Auto-generated captions (full-text, boosted 0.5x)</li>
+<li>Category (keyword, for filtering)</li>
+</ul>
+<p><strong>Ranking Factors:</strong></p>
+<ul>
+<li>Text relevance score (from Elasticsearch BM25)</li>
+<li>Video freshness (recent videos boosted)</li>
+<li>Engagement rate (views, likes, watch-through rate)</li>
+<li>Creator authority (subscriber count, verification status)</li>
+<li>User personalization (boost results from creators the user subscribes to)</li>
+</ul>
+<h3>Autocomplete</h3>
+<p>As the user types, we provide suggestions:</p>
+<ol>
+<li><strong>Popular searches:</strong> Maintained in Redis as a sorted set (score = search frequency in last 24 hours)</li>
+<li><strong>Prefix matching:</strong> Elasticsearch completion suggester with fuzzy matching</li>
+<li><strong>Personalized suggestions:</strong> Recently searched terms by this user (stored client-side or in Redis)</li>
+</ol>
+<p>The autocomplete endpoint must return results in &lt;50ms. We pre-compute the top 10,000 search suggestions and cache them in Redis, updating every 5 minutes.</p>
+<h3>Content Discovery</h3>
+<p>Beyond search, users discover content through:</p>
+<ul>
+<li><strong>Home page recommendations</strong> (see Section 10)</li>
+<li><strong>Related videos</strong> (shown in the sidebar while watching a video)</li>
+<li><strong>Trending</strong> (computed similarly to the social media feed trending system: velocity-based ranking)</li>
+<li><strong>Subscriptions feed</strong> (chronological list of new videos from subscribed creators)</li>
+</ul>
+<hr>
+<h2>10. Recommendation Engine</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> You are not expected to design a full ML recommendation system. Show that you understand the high-level approaches (collaborative filtering, content-based, hybrid) and the data pipeline that feeds them.</p>
+</div>
+
+
+<h3>Recommendation Approaches</h3>
+<p><strong>Collaborative Filtering:</strong>
+&quot;Users who watched videos A and B also watched video C.&quot;</p>
+<p>This approach finds users with similar watch histories and recommends videos that similar users enjoyed but the current user has not seen.</p>
+<ul>
+<li>Build a user-video interaction matrix (implicit feedback: watch time, likes, saves)</li>
+<li>Use matrix factorization (ALS or SVD) to find latent factors</li>
+<li>Compute similarity between users or between items</li>
+<li>Recommend items similar to what the user has engaged with</li>
+</ul>
+<p><strong>Content-Based Filtering:</strong>
+&quot;This video has similar tags, category, and audio features to videos you have enjoyed.&quot;</p>
+<ul>
+<li>Extract features from each video: category, tags, audio analysis, visual features (thumbnail CNN embeddings), transcript topic modeling</li>
+<li>Build a user preference profile from their watch history</li>
+<li>Recommend videos whose features match the user&#39;s profile</li>
+</ul>
+<p><strong>Hybrid Approach (Recommended):</strong>
+Combine both methods. Collaborative filtering discovers unexpected interests (serendipity). Content-based filtering provides relevant results even for new users with limited history (cold start).</p>
+<h3>Recommendation Pipeline</h3>
+<pre><code>Offline Pipeline (runs daily or hourly):
+  1. Collect all user-video interactions from the last 30 days
+  2. Train collaborative filtering model (matrix factorization)
+  3. For each user, generate top-500 candidate videos
+  4. Store candidates in a key-value store (Redis or DynamoDB)
+
+Online Pipeline (at request time):
+  1. Fetch pre-computed candidates for the user (top 500)
+  2. Apply real-time signals (trending boost, freshness boost, diversity rules)
+  3. Re-rank candidates using a lightweight model (logistic regression or small neural net)
+  4. Filter out videos the user has already watched (check watch history)
+  5. Return top 20 recommendations
+</code></pre>
+<h3>Cold Start Problem</h3>
+<p>New users have no watch history, so collaborative filtering fails. Solutions:</p>
+<ul>
+<li>Ask for interests during onboarding (select categories you like)</li>
+<li>Show globally popular content initially</li>
+<li>Use demographic signals (age, country) to bootstrap recommendations from similar demographics</li>
+<li>Switch to collaborative filtering after 10-20 videos watched</li>
+</ul>
+<p>New videos have no engagement data. Solutions:</p>
+<ul>
+<li>Use content-based features (tags, category, creator history) for initial placement</li>
+<li>Give new videos from popular creators a boost</li>
+<li>A/B test new videos on a small percentage of users to collect initial engagement data</li>
+</ul>
+<hr>
+<h2>11. Live Streaming</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Live streaming is often a follow-up question. The key difference from VOD is that content does not exist yet — you are processing and distributing a real-time stream. This changes everything about the pipeline.</p>
+</div>
+
+
+<h3>Live Streaming Architecture</h3>
+<pre class="mermaid">
+graph LR
+    subgraph Broadcaster
+        CAMERA[Camera/Encoder]
+    end
+
+    subgraph Ingest
+        RTMP[RTMP Ingest Server<br/>Receive live stream]
+    end
+
+    subgraph Processing
+        TRANSCODE_LIVE[Live Transcoder<br/>Real-time multi-resolution]
+        SEGMENT[Segmenter<br/>Create 2-4s HLS segments]
+    end
+
+    subgraph Origin
+        ORIGIN[Origin Server<br/>Live manifest + segments]
+    end
+
+    subgraph CDN
+        EDGE1[CDN Edge 1]
+        EDGE2[CDN Edge 2]
+        EDGE3[CDN Edge N]
+    end
+
+    subgraph Viewers
+        V1[Viewer 1]
+        V2[Viewer 2]
+        V3[Viewer N]
+    end
+
+    CAMERA -->|RTMP| RTMP
+    RTMP --> TRANSCODE_LIVE
+    TRANSCODE_LIVE --> SEGMENT
+    SEGMENT --> ORIGIN
+    ORIGIN --> EDGE1
+    ORIGIN --> EDGE2
+    ORIGIN --> EDGE3
+    EDGE1 --> V1
+    EDGE2 --> V2
+    EDGE3 --> V3
+</pre>
+<h3>VOD vs Live: Key Differences</h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>VOD (Video on Demand)</th>
+<th>Live Streaming</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Content availability</td>
+<td>Pre-existing, fully processed</td>
+<td>Generated in real-time</td>
+</tr>
+<tr>
+<td>Transcoding</td>
+<td>Offline, can take hours</td>
+<td>Must be real-time (faster than real-time)</td>
+</tr>
+<tr>
+<td>Latency tolerance</td>
+<td>Seconds of startup OK</td>
+<td>5-30 seconds glass-to-glass</td>
+</tr>
+<tr>
+<td>Segment duration</td>
+<td>4-10 seconds (larger = more efficient)</td>
+<td>2-4 seconds (smaller = lower latency)</td>
+</tr>
+<tr>
+<td>CDN caching</td>
+<td>Long TTL, content is immutable</td>
+<td>Very short TTL, manifest updates constantly</td>
+</tr>
+<tr>
+<td>Error tolerance</td>
+<td>Can retry segment fetches</td>
+<td>Segment is gone if missed</td>
+</tr>
+<tr>
+<td>Seek/rewind</td>
+<td>Full support</td>
+<td>Limited (DVR window)</td>
+</tr>
+</tbody></table>
+<h3>Latency Spectrum for Live Streaming</h3>
+<table>
+<thead>
+<tr>
+<th>Protocol</th>
+<th>Latency</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>HLS (standard)</td>
+<td>15-30 seconds</td>
+<td>Most live streams</td>
+</tr>
+<tr>
+<td>Low-Latency HLS (LL-HLS)</td>
+<td>2-5 seconds</td>
+<td>Interactive streams</td>
+</tr>
+<tr>
+<td>DASH Low Latency</td>
+<td>2-5 seconds</td>
+<td>Alternative to LL-HLS</td>
+</tr>
+<tr>
+<td>WebRTC</td>
+<td>&lt;1 second</td>
+<td>Video calls, auctions</td>
+</tr>
+<tr>
+<td>RTMP (ingest only)</td>
+<td>1-3 seconds</td>
+<td>Broadcaster to server</td>
+</tr>
+</tbody></table>
+<p><strong>Trade-off:</strong> Lower latency requires smaller segments, more frequent manifest updates, and more CDN origin load. For most use cases (watching a sports event, a concert), 15-30 seconds of latency is acceptable. For interactive streams (Q&amp;A, auctions), sub-5-second latency is required.</p>
+<h3>Live-to-VOD</h3>
+<p>After a live stream ends, the recorded segments are assembled into a VOD asset:</p>
+<ol>
+<li>Concatenate all segments into a continuous video</li>
+<li>Generate a static HLS/DASH manifest (no longer updating)</li>
+<li>Optionally re-transcode for better quality (live transcoding prioritizes speed over quality)</li>
+<li>Index the VOD for search and recommendations</li>
+</ol>
+<hr>
+<h2>12. DRM &amp; Content Protection</h2>
+<h3>Why DRM?</h3>
+<p>Content owners (studios, record labels) require DRM as a contractual obligation before licensing their content for streaming. Without DRM, content would be easily downloadable and redistributable.</p>
+<h3>DRM Systems</h3>
+<table>
+<thead>
+<tr>
+<th>DRM</th>
+<th>Platform</th>
+<th>Encryption</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Widevine (Google)</td>
+<td>Android, Chrome, Firefox, Smart TVs</td>
+<td>CENC (AES-128 CTR)</td>
+</tr>
+<tr>
+<td>FairPlay (Apple)</td>
+<td>iOS, macOS, Safari, Apple TV</td>
+<td>Sample AES-128</td>
+</tr>
+<tr>
+<td>PlayReady (Microsoft)</td>
+<td>Windows, Xbox, Edge</td>
+<td>CENC (AES-128 CTR)</td>
+</tr>
+</tbody></table>
+<h3>DRM Flow</h3>
+<ol>
+<li><strong>Encryption:</strong> During transcoding, encrypt each video segment using AES-128. The encryption key is stored in a License Server, not alongside the content.</li>
+<li><strong>License acquisition:</strong> When a user presses play, the video player contacts the License Server to obtain a decryption license. The License Server verifies the user&#39;s subscription, device, and content access rights before issuing a time-limited license.</li>
+<li><strong>Playback:</strong> The player uses the license to decrypt segments on-the-fly. The decrypted content is rendered in a secure pipeline (hardware-protected on supported devices) to prevent screen capture.</li>
+</ol>
+<div class="note">
+
+<p>DRM is not foolproof — a determined attacker can capture the analog output (the &quot;analog hole&quot;). The goal is to make mass redistribution difficult enough that casual piracy is deterred. No DRM system is unbreakable, but they are a contractual requirement.</p>
+</div>
+
+
+<h3>Multi-DRM Strategy</h3>
+<p>Since different platforms require different DRM systems, we use <strong>CENC (Common Encryption)</strong> to encrypt content once and serve it with multiple DRM license servers. The same encrypted segments work with Widevine, FairPlay (with a minor header difference), and PlayReady, reducing storage overhead.</p>
+<hr>
+<h2>13. Scalability Strategies</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> At video streaming scale, the scalability challenges are primarily about bandwidth and storage, not compute. Every architectural decision should be viewed through the lens of &quot;does this reduce bandwidth or storage costs?&quot;</p>
+</div>
+
+
+<h3>Scaling the Upload Pipeline</h3>
+<table>
+<thead>
+<tr>
+<th>Bottleneck</th>
+<th>Strategy</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Upload bandwidth</td>
+<td>Pre-signed URLs let clients upload directly to S3, bypassing our servers</td>
+</tr>
+<tr>
+<td>Transcoding compute</td>
+<td>Auto-scale GPU worker fleet based on job queue depth</td>
+</tr>
+<tr>
+<td>Transcoding time</td>
+<td>Segment-level parallelism: 350 parallel tasks per video</td>
+</tr>
+<tr>
+<td>Storage cost</td>
+<td>Tiered storage: hot (S3 Standard) for popular content, cold (S3 Glacier) for old/unpopular</td>
+</tr>
+</tbody></table>
+<h3>Scaling the Streaming Pipeline</h3>
+<table>
+<thead>
+<tr>
+<th>Bottleneck</th>
+<th>Strategy</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>CDN bandwidth</td>
+<td>Multi-CDN, own CDN (Netflix Open Connect), ISP co-location</td>
+</tr>
+<tr>
+<td>CDN cache hit rate</td>
+<td>Push popular content to edges proactively, long TTLs for VOD segments</td>
+</tr>
+<tr>
+<td>Origin load</td>
+<td>Shield/mid-tier CDN layer absorbs edge cache misses before hitting origin</td>
+</tr>
+<tr>
+<td>Manifest requests</td>
+<td>Cache manifests aggressively (for VOD, they are immutable)</td>
+</tr>
+</tbody></table>
+<h3>View Count Scaling</h3>
+<p>At 70,000 views/sec, incrementing a counter in a relational database for every view would create extreme contention. Instead:</p>
+<ol>
+<li>Increment a Redis counter (<code>INCR video:{id}:views</code>) — O(1), no contention</li>
+<li>A background job flushes Redis counters to MySQL every 5 minutes (batch update)</li>
+<li>The view count displayed to users is eventually consistent (accurate within 5 minutes)</li>
+<li>For trending calculations, use the real-time Redis counter</li>
+</ol>
+<h3>Geographic Scaling</h3>
+<p>Deploy the API and metadata services in multiple regions (US, EU, Asia). Each region has:</p>
+<ul>
+<li>Read replicas of the video metadata database</li>
+<li>A Redis cache cluster</li>
+<li>Local CDN edge nodes</li>
+</ul>
+<p>All writes (uploads, comments, likes) go to the primary region. Cross-region replication ensures metadata is available everywhere within seconds.</p>
+<hr>
+<h2>14. Design Trade-offs &amp; Justifications</h2>
+<h3>Trade-off 1: HLS vs DASH</h3>
+<table>
+<thead>
+<tr>
+<th>Consideration</th>
+<th>Our Decision</th>
+<th>Alternative</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Protocol</td>
+<td>HLS primary, DASH for Android/Chrome</td>
+<td>DASH only</td>
+</tr>
+<tr>
+<td>Apple device support</td>
+<td>Native HLS support</td>
+<td>DASH requires third-party player on iOS</td>
+</tr>
+<tr>
+<td>Segment format</td>
+<td>fMP4 (works with both HLS and DASH)</td>
+<td>MPEG-TS for HLS (larger files)</td>
+</tr>
+<tr>
+<td>DRM</td>
+<td>Multi-DRM (Widevine + FairPlay)</td>
+<td>Single DRM (limited platform support)</td>
+</tr>
+</tbody></table>
+<p><strong>Justification:</strong> Apple devices (iOS, Apple TV, Mac) represent a significant portion of premium subscribers. HLS is the only natively supported streaming protocol on these devices. By using fMP4 segments (supported by both HLS and DASH), we avoid storing duplicate segment formats.</p>
+<h3>Trade-off 2: Pre-transcode All Resolutions vs On-Demand Transcoding</h3>
+<table>
+<thead>
+<tr>
+<th>Consideration</th>
+<th>Our Decision</th>
+<th>Alternative</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Approach</td>
+<td>Pre-transcode all resolutions for all videos</td>
+<td>Transcode on-demand for rarely-watched resolutions</td>
+</tr>
+<tr>
+<td>Storage cost</td>
+<td>Higher (7 resolutions per video)</td>
+<td>Lower (only transcode what is requested)</td>
+</tr>
+<tr>
+<td>First-view latency</td>
+<td>Instant (all resolutions ready)</td>
+<td>Minutes of delay for first viewer at a new resolution</td>
+</tr>
+<tr>
+<td>Complexity</td>
+<td>Lower (simple pipeline)</td>
+<td>Higher (on-demand transcoding infrastructure)</td>
+</tr>
+</tbody></table>
+<p><strong>Justification:</strong> Storage is cheap ($20/TB/month). On-demand transcoding requires maintaining always-ready GPU workers and introduces unpredictable latency for viewers. The storage cost of pre-transcoding all resolutions is negligible compared to the CDN bandwidth cost.</p>
+<h3>Trade-off 3: Segment Duration</h3>
+<table>
+<thead>
+<tr>
+<th>Consideration</th>
+<th>Our Decision</th>
+<th>Alternative</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>VOD segment duration</td>
+<td>6 seconds</td>
+<td>2 seconds or 10 seconds</td>
+</tr>
+<tr>
+<td>Live segment duration</td>
+<td>2-4 seconds</td>
+<td>6 seconds</td>
+</tr>
+<tr>
+<td>Startup latency</td>
+<td>1-2 segments before playback (~6-12s buffer)</td>
+<td>Smaller segments = faster startup</td>
+</tr>
+<tr>
+<td>Encoding efficiency</td>
+<td>Better (larger segments encode more efficiently)</td>
+<td>Worse (smaller segments have more overhead)</td>
+</tr>
+<tr>
+<td>Adaptation speed</td>
+<td>Slower (quality change every 6 seconds)</td>
+<td>Faster (quality change every 2 seconds)</td>
+</tr>
+</tbody></table>
+<p><strong>Justification:</strong> 6-second segments for VOD provide good encoding efficiency and acceptable adaptation speed. For live streaming, 2-4 second segments reduce latency at the cost of slightly lower encoding efficiency and higher CDN request rate.</p>
+<h3>Trade-off 4: Own CDN vs Third-Party CDN</h3>
+<table>
+<thead>
+<tr>
+<th>Consideration</th>
+<th>Our Decision</th>
+<th>Alternative</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Approach</td>
+<td>Multi-CDN with own edge appliances for top ISPs</td>
+<td>Single third-party CDN (e.g., Akamai, CloudFront)</td>
+</tr>
+<tr>
+<td>Cost</td>
+<td>Lower at scale (amortize hardware over years)</td>
+<td>Higher per-GB cost but no hardware investment</td>
+</tr>
+<tr>
+<td>Control</td>
+<td>Full control over caching, routing, failover</td>
+<td>Limited to CDN provider&#39;s features</td>
+</tr>
+<tr>
+<td>Operational complexity</td>
+<td>Very high (hardware deployment, ISP relationships)</td>
+<td>Low (managed service)</td>
+</tr>
+</tbody></table>
+<p><strong>Justification:</strong> At YouTube/Netflix scale (exabytes of monthly bandwidth), third-party CDN costs are prohibitive. Deploying your own CDN hardware in ISP data centers (Netflix Open Connect model) reduces bandwidth costs by 10-100x and provides the best possible streaming quality.</p>
+<hr>
+<h2>15. Interview Cheat Sheet</h2>
+<div class="important">
+
+<p>Use this as a quick reference. The key differentiators for a Staff-level answer are: understanding the DAG-based transcoding pipeline, adaptive bitrate streaming, and CDN architecture.</p>
+</div>
+
+
+<h3>Key Numbers to Remember</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>DAU</td>
+<td>1 Billion</td>
+</tr>
+<tr>
+<td>Videos uploaded per minute</td>
+<td>500 hours</td>
+</tr>
+<tr>
+<td>View QPS</td>
+<td>~70,000/sec</td>
+</tr>
+<tr>
+<td>Upload QPS</td>
+<td>~4/sec</td>
+</tr>
+<tr>
+<td>Read:Write ratio</td>
+<td>17,000:1</td>
+</tr>
+<tr>
+<td>Storage per video (all resolutions)</td>
+<td>~1.5 GB</td>
+</tr>
+<tr>
+<td>Daily storage growth</td>
+<td>~540 TB</td>
+</tr>
+<tr>
+<td>Annual storage growth</td>
+<td>~200 PB</td>
+</tr>
+<tr>
+<td>Peak concurrent viewers</td>
+<td>200 Million</td>
+</tr>
+<tr>
+<td>Peak bandwidth</td>
+<td>~1 Exabit/sec (across CDN)</td>
+</tr>
+<tr>
+<td>Transcoding parallelism</td>
+<td>350 tasks per video</td>
+</tr>
+</tbody></table>
+<h3>Decision Summary</h3>
+<table>
+<thead>
+<tr>
+<th>Decision Point</th>
+<th>Choice</th>
+<th>Key Reason</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Upload method</td>
+<td>Chunked, resumable, pre-signed URLs</td>
+<td>Large files, unreliable networks</td>
+</tr>
+<tr>
+<td>Transcoding</td>
+<td>DAG-based, segment-level parallelism</td>
+<td>10x faster than sequential</td>
+</tr>
+<tr>
+<td>Streaming protocol</td>
+<td>HLS + DASH</td>
+<td>Apple requires HLS, Android/Chrome prefer DASH</td>
+</tr>
+<tr>
+<td>Segment format</td>
+<td>fMP4</td>
+<td>Compatible with both HLS and DASH</td>
+</tr>
+<tr>
+<td>Segment duration</td>
+<td>6s (VOD), 2-4s (live)</td>
+<td>Balance efficiency and adaptation speed</td>
+</tr>
+<tr>
+<td>CDN</td>
+<td>Multi-CDN + own edge (at scale)</td>
+<td>Cost, control, quality</td>
+</tr>
+<tr>
+<td>Video metadata DB</td>
+<td>MySQL + Redis cache</td>
+<td>Structured data, read-heavy</td>
+</tr>
+<tr>
+<td>Watch history</td>
+<td>Cassandra</td>
+<td>Write-heavy, simple access pattern</td>
+</tr>
+<tr>
+<td>Search</td>
+<td>Elasticsearch</td>
+<td>Full-text + autocomplete</td>
+</tr>
+<tr>
+<td>DRM</td>
+<td>Multi-DRM (Widevine + FairPlay + PlayReady)</td>
+<td>Cross-platform support</td>
+</tr>
+</tbody></table>
+<h3>Common Follow-Up Questions</h3>
+<p><strong>Q: How do you handle a video with 1 billion views — does the view counter bottleneck?</strong>
+A: Redis <code>INCR</code> for real-time counting (O(1), handles millions of increments/sec). Flush to MySQL in batches every 5 minutes. The displayed count is eventually consistent.</p>
+<p><strong>Q: How do you handle copyright claims?</strong>
+A: At upload time, run audio fingerprinting (similar to Shazam) and visual fingerprinting against a database of copyrighted content. If a match is found, apply the rights holder&#39;s policy (block, monetize via ads, or allow). This is similar to YouTube&#39;s Content ID system.</p>
+<p><strong>Q: How would you implement &quot;continue watching&quot; (resume from where you left off)?</strong>
+A: The video player sends a progress event every 10 seconds to the Watch History service, recording <code>(user_id, video_id, progress_seconds)</code> in Cassandra. When the user returns to the video, fetch the last recorded progress and seek to that position.</p>
+<p><strong>Q: How would you reduce storage costs for old, rarely-watched videos?</strong>
+A: Tiered storage strategy. Videos not watched in 90 days: move to S3 Infrequent Access (50% cheaper). Not watched in 1 year: move to S3 Glacier (90% cheaper). If a viewer requests a Glacier video, serve a lower-resolution cached version while restoring the full-quality version (takes 1-5 minutes).</p>
+<p><strong>Q: How do you prevent buffering on slow networks?</strong>
+A: Adaptive bitrate streaming automatically drops to a lower resolution. Additionally: (1) Pre-buffer 30 seconds of video before starting playback, (2) Use a lower initial bitrate and ramp up (fast start), (3) Edge servers close to the user reduce round-trip time, (4) Use HTTP/2 or HTTP/3 (QUIC) for faster segment downloads.</p>
+<h3>Whiteboard Summary</h3>
+<p>If you have limited time, draw these two pipelines:</p>
+<pre><code>UPLOAD PIPELINE:
+Client → S3 (chunked) → Kafka → Transcode Workers (parallel per segment per resolution)
+  → Encrypt (DRM) → Generate Manifest → CDN
+
+STREAMING PIPELINE:
+Player → Video Service (metadata + manifest URL)
+Player → CDN Edge → Shield → Origin (S3)
+Player adapts quality per segment based on bandwidth
+</code></pre>
+<hr>
+<div class="note">
+
+<p><strong>Final Thought:</strong> Video streaming is the largest consumer of internet bandwidth globally (Netflix + YouTube account for over 50% of downstream traffic in many markets). Understanding this system means understanding the backbone of the modern internet. The key takeaway: at this scale, bandwidth economics drive every decision, from codec selection to CDN architecture to storage tiering.</p>
+</div>
+
+
+</body>
+</html>

@@ -1,5 +1,6 @@
 # 💬 System Design Interview: Chat System
 ### Facebook Messenger / WhatsApp Scale
+> [!NOTE]
 > **Staff Engineer Interview Preparation Guide** — High Level Design Round
 
 ---
@@ -26,7 +27,8 @@
 
 ## 1. Problem Clarification & Requirements
 
-> 🎯 **Interview Tip:** Always spend the first 5 minutes clarifying requirements. This shows structured thinking and prevents wasted effort.
+> [!TIP]
+> **Interview Tip:** Always spend the first 5 minutes clarifying requirements. This shows structured thinking and prevents wasted effort.
 
 ### Questions to Ask the Interviewer
 
@@ -66,7 +68,8 @@
 
 ## 2. Capacity Estimation & Scale
 
-> 🎯 **Interview Tip:** Show your math clearly. Interviewers want to see you can reason about numbers, not just memorize them.
+> [!TIP]
+> **Interview Tip:** Show your math clearly. Interviewers want to see you can reason about numbers, not just memorize them.
 
 ### Traffic Estimation
 
@@ -1115,7 +1118,8 @@ graph TD
 
 ## 14. Design Trade-offs & Justifications
 
-> 🎯 **Interview Tip:** This is where Staff-level candidates differentiate themselves. Always articulate WHY, not just WHAT.
+> [!TIP]
+> **Interview Tip:** This is where Staff-level candidates differentiate themselves. Always articulate WHY, not just WHAT.
 
 ### Trade-off 1: Consistency vs. Availability (CAP Theorem)
 
@@ -1231,7 +1235,8 @@ at message metadata layer for abuse patterns.
 
 ## 15. Interview Cheat Sheet
 
-> 🎯 **Use this section for quick reference during the interview**
+> [!TIP]
+> **Use this section for quick reference during the interview**
 
 ### Key Numbers to Remember
 
@@ -1247,18 +1252,22 @@ at message metadata layer for abuse patterns.
 ### Common Interview Questions & Key Points
 
 **Q: How do you handle message ordering in a distributed system?**
+> [!NOTE]
 > Use Snowflake IDs as clustering keys in Cassandra. Within a conversation, all writes go to the same partition (ordered by message_id). For cross-device ordering, use vector clocks or logical timestamps on the client.
 
 **Q: What happens when a WebSocket server crashes?**
+> [!NOTE]
 > 1. Clients auto-reconnect with exponential backoff
 > 2. New server registers userId → newIP in Redis
 > 3. Inflight Kafka messages are reprocessed (Kafka consumer group rebalances)
 > 4. Client requests sync since last_seen_message_id on reconnect
 
 **Q: How do you prevent message duplication?**
+> [!NOTE]
 > Client assigns UUID idempotency_key. Server stores key in Redis (EX 24h) and uses `INSERT IF NOT EXISTS` in Cassandra. Client deduplicates in UI by message_id.
 
 **Q: How do you scale to 1 Billion users?**
+> [!NOTE]
 > 1. Stateless WebSocket servers → horizontal scale-out
 > 2. Kafka for async decoupling → absorbs traffic spikes
 > 3. Cassandra linear scaling → add nodes, capacity scales linearly
@@ -1266,9 +1275,11 @@ at message metadata layer for abuse patterns.
 > 5. CDN for media → offloads bandwidth from origin
 
 **Q: How does group message delivery work?**
+> [!NOTE]
 > Single write to group_messages table. Async fan-out via Kafka to online members (push) and offline members (push notification). Pull on reconnect.
 
 **Q: How do you handle the thundering herd problem on reconnect?**
+> [!NOTE]
 > Jitter in reconnect backoff: `delay = min(cap, base * 2^attempt) + random(0, 1000ms)`. This prevents all 1B clients from reconnecting simultaneously after a regional outage.
 
 ---

@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Consistent Hashing</title>
+</head>
+<body>
+
+<h1>Consistent Hashing</h1>
+<h2>Introduction</h2>
+<p>In a <strong>distributed system</strong>, horizontal scaling is essential as data outgrows the capacity of a single machine. To manage this, data is partitioned across a cluster of nodes. Knowing exactly which node holds specific data—without relying on a slow, centralized lookup table—requires Hashing.<br>Hashing acts as a deterministic GPS: given the same input, it always produces the same output, allowing any node to calculate a data location independently. However, traditional &#39;Modulo N&#39; hashing (key mod n) is brittle. Because the formula depends on the total number of nodes (n), adding or removing a single server changes the mapping for nearly every key in the system. This triggers a data migration storm and massive cache misses, as the system struggles to re-allocate almost all existing data to new locations.</p>
+<pre class="mermaid">
+graph BT
+    subgraph Keys ["Data Keys"]
+        K1((Key A))
+        K2((Key B))
+        K3((Key C))
+    end
+
+    subgraph Ring ["The Virtual Ring Layer"]
+        V1[VN_01]:::blue
+        V2[VN_02]:::red
+        V3[VN_03]:::blue
+        V4[VN_04]:::red
+    end
+
+    subgraph Hardware ["Physical Infrastructure"]
+        Server1[("Server 1 (Blue)")]:::blue
+        Server2[("Server 2 (Red)")]:::red
+    end
+
+    %% Mapping
+    K1 --> V1
+    K2 --> V2
+    K3 --> V3
+
+    V1 & V3 --> Server1
+    V2 & V4 --> Server2
+
+    classDef blue fill:#e1f5fe,stroke:#01579b
+    classDef red fill:#ffebee,stroke:#b71c1c
+</pre>
+<p>Sequence diagram: Request Routing lifecycle in a Consistent Hashing system</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant Client
+    participant HashFunc as Hash Function (MD5/Murmur)
+    participant Ring as The Hash Ring (0-360°)
+    participant Nodes as Physical Cluster (Redis/S3)
+
+    Client->>HashFunc: Send Key (e.g., "user_123")
+    HashFunc->>HashFunc: Generate Hash Value
+    HashFunc->>Ring: Map Hash to Degree (e.g., 142°)
+    
+    Note over Ring: Find the first Virtual Node<br/>clockwise from 142°
+    
+    Ring->>Nodes: Route Request to Node B (Virtual #7)
+    Nodes-->>Client: Return Data / Success
+</pre>
+<h2>Why Consistent Hashing?</h2>
+<h4>The Core Problem</h4>
+<p>As described above, Consistent hashing solves the &quot;rehash&quot; problem. When a cluster changes size, only K/n keys need to be remapped (where K is the total keys and n is the number of nodes), preventing a system-wide &quot;cache storm.&quot;</p>
+<h4>The Hash Ring (Logical Topology)</h4>
+<p>Imagine all possible hash values arranged in a fixed circle. For a 32-bit hash, the Hash Space ranges from 0 to 2<sup>32</sup>−1.</p>
+<ul>
+<li><strong>Placing Nodes</strong>: Each server is hashed (by ID or IP) and placed at a specific coordinate on this ring.</li>
+<li><strong>Placing Keys</strong>: Each data key is hashed using the same function and mapped onto the same ring.</li>
+<li><strong>The Lookup</strong>: To find which server owns a key, you move clockwise from the key&#39;s position until you hit the first available server.</li>
+</ul>
+<h4>Handling Cluster Changes</h4>
+<p>Because mapping depends on relative positions, the impact of a change is localized:</p>
+<ul>
+<li><strong>Adding a Node</strong>: A new node only &quot;captures&quot; keys located between itself and its immediate counter-clockwise neighbor. All other nodes remain unaffected.</li>
+</ul>
+<pre class="mermaid">
+flowchart TD
+    Start([Scale Up: Add New Node D]) --> HashV["Generate V-Nodes for Node D"]
+    HashV --> Inject["Inject V-Nodes into gaps on the Ring"]
+    
+    subgraph Impact ["Data Movement"]
+        Direction[Clockwise Ownership Change]
+        Direction --> Stay["80% of Keys: Previous owners stay the same"]
+        Direction --> Move["20% of Keys: Re-mapped to New Node D"]
+    end
+
+    Inject --> Impact
+    Impact --> End([Cluster Rebalanced with Minimal Churn])
+
+    style Stay fill:#d4edda,stroke:#28a745
+    style Move fill:#fff3cd,stroke:#856404
+</pre>
+<ul>
+<li><strong>Removing a Node</strong>: If a node fails, its keys simply &quot;slide&quot; clockwise to the next available neighbor. Only the keys from the failed node are remapped.</li>
+</ul>
+<pre class="mermaid">
+flowchart TD
+    Start([Scale Down: Remove Node D]) --> Identify["Identify V-Nodes for Node D"]
+    Identify --> Remove["Remove V-Nodes from the Ring"]
+    
+    subgraph Impact ["Data Movement"]
+        Direction[Clockwise Handover]
+        Direction --> Stay["75% of Keys: Owners (A, B, C) remain unchanged"]
+        Direction --> Move["25% of Keys: Handed over from D to A, B, or C"]
+    end
+
+    Remove --> Impact
+    Impact --> End([Cluster Rebalanced: Only Node D's data moved])
+
+    style Stay fill:#d4edda,stroke:#28a745
+    style Move fill:#f8d7da,stroke:#dc3545
+</pre>
+<h4>Skewness (The problem of Hotspot)</h4>
+<p>In basic implementation, the nodes might not be distributed uniformly around the ring. This can lead to non-uniform distribution of keys where one server needs to handle 70% of traffic while others sit idle.
+<strong>Virtual Nodes</strong>: To fix this issue, Virtual nodes are used. Instead of hashing one server once, we hash it multiple times. This places one server at multiple points on the ring which makes distribution more granular and balanced.</p>
+<h2>Visualize Consisten Hashing in work</h2>
+<p>Apply below Kuberentes manifest in Kubernetes cluster.<br>Change name, namespace as per need.</p>
+<div class="note">
+
+<p><strong>Note:</strong> More virtualnode, more uniforml distribution of key on servers.</p>
+</div>
+
+<pre><code class="language-yaml">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hashing-ui
+  namespace: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hashing-ui
+  template:
+    metadata:
+      labels:
+        app: hashing-ui
+    spec:
+      containers:
+      - name: visualizer
+        image: sunnysaurabh/hashing-visualizer:v4
+        ports:
+        - containerPort: 8501
+        resources:
+          limits:
+            memory: &quot;256Mi&quot;
+            cpu: &quot;500m&quot;
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hashing-ui-service
+  namespace: redis
+spec:
+  type: ClusterIP
+  selector:
+    app: hashing-ui
+  ports:
+  - port: 8501
+    targetPort: 8501
+</code></pre>
+<p>Access UI:<br>To access UI, please port-forward the server from above(after deployment)</p>
+<pre><code>kubectl port-forward -n redis svc/hashing-ui-service 8501:8501
+</code></pre>
+<h2>Virtual Nodes Deep Dive</h2>
+<p>As mentioned above, basic consistent hashing can lead to uneven load distribution. Virtual nodes (vnodes) solve this elegantly.</p>
+<h3>How Virtual Nodes Work</h3>
+<p>Instead of placing each physical server at a single point on the ring, you create multiple &quot;virtual&quot; copies of each server. For example, with 150 vnodes per server, a 5-server cluster has 750 points on the ring. Each virtual node maps back to its physical server.</p>
+<pre class="mermaid">
+graph LR
+    subgraph Ring ["Hash Ring with Virtual Nodes"]
+        V1A["S1-vn1"]:::s1
+        V2A["S2-vn1"]:::s2
+        V1B["S1-vn2"]:::s1
+        V3A["S3-vn1"]:::s3
+        V2B["S2-vn2"]:::s2
+        V3B["S3-vn2"]:::s3
+    end
+
+    subgraph Physical ["Physical Servers"]
+        S1["Server 1"]:::s1
+        S2["Server 2"]:::s2
+        S3["Server 3"]:::s3
+    end
+
+    V1A --> S1
+    V1B --> S1
+    V2A --> S2
+    V2B --> S2
+    V3A --> S3
+    V3B --> S3
+
+    classDef s1 fill:#e1f5fe,stroke:#01579b
+    classDef s2 fill:#fff3e0,stroke:#e65100
+    classDef s3 fill:#e8f5e9,stroke:#1b5e20
+</pre>
+<h3>Distribution Analysis</h3>
+<table>
+<thead>
+<tr>
+<th>Virtual Nodes per Server</th>
+<th>Standard Deviation of Load</th>
+<th>Key Movement on Node Add</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1 (no vnodes)</td>
+<td>~50% of mean</td>
+<td>K/n keys (but uneven)</td>
+</tr>
+<tr>
+<td>10</td>
+<td>~15% of mean</td>
+<td>Close to K/n</td>
+</tr>
+<tr>
+<td>100</td>
+<td>~5% of mean</td>
+<td>Very close to K/n</td>
+</tr>
+<tr>
+<td>150+</td>
+<td>~2-3% of mean</td>
+<td>Practically ideal K/n</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p><strong>Interview guidance:</strong> 150-200 vnodes per physical server is the sweet spot used by production systems. Fewer gives uneven distribution; more wastes memory on the ring metadata.</p>
+</div>
+
+
+<h3>Heterogeneous Servers</h3>
+<p>Virtual nodes also let you assign more ring positions to more powerful servers. A server with 2x the capacity gets 2x the vnodes, so it naturally handles 2x the traffic — no separate weighting logic needed.</p>
+<hr>
+<h2>Modular Hashing vs Consistent Hashing</h2>
+<p>Understanding the contrast is essential for explaining why consistent hashing matters.</p>
+<h3>The Problem with Modular Hashing</h3>
+<p>With modular hashing (<code>server = hash(key) % N</code>), the mapping depends on the total count of servers. When N changes, nearly every key maps to a different server.</p>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Modular Hashing (key % N)</th>
+<th>Consistent Hashing</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>3 servers, add 1</td>
+<td><strong>~75% of keys remapped</strong></td>
+<td>~25% of keys remapped (K/n)</td>
+</tr>
+<tr>
+<td>10 servers, remove 1</td>
+<td><strong>~90% of keys remapped</strong></td>
+<td>~10% of keys remapped</td>
+</tr>
+<tr>
+<td>100 servers, add 5</td>
+<td><strong>~95% of keys remapped</strong></td>
+<td>~5% of keys remapped</td>
+</tr>
+<tr>
+<td>Cache impact</td>
+<td>Massive cache storm, cold start</td>
+<td>Minimal cache misses</td>
+</tr>
+<tr>
+<td>Complexity</td>
+<td>O(1) lookup</td>
+<td>O(log n) lookup (binary search on ring)</td>
+</tr>
+</tbody></table>
+<div class="warning">
+
+<p><strong>The cache storm scenario:</strong> With modular hashing on 100 cache servers, removing 1 server remaps ~99% of keys. Every remapped key is a cache miss, and all those requests hit your database simultaneously. This can cascade into a full system outage.</p>
+</div>
+
+
+<hr>
+<h2>Real-World Implementations</h2>
+<h3>Amazon DynamoDB</h3>
+<p>DynamoDB uses consistent hashing as the foundation of its partitioning strategy. Each table&#39;s data is distributed across partitions using a hash of the partition key. When DynamoDB splits a partition (due to throughput or storage limits), only the data in that partition&#39;s range is redistributed — other partitions are unaffected.</p>
+<h3>Apache Cassandra</h3>
+<p>Cassandra assigns each node a set of token ranges on a consistent hash ring (using Murmur3 as the hash function). When a new node joins, it takes ownership of a portion of the ring from existing nodes. With vnodes enabled (default: 256 per node), the data movement during topology changes is evenly spread across all existing nodes rather than burdening a single neighbor.</p>
+<pre class="mermaid">
+graph TD
+    subgraph Cassandra ["Cassandra Token Ring"]
+        N1["Node A<br/>tokens: 0-63"]
+        N2["Node B<br/>tokens: 64-127"]
+        N3["Node C<br/>tokens: 128-191"]
+        N4["Node D<br/>tokens: 192-255"]
+    end
+
+    N1 -->|"replicate to"| N2
+    N2 -->|"replicate to"| N3
+    N3 -->|"replicate to"| N4
+    N4 -->|"replicate to"| N1
+</pre>
+<p>With replication factor 3, each key is stored on its primary node plus the next 2 nodes clockwise on the ring.</p>
+<h3>Redis Cluster</h3>
+<p>Redis Cluster divides the keyspace into 16,384 fixed hash slots. Each node owns a subset of slots. When resharding, Redis migrates individual slots between nodes — consistent hashing at the slot level ensures only the moved slots&#39; keys are affected.</p>
+<h3>Other Uses</h3>
+<ul>
+<li><strong>Nginx</strong> uses consistent hashing for upstream load balancing (the <code>hash</code> directive with <code>consistent</code> flag)</li>
+<li><strong>Akamai CDN</strong> pioneered consistent hashing for deciding which edge server caches a given URL</li>
+<li><strong>Discord</strong> uses consistent hashing to route users to specific gateway servers for WebSocket connections</li>
+</ul>
+<hr>
+<h2>Where Consistent Hashing?</h2>
+<p>A summary of the most common interview scenarios:</p>
+<ul>
+<li><strong>Distributed Cache (Memcached/Redis):</strong> The most frequent use case. Thousands of cache servers need to know which server holds a given key without a central lookup.</li>
+<li><strong>Distributed Storage &amp; NoSQL (DynamoDB/Cassandra):</strong> Data partitioning across nodes where cluster membership changes frequently.</li>
+<li><strong>Stateful Load Balancing (Sticky Sessions):</strong> Online multiplayer games or real-time chat (Discord) where users need to stay connected to the same server.</li>
+<li><strong>Content Delivery Networks (CDNs):</strong> Deciding which edge server should cache a specific file.</li>
+<li><strong>Distributed Rate Limiting:</strong> Routing rate-limit checks to the correct counter server based on client ID.</li>
+</ul>
+<hr>
+<h2>Interview Cheat Sheet</h2>
+<table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Key Points</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>What problem does consistent hashing solve?</td>
+<td>Minimizes key remapping when nodes are added/removed. Only K/n keys move instead of nearly all.</td>
+</tr>
+<tr>
+<td>How does the hash ring work?</td>
+<td>Hash both servers and keys to a ring. Keys map to the first server found clockwise.</td>
+</tr>
+<tr>
+<td>What are virtual nodes?</td>
+<td>Multiple ring positions per physical server for even load distribution. 150-200 vnodes is typical.</td>
+</tr>
+<tr>
+<td>How does it handle heterogeneous servers?</td>
+<td>More powerful servers get more virtual nodes, proportional to capacity.</td>
+</tr>
+<tr>
+<td>What&#39;s the lookup complexity?</td>
+<td>O(log n) using binary search on sorted ring positions.</td>
+</tr>
+<tr>
+<td>When would you NOT use it?</td>
+<td>Small, fixed-size clusters where modular hashing is simpler and remapping cost is negligible.</td>
+</tr>
+<tr>
+<td>Name 3 real systems that use it.</td>
+<td>DynamoDB (partitioning), Cassandra (token ring), Redis Cluster (hash slots).</td>
+</tr>
+<tr>
+<td>How does replication work with it?</td>
+<td>Replicate each key to the next N-1 nodes clockwise on the ring.</td>
+</tr>
+</tbody></table>
+
+</body>
+</html>

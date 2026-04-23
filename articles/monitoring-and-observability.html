@@ -1,0 +1,1008 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Monitoring and Observability</title>
+</head>
+<body>
+
+<h1>Monitoring and Observability</h1>
+<h2>Introduction</h2>
+<p>You cannot fix what you cannot see. As systems grow from a single application server to hundreds of microservices spread across multiple regions, understanding what is happening inside the system becomes exponentially harder. Monitoring and observability are the practices and tools that give engineering teams visibility into their systems&#39; behavior.</p>
+<p>These topics appear in system design interviews in two ways: as direct questions (&quot;how would you monitor this system?&quot;) and as implicit expectations when you discuss any architecture (&quot;how do you know when something goes wrong?&quot;). A strong candidate weaves monitoring and observability into their design naturally, not as an afterthought.</p>
+<div class="note">
+
+<p>Monitoring and observability are related but different concepts. Monitoring tells you when something is broken (known-unknowns). Observability lets you understand why something is broken, even for failure modes you didn&#39;t anticipate (unknown-unknowns). We will clarify this distinction throughout the article.</p>
+</div>
+
+
+<hr>
+<h2>SLA, SLO, and SLI</h2>
+<p>These three terms form a hierarchy that connects engineering metrics to business commitments. Getting them confused is a common interview mistake.</p>
+<h3>SLI (Service Level Indicator)</h3>
+<p>An SLI is a specific, measurable metric that quantifies some aspect of your service&#39;s performance. It is the raw measurement.</p>
+<p><strong>Examples:</strong></p>
+<ul>
+<li>Request latency (p50, p95, p99)</li>
+<li>Error rate (percentage of requests returning 5xx)</li>
+<li>Availability (percentage of successful health checks)</li>
+<li>Throughput (requests per second)</li>
+</ul>
+<h3>SLO (Service Level Objective)</h3>
+<p>An SLO is a target value or range for an SLI. It is the internal engineering goal.</p>
+<p><strong>Examples:</strong></p>
+<ul>
+<li>&quot;99.9% of requests complete in under 200ms&quot; (latency SLO)</li>
+<li>&quot;Less than 0.1% of requests return errors&quot; (error rate SLO)</li>
+<li>&quot;The service is available 99.95% of the time&quot; (availability SLO)</li>
+</ul>
+<h3>SLA (Service Level Agreement)</h3>
+<p>An SLA is a formal contract with customers that specifies SLOs and the consequences of violating them. It is the business commitment.</p>
+<p><strong>Example:</strong> &quot;We guarantee 99.9% uptime. If we fail to meet this, affected customers receive a 10% service credit for that billing period.&quot;</p>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>What It Is</th>
+<th>Who Cares</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>SLI</td>
+<td>A measured metric</td>
+<td>Engineers</td>
+<td>p99 latency = 180ms</td>
+</tr>
+<tr>
+<td>SLO</td>
+<td>A target for the metric</td>
+<td>Engineering + Product</td>
+<td>p99 latency &lt; 200ms</td>
+</tr>
+<tr>
+<td>SLA</td>
+<td>A contract with consequences</td>
+<td>Business + Legal + Customers</td>
+<td>99.9% uptime or credits</td>
+</tr>
+</tbody></table>
+<div class="important">
+
+<p>SLOs should always be stricter than SLAs. If your SLA promises 99.9% uptime, your internal SLO should target 99.95%. This gives you a buffer -- if you start missing your SLO, you have time to fix the problem before you breach the SLA and owe customers money.</p>
+</div>
+
+
+<h3>Practical Example</h3>
+<p>Consider a payment processing service:</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Metric</th>
+<th>Target</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>SLI</td>
+<td>Successful transactions / total transactions</td>
+<td>Measured: 99.97%</td>
+</tr>
+<tr>
+<td>SLO</td>
+<td>Success rate</td>
+<td>Target: 99.95%</td>
+</tr>
+<tr>
+<td>SLA</td>
+<td>Success rate guarantee</td>
+<td>Contract: 99.9%, credits if violated</td>
+</tr>
+</tbody></table>
+<p>The SLI (99.97%) exceeds the SLO (99.95%), which exceeds the SLA (99.9%). Everything is healthy. If the SLI drops below the SLO, the team investigates. If it drops below the SLA, the business owes credits.</p>
+<hr>
+<h2>The Three Pillars of Observability</h2>
+<p>The three pillars -- logs, metrics, and traces -- provide complementary views into system behavior. Each answers different questions, and a well-instrumented system uses all three.</p>
+<h3>Logs</h3>
+<p>Logs are timestamped records of discrete events. They provide the most detailed view of what happened in a system.</p>
+<p><strong>Unstructured logs:</strong></p>
+<pre><code>2024-03-15 14:23:45 ERROR Failed to process payment for user 12345: timeout connecting to stripe
+</code></pre>
+<p><strong>Structured logs (JSON):</strong></p>
+<pre><code class="language-json">{
+  &quot;timestamp&quot;: &quot;2024-03-15T14:23:45Z&quot;,
+  &quot;level&quot;: &quot;ERROR&quot;,
+  &quot;service&quot;: &quot;payment-service&quot;,
+  &quot;trace_id&quot;: &quot;abc123&quot;,
+  &quot;user_id&quot;: &quot;12345&quot;,
+  &quot;message&quot;: &quot;Failed to process payment&quot;,
+  &quot;error&quot;: &quot;timeout connecting to stripe&quot;,
+  &quot;latency_ms&quot;: 30000
+}
+</code></pre>
+<p>Structured logs are far superior because they can be parsed, searched, and aggregated by machines. You can query &quot;show me all errors for user 12345 in the last hour&quot; or &quot;count errors by service in the last 5 minutes.&quot;</p>
+<p><strong>Correlation IDs:</strong> Every request gets a unique ID that is passed through all services handling that request. This allows you to find all log entries related to a single user action across dozens of microservices.</p>
+<h3>Metrics</h3>
+<p>Metrics are numerical measurements aggregated over time. They tell you about trends, not individual events.</p>
+<p><strong>Types of metrics:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Description</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Counter</td>
+<td>Monotonically increasing value</td>
+<td>Total requests served, total errors</td>
+</tr>
+<tr>
+<td>Gauge</td>
+<td>Value that goes up and down</td>
+<td>Current memory usage, active connections</td>
+</tr>
+<tr>
+<td>Histogram</td>
+<td>Distribution of values in buckets</td>
+<td>Request latency distribution</td>
+</tr>
+<tr>
+<td>Summary</td>
+<td>Similar to histogram, calculates percentiles</td>
+<td>p50, p95, p99 latency</td>
+</tr>
+</tbody></table>
+<p><strong>Why metrics over logs for trends:</strong> Logs are high-volume and expensive to store and query. Metrics are pre-aggregated numbers that are cheap to store and fast to query. You use metrics to detect that something is wrong, then use logs to investigate what specifically is wrong.</p>
+<h3>Traces</h3>
+<p>Traces track a single request as it flows through multiple services. They show the complete journey of a request, including which services were called, in what order, and how long each step took.</p>
+<p>A trace consists of:</p>
+<ul>
+<li><strong>Trace ID:</strong> Unique identifier for the entire request journey</li>
+<li><strong>Spans:</strong> Individual units of work within the trace (one per service call)</li>
+<li><strong>Parent-child relationships:</strong> Spans form a tree showing the call hierarchy</li>
+</ul>
+<hr>
+<h2>Distributed Tracing</h2>
+<p>In a monolithic application, a stack trace shows you the complete call path when something fails. In a microservices architecture, a single user request might touch 10-20 services. Distributed tracing provides the equivalent of a stack trace across service boundaries.</p>
+<h3>How Trace IDs Propagate</h3>
+<pre class="mermaid">
+flowchart LR
+    subgraph "Trace ID: abc-123"
+        A[API Gateway<br/>Span 1: 250ms] --> B[User Service<br/>Span 2: 45ms]
+        A --> C[Order Service<br/>Span 3: 180ms]
+        C --> D[Inventory Service<br/>Span 4: 30ms]
+        C --> E[Payment Service<br/>Span 5: 120ms]
+        E --> F[Stripe API<br/>Span 6: 95ms]
+    end
+
+    style A fill:#bbdefb,stroke:#1565c0
+    style C fill:#fff9c4,stroke:#f9a825
+    style E fill:#ffcdd2,stroke:#c62828
+</pre>
+<p><strong>Propagation mechanism:</strong></p>
+<ol>
+<li>The first service (API gateway) generates a trace ID and creates the root span</li>
+<li>When calling the next service, it passes the trace ID in an HTTP header (e.g., <code>X-Trace-Id: abc-123</code> or W3C Trace Context <code>traceparent</code> header)</li>
+<li>Each downstream service reads the trace ID, creates its own span (with the parent span ID), and passes the trace ID to its own downstream calls</li>
+<li>All spans are collected asynchronously and assembled into a trace view</li>
+</ol>
+<h3>Span Trees</h3>
+<pre class="mermaid">
+gantt
+    title Trace abc-123: Create Order
+    dateFormat X
+    axisFormat %L ms
+
+    section API Gateway
+    Handle Request           :a1, 0, 250
+
+    section User Service
+    Validate User            :a2, 10, 55
+
+    section Order Service
+    Process Order            :a3, 60, 240
+
+    section Inventory Service
+    Check Stock              :a4, 70, 100
+
+    section Payment Service
+    Charge Card              :a5, 110, 230
+
+    section Stripe API
+    External Call            :a6, 120, 215
+</pre>
+<p>This view immediately shows that the Payment Service (specifically the Stripe API call) is the bottleneck. Without distributed tracing, you would need to correlate logs across six services manually.</p>
+<h3>Tracing Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Model</th>
+<th>Key Feature</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Jaeger</td>
+<td>Open source (CNCF)</td>
+<td>Native Kubernetes support, adaptive sampling</td>
+</tr>
+<tr>
+<td>Zipkin</td>
+<td>Open source</td>
+<td>Mature, simple, good for smaller deployments</td>
+</tr>
+<tr>
+<td>OpenTelemetry</td>
+<td>Open standard</td>
+<td>Vendor-neutral, supports all three pillars</td>
+</tr>
+<tr>
+<td>AWS X-Ray</td>
+<td>Managed service</td>
+<td>Deep AWS service integration</td>
+</tr>
+<tr>
+<td>Datadog APM</td>
+<td>Commercial</td>
+<td>Full-stack observability platform</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>In interviews, mention OpenTelemetry as your instrumentation choice. It is the emerging standard that decouples instrumentation from the backend. You instrument your code once with OpenTelemetry, then send data to whichever backend (Jaeger, Datadog, etc.) your team prefers.</p>
+</div>
+
+
+<hr>
+<h2>Structured Logging and the ELK Stack</h2>
+<h3>Why Structured Logging Matters</h3>
+<p>In a system generating millions of log lines per minute, unstructured text logs are nearly useless for automated analysis. Structured logging (JSON format) enables:</p>
+<ul>
+<li>Machine parsing and indexing</li>
+<li>Faceted search (filter by service, user, error type)</li>
+<li>Aggregation (count errors per service per minute)</li>
+<li>Correlation (join log entries by trace_id)</li>
+<li>Alerting rules on specific fields</li>
+</ul>
+<h3>The ELK Stack</h3>
+<p>ELK (Elasticsearch + Logstash + Kibana) is the most widely adopted open-source logging pipeline.</p>
+<pre class="mermaid">
+flowchart LR
+    subgraph Services
+        S1[Service A]
+        S2[Service B]
+        S3[Service C]
+    end
+
+    subgraph Collection
+        FB1[Filebeat Agent]
+        FB2[Filebeat Agent]
+        FB3[Filebeat Agent]
+    end
+
+    subgraph Processing
+        LS[Logstash<br/>Parse, Enrich, Transform]
+    end
+
+    subgraph Storage
+        ES[(Elasticsearch<br/>Index & Search)]
+    end
+
+    subgraph Visualization
+        KB[Kibana<br/>Dashboards & Queries]
+    end
+
+    S1 --> FB1
+    S2 --> FB2
+    S3 --> FB3
+    FB1 --> LS
+    FB2 --> LS
+    FB3 --> LS
+    LS --> ES
+    ES --> KB
+
+    style ES fill:#c8e6c9,stroke:#2e7d32
+    style KB fill:#bbdefb,stroke:#1565c0
+</pre>
+<p><strong>Component roles:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Role</th>
+<th>What It Does</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Filebeat</td>
+<td>Shipper</td>
+<td>Lightweight agent on each server, tails log files and forwards them</td>
+</tr>
+<tr>
+<td>Logstash</td>
+<td>Processor</td>
+<td>Parses, transforms, enriches, and routes log data</td>
+</tr>
+<tr>
+<td>Elasticsearch</td>
+<td>Storage + Search</td>
+<td>Indexes logs for fast full-text and structured search</td>
+</tr>
+<tr>
+<td>Kibana</td>
+<td>Visualization</td>
+<td>Dashboards, ad-hoc queries, log exploration</td>
+</tr>
+</tbody></table>
+<p><strong>Alternative: Fluentd</strong> replaces Logstash in many modern stacks (the &quot;EFK&quot; stack). Fluentd is lighter weight, uses less memory, and has a plugin ecosystem for routing logs to multiple destinations.</p>
+<div class="note">
+
+<p>At scale, the ELK stack itself becomes a distributed system that needs careful capacity planning. Elasticsearch clusters need proper shard sizing, retention policies, and index lifecycle management. Many teams underestimate the operational cost of running their own logging infrastructure, which is why managed services (Datadog, Splunk Cloud, AWS CloudWatch) are popular alternatives.</p>
+</div>
+
+
+<hr>
+<h2>Metrics Collection</h2>
+<h3>Prometheus Pull Model</h3>
+<p>Prometheus is the de facto standard for metrics collection in cloud-native systems. It uses a pull model: Prometheus scrapes metrics from application endpoints at regular intervals.</p>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Each service exposes a <code>/metrics</code> endpoint with current metric values in Prometheus format</li>
+<li>Prometheus server scrapes these endpoints every 15-30 seconds</li>
+<li>Metrics are stored in a time-series database optimized for numerical data</li>
+<li>PromQL (Prometheus Query Language) enables complex queries and aggregations</li>
+</ol>
+<p><strong>Pull vs Push:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Factor</th>
+<th>Pull (Prometheus)</th>
+<th>Push (StatsD, Datadog)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Discovery</td>
+<td>Prometheus needs to know targets</td>
+<td>Agents push to central collector</td>
+</tr>
+<tr>
+<td>Firewall</td>
+<td>Prometheus must reach all targets</td>
+<td>Only outbound from agents needed</td>
+</tr>
+<tr>
+<td>Health detection</td>
+<td>Scrape failure = target down</td>
+<td>Silence could mean many things</td>
+</tr>
+<tr>
+<td>Short-lived jobs</td>
+<td>May miss them between scrapes</td>
+<td>Can push before exiting</td>
+</tr>
+</tbody></table>
+<h3>Grafana Dashboards</h3>
+<p>Grafana is the standard visualization layer for Prometheus metrics. It provides:</p>
+<ul>
+<li>Real-time dashboards with customizable panels</li>
+<li>Support for multiple data sources (Prometheus, Elasticsearch, CloudWatch, etc.)</li>
+<li>Template variables for switching between services, regions, or environments</li>
+<li>Alert rules based on metric thresholds</li>
+</ul>
+<h3>RED Method</h3>
+<p>The RED method defines the three key metrics for request-driven services:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>What It Measures</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Rate</td>
+<td>Requests per second</td>
+<td>1,200 req/s</td>
+</tr>
+<tr>
+<td>Errors</td>
+<td>Failed requests per second</td>
+<td>3 errors/s (0.25% error rate)</td>
+</tr>
+<tr>
+<td>Duration</td>
+<td>Time per request (histogram)</td>
+<td>p50=12ms, p95=45ms, p99=120ms</td>
+</tr>
+</tbody></table>
+<p><strong>Use RED for:</strong> API servers, web servers, microservices -- anything that handles requests.</p>
+<h3>USE Method</h3>
+<p>The USE method defines three key metrics for resource-oriented components:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>What It Measures</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Utilization</td>
+<td>Percentage of resource busy</td>
+<td>CPU: 75% utilized</td>
+</tr>
+<tr>
+<td>Saturation</td>
+<td>Queue depth / backlog</td>
+<td>12 requests waiting in queue</td>
+</tr>
+<tr>
+<td>Errors</td>
+<td>Error events</td>
+<td>3 disk I/O errors</td>
+</tr>
+</tbody></table>
+<p><strong>Use USE for:</strong> Infrastructure components -- CPUs, memory, disks, network interfaces, database connections.</p>
+<div class="tip">
+
+<p>In interviews, mentioning RED and USE shows that you think methodically about monitoring. &quot;For our API services, I&#39;d track RED metrics. For the underlying infrastructure, I&#39;d track USE metrics. Together, they cover both the application and infrastructure layers.&quot;</p>
+</div>
+
+
+<hr>
+<h2>Alerting</h2>
+<p>Monitoring data is only useful if someone acts on it. Alerting bridges the gap between detection and response.</p>
+<h3>Alert Fatigue</h3>
+<p>The single biggest problem with alerting is alert fatigue: when teams receive so many alerts that they start ignoring them. A noisy alerting system is worse than no alerting because it desensitizes responders.</p>
+<p><strong>Causes of alert fatigue:</strong></p>
+<ul>
+<li>Alerting on raw metrics instead of meaningful symptoms</li>
+<li>Thresholds set too aggressively (alerting on CPU &gt; 50%)</li>
+<li>No deduplication (same issue generates dozens of alerts)</li>
+<li>Alerting on non-actionable conditions</li>
+<li>No severity levels (every alert is treated as critical)</li>
+</ul>
+<h3>Actionable Alerts</h3>
+<p>Every alert should pass the &quot;3 AM test&quot;: if this alert wakes someone up at 3 AM, is there something they can and should do right now?</p>
+<p><strong>Good alert:</strong> &quot;Payment success rate dropped below 99% in the last 5 minutes&quot; -- actionable, symptom-based, directly impacts users.</p>
+<p><strong>Bad alert:</strong> &quot;CPU usage on server-42 exceeded 80%&quot; -- not necessarily a problem, not directly tied to user impact, no clear action.</p>
+<h3>Alert Design Principles</h3>
+<table>
+<thead>
+<tr>
+<th>Principle</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Symptom-based</td>
+<td>Alert on user-facing symptoms (error rate, latency), not causes (CPU, memory)</td>
+</tr>
+<tr>
+<td>Actionable</td>
+<td>Every alert has a clear response action</td>
+</tr>
+<tr>
+<td>Tiered severity</td>
+<td>Page for critical, ticket for warning, log for informational</td>
+</tr>
+<tr>
+<td>Deduplicated</td>
+<td>Group related alerts into a single incident</td>
+</tr>
+<tr>
+<td>Time-windowed</td>
+<td>Use sustained conditions, not momentary spikes (e.g., &quot;error rate &gt; 1% for 5 minutes&quot;)</td>
+</tr>
+</tbody></table>
+<h3>PagerDuty Integration</h3>
+<p>PagerDuty (and similar tools like OpsGenie, VictorOps) manage the operational side of alerting:</p>
+<ul>
+<li>On-call schedules and rotation</li>
+<li>Escalation policies (if primary doesn&#39;t acknowledge in 5 minutes, escalate to secondary)</li>
+<li>Alert grouping and deduplication</li>
+<li>Incident timeline and communication</li>
+</ul>
+<hr>
+<h2>Health Checks</h2>
+<p>Health checks are endpoints that report whether a service is functioning correctly. They are the foundation of automated failure detection and recovery.</p>
+<h3>Liveness vs Readiness (Kubernetes Context)</h3>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Question It Answers</th>
+<th>Failure Action</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Liveness</td>
+<td>&quot;Is the process alive and not stuck?&quot;</td>
+<td>Kill and restart the container</td>
+</tr>
+<tr>
+<td>Readiness</td>
+<td>&quot;Can this instance handle traffic?&quot;</td>
+<td>Remove from load balancer, stop sending requests</td>
+</tr>
+</tbody></table>
+<p><strong>Liveness probe:</strong> Checks that the process hasn&#39;t deadlocked or entered an unrecoverable state. If a liveness probe fails repeatedly, Kubernetes kills the container and restarts it.</p>
+<p><strong>Readiness probe:</strong> Checks that the service is ready to accept traffic. A service might be alive but not ready if it&#39;s still loading a large cache, running database migrations, or warming up. If readiness fails, the service is removed from the Service endpoints -- it stops receiving traffic but isn&#39;t killed.</p>
+<p><strong>Example:</strong></p>
+<pre><code>GET /healthz       -&gt; Liveness (am I alive?)
+GET /readyz        -&gt; Readiness (can I serve traffic?)
+</code></pre>
+<p>A readiness probe might check:</p>
+<ul>
+<li>Database connection is established</li>
+<li>Required caches are warmed</li>
+<li>Dependent services are reachable</li>
+<li>Configuration is loaded</li>
+</ul>
+<div class="warning">
+
+<p>A common mistake is making liveness probes depend on external services. If your liveness probe checks the database and the database goes down, Kubernetes will kill all your application pods. Now you have two problems. Liveness probes should check only the process itself. Readiness probes should check external dependencies.</p>
+</div>
+
+
+<hr>
+<h2>Heartbeats</h2>
+<p>In distributed systems, heartbeats are periodic signals sent between nodes to indicate they are alive. When heartbeats stop, the system concludes the node has failed.</p>
+<p><strong>How heartbeats work:</strong></p>
+<ol>
+<li>Node A sends a heartbeat message to the coordinator every N seconds</li>
+<li>The coordinator tracks the last heartbeat time for each node</li>
+<li>If a node&#39;s heartbeat is not received within a timeout period (e.g., 3 missed heartbeats), the coordinator marks it as failed</li>
+<li>Failover procedures are initiated (reassign work, update routing)</li>
+</ol>
+<p><strong>Challenges:</strong></p>
+<ul>
+<li><strong>False positives:</strong> Network congestion can delay heartbeats, causing healthy nodes to be incorrectly marked as failed</li>
+<li><strong>Timeout tuning:</strong> Too short and you get false positives. Too long and real failures take too long to detect</li>
+<li><strong>Phi accrual failure detector:</strong> An adaptive approach that calculates a suspicion level based on historical heartbeat intervals, rather than using a fixed timeout. Used by Akka and Cassandra</li>
+</ul>
+<hr>
+<h2>Error Budgets</h2>
+<p>Error budgets, a concept from Google&#39;s SRE (Site Reliability Engineering) book, bridge the tension between reliability and feature velocity.</p>
+<h3>The Concept</h3>
+<p>If your SLO is 99.9% availability, then you have a 0.1% error budget per period. Over 30 days, that is approximately 43 minutes of allowed downtime or equivalent error volume.</p>
+<p><strong>Error budget = 1 - SLO</strong></p>
+<p>For a 99.9% SLO: error budget = 0.1%</p>
+<h3>How Error Budgets Work in Practice</h3>
+<ul>
+<li><strong>Budget remaining:</strong> Ship features, deploy aggressively, run experiments</li>
+<li><strong>Budget depleted:</strong> Freeze feature deployments, focus on reliability improvements</li>
+<li><strong>Budget nearly gone:</strong> Slow down deployments, increase testing rigor</li>
+</ul>
+<p>This creates a self-regulating system:</p>
+<ul>
+<li>If the service is very reliable, the team has budget to take risks (fast feature development)</li>
+<li>If the service is unreliable, the team must invest in reliability before shipping more features</li>
+<li>Product and engineering teams share a common metric instead of arguing about priorities</li>
+</ul>
+<h3>Example Calculation</h3>
+<table>
+<thead>
+<tr>
+<th>Month</th>
+<th>SLO</th>
+<th>Error Budget</th>
+<th>Errors Used</th>
+<th>Budget Remaining</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>January</td>
+<td>99.9%</td>
+<td>43.2 min</td>
+<td>10 min (deploy issues)</td>
+<td>33.2 min (76.8%)</td>
+</tr>
+<tr>
+<td>February</td>
+<td>99.9%</td>
+<td>43.2 min</td>
+<td>38 min (outage)</td>
+<td>5.2 min (12%)</td>
+</tr>
+<tr>
+<td>March</td>
+<td>99.9%</td>
+<td>43.2 min</td>
+<td>Budget exhausted</td>
+<td>Feature freeze</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>Error budgets are a great topic to bring up in interviews because they show you understand the organizational dynamics of reliability, not just the technical patterns. The key insight is that 100% reliability is the wrong target -- it&#39;s infinitely expensive and prevents feature development.</p>
+</div>
+
+
+<hr>
+<h2>Runbooks and Incident Management</h2>
+<h3>Runbooks</h3>
+<p>A runbook is a documented procedure for responding to a specific alert or incident type. It transforms incident response from ad-hoc heroics into a repeatable process.</p>
+<p><strong>A good runbook contains:</strong></p>
+<ol>
+<li><strong>Alert description:</strong> What triggered this alert and what it means</li>
+<li><strong>Impact assessment:</strong> What users are affected and how</li>
+<li><strong>Diagnostic steps:</strong> How to investigate and confirm the root cause</li>
+<li><strong>Remediation steps:</strong> How to fix the issue (step-by-step commands)</li>
+<li><strong>Escalation path:</strong> Who to contact if the runbook doesn&#39;t resolve the issue</li>
+<li><strong>Post-incident:</strong> What to document and follow up on</li>
+</ol>
+<h3>On-Call</h3>
+<p>On-call is the practice of having designated engineers available to respond to incidents outside business hours.</p>
+<p><strong>Healthy on-call practices:</strong></p>
+<ul>
+<li>Rotation schedules (weekly or daily rotation)</li>
+<li>Primary and secondary on-call</li>
+<li>Compensation for on-call burden</li>
+<li>Maximum alert frequency targets (e.g., fewer than 2 pages per on-call shift)</li>
+<li>Handoff procedures between rotations</li>
+</ul>
+<h3>Postmortems</h3>
+<p>After significant incidents, teams conduct postmortems to understand what happened and prevent recurrence.</p>
+<p><strong>Blameless culture:</strong> The postmortem focuses on systemic causes, not individual blame. &quot;The monitoring gap allowed the issue to go undetected for 30 minutes&quot; rather than &quot;John didn&#39;t check the dashboard.&quot;</p>
+<p><strong>Postmortem structure:</strong></p>
+<ol>
+<li>Timeline of events</li>
+<li>Root cause analysis</li>
+<li>Impact assessment (users affected, duration, revenue impact)</li>
+<li>What went well (detection, response, communication)</li>
+<li>What could be improved</li>
+<li>Action items with owners and deadlines</li>
+</ol>
+<hr>
+<h2>Observability vs Monitoring</h2>
+<p>This distinction is important and frequently tested in interviews.</p>
+<h3>Monitoring</h3>
+<p>Monitoring is checking predefined metrics against known thresholds. It answers questions you thought to ask in advance.</p>
+<p><strong>Monitoring answers:</strong> &quot;Is the error rate above 1%?&quot; &quot;Is CPU usage above 80%?&quot; &quot;Is the response time above 200ms?&quot;</p>
+<p>You set up dashboards and alerts for conditions you anticipate. Monitoring works well for known failure modes.</p>
+<h3>Observability</h3>
+<p>Observability is the ability to understand the internal state of a system by examining its external outputs (logs, metrics, traces). It lets you ask questions you didn&#39;t anticipate.</p>
+<p><strong>Observability answers:</strong> &quot;Why are users in Brazil experiencing 3x higher latency than users in the US?&quot; &quot;Why did error rates spike for 2 minutes at 3:47 AM on Tuesday?&quot; &quot;Which specific combination of request parameters triggers this intermittent timeout?&quot;</p>
+<h3>The Key Difference</h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Monitoring</th>
+<th>Observability</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Question type</td>
+<td>Known in advance</td>
+<td>Discovered during investigation</td>
+</tr>
+<tr>
+<td>Setup</td>
+<td>Define dashboards and alerts</td>
+<td>Instrument code to emit rich telemetry</td>
+</tr>
+<tr>
+<td>Failure modes</td>
+<td>Anticipated</td>
+<td>Novel, unexpected</td>
+</tr>
+<tr>
+<td>Cardinality</td>
+<td>Low (predefined dimensions)</td>
+<td>High (arbitrary dimensions)</td>
+</tr>
+<tr>
+<td>Cost</td>
+<td>Lower</td>
+<td>Higher (more data, more storage)</td>
+</tr>
+<tr>
+<td>Analogy</td>
+<td>Dashboard warning lights</td>
+<td>Diagnostic tools for a mechanic</td>
+</tr>
+</tbody></table>
+<div class="important">
+
+<p>A system can be monitored without being observable. If you only track aggregate error rates, you can detect that errors increased, but you can&#39;t determine which users, endpoints, or parameters are affected without high-cardinality observability data. In a microservices architecture, observability (especially distributed tracing) is essential, not optional.</p>
+</div>
+
+
+<h3>Building Observable Systems</h3>
+<p><strong>Key practices:</strong></p>
+<ul>
+<li>Emit structured logs with high-cardinality fields (user ID, request ID, feature flag state)</li>
+<li>Record metrics with useful labels (endpoint, status code, region, version)</li>
+<li>Implement distributed tracing across all service boundaries</li>
+<li>Use correlation IDs that tie logs, metrics, and traces together</li>
+<li>Make telemetry a first-class concern in code reviews</li>
+</ul>
+<hr>
+<h2>Designing a Monitoring Stack: End-to-End Example</h2>
+<p>To tie everything together, here is how a mature monitoring stack looks for a microservices architecture serving millions of users.</p>
+<h3>The Full Pipeline</h3>
+<pre class="mermaid">
+flowchart TD
+    subgraph Application Layer
+        S1[Service A] --> |Logs| FB[Filebeat/Fluentd]
+        S1 --> |Metrics| PE[Prometheus Exporter /metrics]
+        S1 --> |Traces| OT[OpenTelemetry SDK]
+
+        S2[Service B] --> |Logs| FB
+        S2 --> |Metrics| PE
+        S2 --> |Traces| OT
+    end
+
+    subgraph Collection Layer
+        FB --> LS[Logstash / Fluentd Aggregator]
+        PE --> PM[Prometheus Server]
+        OT --> TC[Trace Collector - Jaeger / Tempo]
+    end
+
+    subgraph Storage Layer
+        LS --> ES[(Elasticsearch)]
+        PM --> TS[(Time-Series DB - Prometheus TSDB)]
+        TC --> TR[(Trace Store - Jaeger / Tempo)]
+    end
+
+    subgraph Visualization and Action
+        ES --> KB[Kibana - Log Exploration]
+        TS --> GR[Grafana - Dashboards]
+        TR --> GR
+        GR --> AL[Alert Manager]
+        AL --> PD[PagerDuty / OpsGenie]
+    end
+
+    style ES fill:#c8e6c9,stroke:#2e7d32
+    style TS fill:#bbdefb,stroke:#1565c0
+    style TR fill:#fff9c4,stroke:#f9a825
+</pre>
+<h3>What Gets Measured</h3>
+<table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>Collection Method</th>
+<th>Storage</th>
+<th>Retention</th>
+<th>Cost</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Application logs</td>
+<td>Filebeat -&gt; Logstash -&gt; Elasticsearch</td>
+<td>Elasticsearch</td>
+<td>30 days hot, 90 days warm, 1 year cold</td>
+<td>High</td>
+</tr>
+<tr>
+<td>Metrics</td>
+<td>Prometheus scrape</td>
+<td>Prometheus TSDB / Thanos</td>
+<td>15 days local, 1 year long-term</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Traces</td>
+<td>OpenTelemetry -&gt; Jaeger</td>
+<td>Jaeger / Tempo</td>
+<td>7-14 days (sampling)</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Access logs</td>
+<td>Load balancer -&gt; S3</td>
+<td>S3 / Athena</td>
+<td>1 year</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Audit logs</td>
+<td>Application -&gt; dedicated store</td>
+<td>Immutable store</td>
+<td>7 years (compliance)</td>
+<td>Low</td>
+</tr>
+</tbody></table>
+<h3>Sampling Strategies for Traces</h3>
+<p>At high traffic volumes, collecting every trace is prohibitively expensive. Sampling strategies reduce volume while preserving useful data:</p>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Description</th>
+<th>Tradeoff</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Head-based sampling</td>
+<td>Decide at the start whether to trace this request (e.g., 1 in 100)</td>
+<td>Simple but might miss interesting traces</td>
+</tr>
+<tr>
+<td>Tail-based sampling</td>
+<td>Collect all spans, decide after the request completes whether to keep the trace</td>
+<td>Captures errors and slow requests, but requires buffering</td>
+</tr>
+<tr>
+<td>Error-based sampling</td>
+<td>Always keep traces that contain errors</td>
+<td>Guarantees visibility into failures</td>
+</tr>
+<tr>
+<td>Adaptive sampling</td>
+<td>Adjust sampling rate based on traffic volume</td>
+<td>Consistent cost regardless of load</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>A common production setup uses a combination: 1% head-based sampling for normal traffic, plus 100% sampling for errors and requests exceeding the latency SLO. This captures the interesting traces while keeping costs manageable.</p>
+</div>
+
+
+<h3>Dashboards: The Four Golden Signals</h3>
+<p>Google&#39;s SRE book defines four golden signals that every service dashboard should display:</p>
+<table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>What It Measures</th>
+<th>Metric Type</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Latency</td>
+<td>Time to serve a request</td>
+<td>Histogram (p50, p95, p99)</td>
+</tr>
+<tr>
+<td>Traffic</td>
+<td>Demand on the system</td>
+<td>Counter (requests/second)</td>
+</tr>
+<tr>
+<td>Errors</td>
+<td>Rate of failed requests</td>
+<td>Counter (errors/second, error percentage)</td>
+</tr>
+<tr>
+<td>Saturation</td>
+<td>How &quot;full&quot; the service is</td>
+<td>Gauge (CPU, memory, queue depth)</td>
+</tr>
+</tbody></table>
+<p>These four signals cover both the RED method (latency, traffic, errors) and the USE method (saturation), providing a comprehensive view.</p>
+<h3>Cost Management</h3>
+<p>Observability data is expensive at scale. A few strategies to manage costs:</p>
+<ul>
+<li><strong>Log levels:</strong> Use INFO for production, DEBUG only when investigating. A single service at DEBUG can generate 10x the log volume.</li>
+<li><strong>Metric cardinality:</strong> Avoid labels with unbounded values (user IDs, request IDs as metric labels). High cardinality explodes storage and query time.</li>
+<li><strong>Trace sampling:</strong> Sample 1-10% of traces in production. Always sample errors and slow requests at 100%.</li>
+<li><strong>Retention tiers:</strong> Hot storage (fast queries, expensive) for recent data. Warm/cold storage (slow queries, cheap) for older data.</li>
+<li><strong>Aggregation:</strong> Pre-aggregate high-volume metrics. Instead of storing every request latency, store 1-minute histograms.</li>
+</ul>
+<hr>
+<h2>Interview Cheat Sheet</h2>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>One-Liner</th>
+<th>When to Mention</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>SLI</td>
+<td>Measured metric (latency, error rate)</td>
+<td>Defining success criteria</td>
+</tr>
+<tr>
+<td>SLO</td>
+<td>Target for the metric (p99 &lt; 200ms)</td>
+<td>Setting engineering goals</td>
+</tr>
+<tr>
+<td>SLA</td>
+<td>Contract with penalties</td>
+<td>Business requirements</td>
+</tr>
+<tr>
+<td>Logs</td>
+<td>Timestamped event records</td>
+<td>Debugging specific issues</td>
+</tr>
+<tr>
+<td>Metrics</td>
+<td>Aggregated numerical measurements</td>
+<td>Trend detection, dashboards</td>
+</tr>
+<tr>
+<td>Traces</td>
+<td>Request journey across services</td>
+<td>Microservices debugging</td>
+</tr>
+<tr>
+<td>Distributed tracing</td>
+<td>Trace ID propagation through service calls</td>
+<td>Any multi-service architecture</td>
+</tr>
+<tr>
+<td>Structured logging</td>
+<td>JSON logs with searchable fields</td>
+<td>Log pipeline design</td>
+</tr>
+<tr>
+<td>ELK stack</td>
+<td>Elasticsearch + Logstash + Kibana</td>
+<td>Logging infrastructure</td>
+</tr>
+<tr>
+<td>Prometheus</td>
+<td>Pull-based metrics collection</td>
+<td>Metrics pipeline</td>
+</tr>
+<tr>
+<td>RED method</td>
+<td>Rate, Errors, Duration for services</td>
+<td>Monitoring request-driven services</td>
+</tr>
+<tr>
+<td>USE method</td>
+<td>Utilization, Saturation, Errors for resources</td>
+<td>Monitoring infrastructure</td>
+</tr>
+<tr>
+<td>Alert fatigue</td>
+<td>Too many alerts = ignored alerts</td>
+<td>Alerting strategy</td>
+</tr>
+<tr>
+<td>Liveness probe</td>
+<td>&quot;Is the process alive?&quot;</td>
+<td>Kubernetes health checks</td>
+</tr>
+<tr>
+<td>Readiness probe</td>
+<td>&quot;Can it serve traffic?&quot;</td>
+<td>Kubernetes health checks</td>
+</tr>
+<tr>
+<td>Error budgets</td>
+<td>1 - SLO = room for risk</td>
+<td>Reliability vs velocity tradeoff</td>
+</tr>
+<tr>
+<td>Blameless postmortems</td>
+<td>Fix systems, not blame people</td>
+<td>Incident management culture</td>
+</tr>
+<tr>
+<td>Observability</td>
+<td>Ask unknown questions about system state</td>
+<td>Distinguishing from monitoring</td>
+</tr>
+<tr>
+<td>OpenTelemetry</td>
+<td>Vendor-neutral instrumentation standard</td>
+<td>Telemetry strategy</td>
+</tr>
+</tbody></table>
+<p><strong>Key interview phrases:</strong></p>
+<ul>
+<li>&quot;I&#39;d define SLIs for latency and error rate, set SLOs at the 99.9th percentile, and build dashboards tracking our error budget.&quot;</li>
+<li>&quot;We need the three pillars: structured logs for debugging, Prometheus metrics for dashboards and alerting, and distributed tracing for cross-service investigation.&quot;</li>
+<li>&quot;Alerts should be symptom-based and pass the 3 AM test -- if it wakes someone up, there must be a clear action to take.&quot;</li>
+<li>&quot;Liveness probes check the process itself; readiness probes check external dependencies. Never make liveness depend on the database.&quot;</li>
+<li>&quot;Error budgets give us a shared framework: when the budget is healthy, we ship fast. When it&#39;s depleted, we invest in reliability.&quot;</li>
+<li>&quot;Monitoring tells you that something is broken. Observability helps you figure out why.&quot;</li>
+</ul>
+
+</body>
+</html>

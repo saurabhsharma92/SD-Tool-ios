@@ -27,6 +27,7 @@ struct ValidationResultView: View {
                     scoreBadge
                     fallbackBanners
                     if !result.passed { gapCard }
+                    if !result.namingWarnings.isEmpty { namingWarningsCard }
                     feedbackCard
                     actionButtons
                 }
@@ -156,6 +157,35 @@ struct ValidationResultView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Naming warnings card
+
+    private var sortedNamingWarnings: [(key: String, value: String)] {
+        result.namingWarnings.sorted { $0.key < $1.key }
+    }
+
+    private var namingWarningsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Component Naming", systemImage: "tag.fill")
+                .font(.headline)
+                .foregroundStyle(.blue)
+
+            ForEach(sortedNamingWarnings, id: \.key) { item in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\u{201C}\(item.key)\u{201D}")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(item.value)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(Color.blue.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
     // MARK: - Feedback card

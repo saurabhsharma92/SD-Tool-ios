@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Data Structures for System Design</title>
+</head>
+<body>
+
+<h1>Data Structures for System Design</h1>
+<h2>Introduction</h2>
+<p>System design interviews are not just about drawing boxes and arrows. The data structures underlying those boxes often determine whether a system can scale to millions of users or collapses under the weight of its own data. Most candidates know arrays, hash maps, and trees from coding interviews. Far fewer understand the probabilistic and specialized data structures that power real-world systems at scale.</p>
+<p>This article covers the data structures that appear most frequently in system design discussions. These are not theoretical curiosities -- they are the building blocks of production systems at companies like Google, Facebook, Redis, and Uber. Understanding when and why to reach for each one will set you apart in interviews.</p>
+<div class="note">
+
+<p>Several of these data structures trade exactness for efficiency. Bloom filters, HyperLogLog, and Count-Min Sketch all provide approximate answers using a fraction of the memory that exact solutions would require. Understanding this tradeoff -- and when it is acceptable -- is a key system design skill.</p>
+</div>
+
+
+<hr>
+<h2>Bloom Filters</h2>
+<p>A Bloom filter is a space-efficient probabilistic data structure that answers the question: &quot;Is this element in the set?&quot; It can tell you &quot;definitely not in the set&quot; or &quot;probably in the set&quot; -- but never gives a false negative.</p>
+<h3>How It Works</h3>
+<p>A Bloom filter consists of:</p>
+<ul>
+<li>A bit array of <code>m</code> bits, all initialized to 0</li>
+<li><code>k</code> independent hash functions, each mapping an element to one of the <code>m</code> bit positions</li>
+</ul>
+<p><strong>Insertion:</strong></p>
+<ol>
+<li>Take the element and compute <code>k</code> hash values</li>
+<li>Set the bit at each of the <code>k</code> positions to 1</li>
+</ol>
+<p><strong>Lookup:</strong></p>
+<ol>
+<li>Take the query element and compute the same <code>k</code> hash values</li>
+<li>Check the bit at each of the <code>k</code> positions</li>
+<li>If ALL bits are 1, the element is &quot;probably in the set&quot;</li>
+<li>If ANY bit is 0, the element is &quot;definitely not in the set&quot;</li>
+</ol>
+<pre class="mermaid">
+flowchart TD
+    subgraph "Bloom Filter: m=16 bits, k=3 hash functions"
+        direction TB
+        Insert["Insert 'apple'"]
+        H1["h1('apple') = 2"]
+        H2["h2('apple') = 7"]
+        H3["h3('apple') = 13"]
+
+        Insert --> H1
+        Insert --> H2
+        Insert --> H3
+
+        subgraph BitArray ["Bit Array"]
+            B0["0"] --- B1["0"] --- B2["1"] --- B3["0"] --- B4["0"] --- B5["0"] --- B6["0"] --- B7["1"] --- B8["0"] --- B9["0"] --- B10["0"] --- B11["0"] --- B12["0"] --- B13["1"] --- B14["0"] --- B15["0"]
+        end
+
+        H1 --> B2
+        H2 --> B7
+        H3 --> B13
+    end
+
+    style B2 fill:#c8e6c9,stroke:#2e7d32
+    style B7 fill:#c8e6c9,stroke:#2e7d32
+    style B13 fill:#c8e6c9,stroke:#2e7d32
+</pre>
+<h3>Why No False Negatives</h3>
+<p>If an element was inserted, all <code>k</code> bits corresponding to its hash values were set to 1. During lookup, all <code>k</code> bits will still be 1 (bits are never reset to 0 in a standard Bloom filter). Therefore, an inserted element will never be reported as absent.</p>
+<h3>Why False Positives Occur</h3>
+<p>Different elements can hash to the same bit positions. Over time, as more elements are inserted, more bits are set to 1. A query element might find all <code>k</code> of its bit positions already set to 1 by other elements, even though it was never inserted itself.</p>
+<h3>False Positive Rate</h3>
+<p>The false positive probability is approximately:</p>
+<pre><code>p = (1 - e^(-kn/m))^k
+</code></pre>
+<p>Where:</p>
+<ul>
+<li><code>m</code> = number of bits in the array</li>
+<li><code>k</code> = number of hash functions</li>
+<li><code>n</code> = number of elements inserted</li>
+</ul>
+<p><strong>Practical sizing:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Elements (n)</th>
+<th>Bits (m)</th>
+<th>Hash Functions (k)</th>
+<th>False Positive Rate</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1 million</td>
+<td>9.6 MB</td>
+<td>7</td>
+<td>1%</td>
+</tr>
+<tr>
+<td>1 million</td>
+<td>14.4 MB</td>
+<td>10</td>
+<td>0.1%</td>
+</tr>
+<tr>
+<td>10 million</td>
+<td>96 MB</td>
+<td>7</td>
+<td>1%</td>
+</tr>
+<tr>
+<td>100 million</td>
+<td>960 MB</td>
+<td>7</td>
+<td>1%</td>
+</tr>
+</tbody></table>
+<p>Compare this to storing 100 million URLs (average 50 bytes each) in a hash set: approximately 5 GB plus overhead. A Bloom filter with 1% false positive rate uses under 1 GB for the same task.</p>
+<h3>Use Cases in System Design</h3>
+<table>
+<thead>
+<tr>
+<th>Use Case</th>
+<th>How It Helps</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Web crawler: &quot;Have we crawled this URL?&quot;</td>
+<td>Avoid re-crawling billions of URLs. False positive means skipping a URL (minor loss). False negative would mean crawling twice.</td>
+</tr>
+<tr>
+<td>Cache: &quot;Is this key in the cache?&quot;</td>
+<td>Check the Bloom filter before querying the cache server. Avoids cache misses hitting the database for keys that were never cached.</td>
+</tr>
+<tr>
+<td>Database: &quot;Might this SSTable contain this key?&quot;</td>
+<td>LSM-tree databases (Cassandra, LevelDB) use Bloom filters on each SSTable to skip files that definitely don&#39;t contain a key.</td>
+</tr>
+<tr>
+<td>Spam filter: &quot;Have we seen this email before?&quot;</td>
+<td>Check against a set of known spam signatures.</td>
+</tr>
+<tr>
+<td>Weak password check: &quot;Is this password in our breached passwords list?&quot;</td>
+<td>Check against billions of known breached passwords without storing them all.</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>In interviews, Bloom filters are the answer whenever you hear &quot;check if something exists in a very large set&quot; and approximate answers are acceptable. The key phrase is: &quot;We can use a Bloom filter to avoid unnecessary lookups -- it has no false negatives, so if it says &#39;not present,&#39; we can trust it completely.&quot;</p>
+</div>
+
+
+<hr>
+<h2>HyperLogLog</h2>
+<p>HyperLogLog (HLL) is a probabilistic data structure for estimating the cardinality (count of distinct elements) of a set. It can count billions of unique items using only about 12 KB of memory.</p>
+<h3>The Core Insight</h3>
+<p>Consider hashing elements to binary strings. For a random hash, the probability of seeing a binary string that starts with <code>n</code> leading zeros is <code>1/2^n</code>. If you observe a hash starting with 5 leading zeros, you likely hashed about <code>2^5 = 32</code> distinct elements.</p>
+<p>This is the intuition behind HyperLogLog: track the maximum number of leading zeros seen across all hashed elements, and use that to estimate the cardinality.</p>
+<h3>How It Works</h3>
+<ol>
+<li><strong>Hash each element</strong> to a fixed-length binary string</li>
+<li><strong>Divide elements into buckets</strong> using the first few bits of the hash (e.g., first 14 bits = 16,384 buckets)</li>
+<li><strong>For each bucket</strong>, track the maximum number of leading zeros in the remaining bits</li>
+<li><strong>Estimate cardinality</strong> by computing the harmonic mean of the estimates from all buckets</li>
+</ol>
+<p>Using multiple buckets (instead of a single counter) dramatically reduces variance. With 16,384 buckets, HyperLogLog achieves a standard error of about 0.81%.</p>
+<h3>Memory Usage</h3>
+<ul>
+<li>16,384 buckets x 6 bits per bucket = 12 KB</li>
+<li>This is constant regardless of the actual cardinality</li>
+<li>You can count billions of unique elements with 12 KB</li>
+</ul>
+<h3>Redis Implementation</h3>
+<p>Redis provides native HyperLogLog support:</p>
+<pre><code>PFADD visitors &quot;user_123&quot;    # Add element
+PFADD visitors &quot;user_456&quot;    # Add another
+PFCOUNT visitors             # Get approximate count: 2
+PFMERGE total visitors_us visitors_eu  # Merge multiple HLLs
+</code></pre>
+<p><strong>Key property:</strong> HyperLogLogs can be merged. If you track unique visitors per region, you can merge them to get global unique visitors without double-counting users who visited from multiple regions.</p>
+<h3>Use Cases</h3>
+<table>
+<thead>
+<tr>
+<th>Use Case</th>
+<th>Why HLL</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Unique website visitors per day</td>
+<td>Exact count would require storing all visitor IDs. HLL uses 12 KB.</td>
+</tr>
+<tr>
+<td>Unique search queries</td>
+<td>Counting distinct queries across billions of searches</td>
+</tr>
+<tr>
+<td>Unique IP addresses</td>
+<td>Network security: how many distinct IPs contacted a server</td>
+</tr>
+<tr>
+<td>Social media: unique post viewers</td>
+<td>Count distinct viewers of a viral post without storing all viewer IDs</td>
+</tr>
+</tbody></table>
+<div class="important">
+
+<p>HyperLogLog cannot tell you which elements are in the set -- only how many distinct elements there are. If you need to check membership, use a Bloom filter. If you need to count distinct elements, use HyperLogLog. They solve different problems.</p>
+</div>
+
+
+<hr>
+<h2>Count-Min Sketch</h2>
+<p>A Count-Min Sketch estimates the frequency of elements in a stream. Given an element, it answers &quot;approximately how many times has this element appeared?&quot; using sub-linear space.</p>
+<h3>How It Works</h3>
+<p>A Count-Min Sketch consists of:</p>
+<ul>
+<li>A 2D array with <code>d</code> rows and <code>w</code> columns, initialized to zeros</li>
+<li><code>d</code> independent hash functions, one per row</li>
+</ul>
+<p><strong>Adding an element:</strong></p>
+<ol>
+<li>For each row <code>i</code>, compute <code>h_i(element) mod w</code> to get a column index</li>
+<li>Increment the counter at position <code>[i, column_index]</code></li>
+</ol>
+<p><strong>Querying frequency:</strong></p>
+<ol>
+<li>For each row <code>i</code>, compute the same hash to get the column index</li>
+<li>Read the counter at position <code>[i, column_index]</code></li>
+<li>Return the MINIMUM of all <code>d</code> counters</li>
+</ol>
+<p><strong>Why minimum?</strong> Hash collisions cause counters to be over-counted (other elements hash to the same position and inflate the count). Taking the minimum across all rows minimizes the impact of collisions, since it&#39;s unlikely that the same colliding elements appear in all rows.</p>
+<h3>Properties</h3>
+<ul>
+<li><strong>Over-estimates only:</strong> The sketch never under-counts an element&#39;s frequency. The true count is always less than or equal to the estimate.</li>
+<li><strong>No deletions:</strong> Standard Count-Min Sketch doesn&#39;t support removing elements (though Count-Min-Log variants do)</li>
+<li><strong>Mergeable:</strong> Two sketches with the same dimensions can be merged by adding corresponding counters</li>
+</ul>
+<h3>Use Cases</h3>
+<table>
+<thead>
+<tr>
+<th>Use Case</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Heavy hitters / Top-K</td>
+<td>Find the most frequently accessed items (popular products, trending hashtags)</td>
+</tr>
+<tr>
+<td>Network traffic analysis</td>
+<td>Identify IP addresses generating the most traffic</td>
+</tr>
+<tr>
+<td>Database query optimization</td>
+<td>Track query frequency to decide what to cache</td>
+</tr>
+<tr>
+<td>Advertising: click counting</td>
+<td>Count clicks per ad across billions of events</td>
+</tr>
+<tr>
+<td>Rate limiting</td>
+<td>Track per-user request counts without storing a counter per user</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>Count-Min Sketch is your answer when an interviewer asks about &quot;finding the top K items in a stream&quot; or &quot;tracking frequency of events.&quot; Pair it with a min-heap of size K: for each element, query the sketch for its estimated frequency, and maintain a heap of the K highest frequencies.</p>
+</div>
+
+
+<hr>
+<h2>Geohashing</h2>
+<p>Geohashing encodes a geographic coordinate (latitude, longitude) into a short string that represents a rectangular area on the Earth&#39;s surface. It is the backbone of location-based search in system design.</p>
+<h3>How It Works</h3>
+<ol>
+<li>Start with the entire world: latitude [-90, 90], longitude [-180, 180]</li>
+<li>Divide longitude range in half. If the longitude falls in the left half, append &#39;0&#39;. If right, append &#39;1&#39;.</li>
+<li>Divide latitude range in half. Same logic.</li>
+<li>Alternate between longitude and latitude bits</li>
+<li>Each additional bit doubles the precision (halves the area)</li>
+<li>Convert the binary string to Base32 for a human-readable geohash</li>
+</ol>
+<p><strong>Example:</strong> The coordinate (37.7749, -122.4194) -- San Francisco -- encodes to the geohash <code>9q8yyk</code>.</p>
+<h3>Precision Levels</h3>
+<table>
+<thead>
+<tr>
+<th>Geohash Length</th>
+<th>Cell Dimensions</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>~5000 km x 5000 km</td>
+<td>Continental</td>
+</tr>
+<tr>
+<td>3</td>
+<td>~156 km x 156 km</td>
+<td>Region / State</td>
+</tr>
+<tr>
+<td>5</td>
+<td>~4.9 km x 4.9 km</td>
+<td>City neighborhood</td>
+</tr>
+<tr>
+<td>6</td>
+<td>~1.2 km x 0.6 km</td>
+<td>Several city blocks</td>
+</tr>
+<tr>
+<td>7</td>
+<td>~153 m x 153 m</td>
+<td>Street level</td>
+</tr>
+<tr>
+<td>8</td>
+<td>~38 m x 19 m</td>
+<td>Building level</td>
+</tr>
+<tr>
+<td>9</td>
+<td>~4.8 m x 4.8 m</td>
+<td>Room level</td>
+</tr>
+</tbody></table>
+<h3>Key Property: Prefix Sharing</h3>
+<p>Points that are geographically close share a common prefix. All locations in downtown San Francisco might start with <code>9q8yy</code>. This enables:</p>
+<ul>
+<li><strong>Proximity search via prefix query:</strong> To find all restaurants near a location, compute the geohash and search for entries sharing the same prefix using a database index</li>
+<li><strong>Efficient storage:</strong> Store geohashes as strings in any database and use prefix queries (LIKE &#39;9q8yy%&#39; or range scans)</li>
+<li><strong>Sharding by prefix:</strong> Distribute location data across shards based on geohash prefixes</li>
+</ul>
+<h3>Edge Cases and Limitations</h3>
+<p><strong>Boundary problem:</strong> Two points can be physically adjacent but have completely different geohashes if they fall on opposite sides of a cell boundary. To handle this, always search the target cell AND its 8 neighboring cells.</p>
+<p><strong>Non-uniform cell sizes:</strong> Geohash cells are not equal area -- they are taller near the equator and shorter near the poles. This is usually acceptable for practical applications.</p>
+<div class="note">
+
+<p>Geohashing is not the only approach to spatial indexing. Quadtrees (covered next) and S2 geometry (used by Google) are alternatives. Geohashing&#39;s strength is simplicity: it works with any database that supports string indexing and range queries. Quadtrees offer better precision for point queries. S2 provides uniform cell sizes on a sphere.</p>
+</div>
+
+
+<hr>
+<h2>Quadtrees</h2>
+<p>A quadtree is a tree data structure that recursively divides a 2D space into four quadrants. It is used for efficient spatial queries, most famously for finding nearby points (like drivers in a ride-sharing app).</p>
+<h3>How It Works</h3>
+<pre class="mermaid">
+flowchart TD
+    Root["Root: Entire Map Area<br/>Contains: 45 drivers"] --> NW["NW Quadrant<br/>12 drivers"]
+    Root --> NE["NE Quadrant<br/>8 drivers"]
+    Root --> SW["SW Quadrant<br/>22 drivers"]
+    Root --> SE["SE Quadrant<br/>3 drivers"]
+
+    SW --> SWNW["SW-NW<br/>5 drivers"]
+    SW --> SWNE["SW-NE<br/>9 drivers"]
+    SW --> SWSW["SW-SW<br/>4 drivers"]
+    SW --> SWSE["SW-SE<br/>4 drivers"]
+
+    SWNE --> SWNENW["SW-NE-NW<br/>2 drivers"]
+    SWNE --> SWNENE["SW-NE-NE<br/>3 drivers"]
+    SWNE --> SWNESW["SW-NE-SW<br/>1 driver"]
+    SWNE --> SWNESE["SW-NE-SE<br/>3 drivers"]
+
+    style Root fill:#e3f2fd,stroke:#1565c0
+    style SW fill:#fff3e0,stroke:#e65100
+    style SWNE fill:#fce4ec,stroke:#c62828
+</pre>
+<ol>
+<li>Start with the entire geographic area as the root node</li>
+<li>Set a capacity threshold (e.g., max 10 points per cell)</li>
+<li>When a cell exceeds the threshold, split it into four equal quadrants</li>
+<li>Recursively split any child that exceeds the threshold</li>
+<li>Leaf nodes contain the actual point data</li>
+</ol>
+<h3>Types of Quadtrees</h3>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Description</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Point quadtree</td>
+<td>Each node stores a single point, children represent quadrants around that point</td>
+<td>Exact point location</td>
+</tr>
+<tr>
+<td>Region quadtree</td>
+<td>Regular subdivision of space, points stored in leaves</td>
+<td>Area-based queries</td>
+</tr>
+<tr>
+<td>PR quadtree (Point-Region)</td>
+<td>Hybrid: region subdivision, but with a bucket capacity per leaf</td>
+<td>Most common for spatial search</td>
+</tr>
+</tbody></table>
+<h3>How Uber Uses Quadtrees</h3>
+<p>When a rider requests a ride, the system needs to find the nearest available drivers:</p>
+<ol>
+<li>The quadtree covers the service area (a city)</li>
+<li>Each leaf node contains a list of driver locations (updated as drivers move)</li>
+<li>When a rider requests a ride at location (lat, lng):<ul>
+<li>Traverse the tree to find the leaf containing the rider&#39;s location</li>
+<li>Search that leaf for nearby drivers</li>
+<li>If not enough drivers, expand to neighboring cells (parent&#39;s siblings)</li>
+<li>Return the K nearest drivers</li>
+</ul>
+</li>
+</ol>
+<p><strong>Dynamic updates:</strong> Drivers send location updates every few seconds. The quadtree must handle frequent insertions and deletions as drivers move between cells.</p>
+<h3>Quadtree vs Geohash</h3>
+<table>
+<thead>
+<tr>
+<th>Factor</th>
+<th>Quadtree</th>
+<th>Geohash</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Precision</td>
+<td>Adaptive (denser areas get finer subdivision)</td>
+<td>Fixed precision per string length</td>
+</tr>
+<tr>
+<td>Implementation</td>
+<td>Custom tree structure, in-memory</td>
+<td>Simple string, works with any DB</td>
+</tr>
+<tr>
+<td>Dynamic data</td>
+<td>Good (insert/delete in O(log n))</td>
+<td>Requires re-indexing</td>
+</tr>
+<tr>
+<td>Range queries</td>
+<td>Natural tree traversal</td>
+<td>Prefix-based range scan</td>
+</tr>
+<tr>
+<td>Distribution</td>
+<td>Better for non-uniform distributions</td>
+<td>Simpler for uniform data</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>In interviews for ride-sharing or delivery systems, quadtrees are the expected data structure for &quot;find nearby drivers/restaurants.&quot; Mention that the quadtree adapts to density: a busy downtown area gets subdivided into many small cells, while a rural area stays as one large cell. This adaptive precision is the key advantage over fixed-precision geohashes.</p>
+</div>
+
+
+<hr>
+<h2>Tries (Prefix Trees)</h2>
+<p>A trie (pronounced &quot;try&quot;) is a tree data structure where each node represents a single character, and paths from root to leaf spell out stored strings. Tries excel at prefix-based operations.</p>
+<h3>Structure</h3>
+<p>Each node in a trie contains:</p>
+<ul>
+<li>A character (or is implicitly defined by the edge from its parent)</li>
+<li>A flag indicating whether this node marks the end of a complete word</li>
+<li>Child pointers (typically a hash map or array of size 26 for lowercase English)</li>
+</ul>
+<p><strong>Example trie containing: &quot;cat&quot;, &quot;car&quot;, &quot;card&quot;, &quot;care&quot;, &quot;do&quot;, &quot;dog&quot;</strong></p>
+<pre><code>        root
+       /    \
+      c      d
+      |      |
+      a      o
+     / \      \
+    t   r      g
+       / \
+      d   e
+</code></pre>
+<h3>Operations and Time Complexity</h3>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Time Complexity</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Insert</td>
+<td>O(L)</td>
+<td>L = length of the string</td>
+</tr>
+<tr>
+<td>Search</td>
+<td>O(L)</td>
+<td>Check if exact string exists</td>
+</tr>
+<tr>
+<td>Prefix search</td>
+<td>O(P + K)</td>
+<td>P = prefix length, K = number of results</td>
+</tr>
+<tr>
+<td>Delete</td>
+<td>O(L)</td>
+<td>Remove a string</td>
+</tr>
+</tbody></table>
+<h3>Use Cases in System Design</h3>
+<p><strong>Autocomplete / Typeahead:</strong>
+As the user types each character, traverse the trie to the current prefix node and return all words in that subtree. This is O(prefix_length) to find the node, then a bounded traversal for suggestions.</p>
+<p>For production autocomplete, each node also stores:</p>
+<ul>
+<li>Frequency/popularity score (to rank suggestions)</li>
+<li>Top-K cached suggestions (precomputed for common prefixes)</li>
+</ul>
+<p><strong>IP Routing (Longest Prefix Match):</strong>
+Routers use tries to find the most specific matching route for an IP address. Each node represents a bit of the IP address, and the longest matching prefix determines the routing decision.</p>
+<p><strong>Spell Checkers:</strong>
+Store a dictionary in a trie. For a misspelled word, find the closest matches by traversing the trie with edit distance tolerance.</p>
+<div class="note">
+
+<p>In practice, compressed tries (radix trees or Patricia tries) are preferred. They collapse single-child chains into single nodes, dramatically reducing memory usage. For example, if no other word starts with &quot;ca&quot; except &quot;cat&quot;, &quot;car&quot;, &quot;card&quot;, &quot;care&quot;, the &quot;c&quot; and &quot;a&quot; nodes are merged into a single &quot;ca&quot; node.</p>
+</div>
+
+
+<hr>
+<h2>Skip Lists</h2>
+<p>A skip list is a probabilistic data structure that provides O(log n) search, insert, and delete operations -- similar to a balanced binary search tree -- but with a much simpler implementation.</p>
+<h3>How It Works</h3>
+<p>A skip list starts with a sorted linked list (the base level). Additional levels are added probabilistically: each element has a 50% chance of being &quot;promoted&quot; to the next level. Higher levels act as express lanes for faster traversal.</p>
+<pre><code>Level 3:  HEAD ---------------------------------&gt; 50 ---------&gt; NIL
+Level 2:  HEAD --------&gt; 20 --------------------&gt; 50 ---------&gt; NIL
+Level 1:  HEAD --------&gt; 20 --------&gt; 35 -------&gt; 50 --&gt; 60 --&gt; NIL
+Level 0:  HEAD -&gt; 10 --&gt; 20 --&gt; 25 --&gt; 35 --&gt; 42 -&gt; 50 --&gt; 60 --&gt; NIL
+</code></pre>
+<p><strong>Search for 35:</strong></p>
+<ol>
+<li>Start at Level 3, HEAD. Next is 50 (too big). Drop to Level 2.</li>
+<li>At Level 2, HEAD. Next is 20 (less than 35, advance). Next is 50 (too big). Drop to Level 1.</li>
+<li>At Level 1, at 20. Next is 35 (found!).</li>
+</ol>
+<p>Total comparisons: 4 instead of 5 (linear scan of base level).</p>
+<h3>Why Redis Uses Skip Lists</h3>
+<p>Redis sorted sets (ZSET) use skip lists internally instead of balanced BSTs. The reasons:</p>
+<table>
+<thead>
+<tr>
+<th>Factor</th>
+<th>Skip List</th>
+<th>Balanced BST (e.g., Red-Black Tree)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Implementation</td>
+<td>Simple (linked list + randomization)</td>
+<td>Complex (rotation logic)</td>
+</tr>
+<tr>
+<td>Range queries</td>
+<td>Natural (follow forward pointers)</td>
+<td>Requires in-order traversal</td>
+</tr>
+<tr>
+<td>Concurrency</td>
+<td>Lock-free variants are simpler</td>
+<td>Lock-free BSTs are very complex</td>
+</tr>
+<tr>
+<td>Memory</td>
+<td>Slightly more (extra pointers per level)</td>
+<td>Slightly less</td>
+</tr>
+<tr>
+<td>Constant factors</td>
+<td>Better in practice for Redis workloads</td>
+<td>Comparable</td>
+</tr>
+</tbody></table>
+<h3>Operations</h3>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Average</th>
+<th>Worst Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Search</td>
+<td>O(log n)</td>
+<td>O(n) (very unlikely)</td>
+</tr>
+<tr>
+<td>Insert</td>
+<td>O(log n)</td>
+<td>O(n)</td>
+</tr>
+<tr>
+<td>Delete</td>
+<td>O(log n)</td>
+<td>O(n)</td>
+</tr>
+<tr>
+<td>Range query</td>
+<td>O(log n + k)</td>
+<td>k = number of results</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>Skip lists appear in interviews when discussing Redis sorted sets or when someone asks &quot;how would you implement an ordered data structure without a tree?&quot; The key selling point is simplicity: skip lists achieve the same time complexity as balanced BSTs with far simpler code.</p>
+</div>
+
+
+<hr>
+<h2>Merkle Trees</h2>
+<p>A Merkle tree is a hash tree where every leaf node contains a hash of a data block, and every non-leaf node contains a hash of its children&#39;s hashes. It provides efficient, cryptographically secure verification of data integrity.</p>
+<h3>How It Works</h3>
+<pre><code>            Root Hash
+           H(H12 + H34)
+          /             \
+      H12                H34
+    H(H1+H2)          H(H3+H4)
+    /      \           /      \
+  H1       H2       H3       H4
+ hash(D1) hash(D2) hash(D3) hash(D4)
+  |         |        |        |
+ Data1    Data2    Data3    Data4
+</code></pre>
+<p><strong>Verification:</strong> If any data block changes, its leaf hash changes, which propagates up, changing all ancestor hashes up to the root. By comparing root hashes, you can instantly determine whether two copies of the data are identical.</p>
+<p><strong>Efficient difference detection:</strong> If root hashes differ, recursively compare children. You can identify exactly which data blocks differ in O(log n) comparisons instead of comparing every block.</p>
+<h3>Use Cases</h3>
+<p><strong>BitTorrent:</strong>
+When downloading a file, the file is split into blocks. The Merkle tree root hash is known in advance (from the torrent file). As each block is downloaded, its hash is verified against the tree. If a block is corrupted or tampered with, the hash mismatch is detected immediately, and only that block needs to be re-downloaded.</p>
+<p><strong>Blockchain:</strong>
+Each block in a blockchain contains a Merkle root of all transactions in that block. This allows lightweight clients (SPV -- Simplified Payment Verification) to verify that a specific transaction is included in a block without downloading all transactions. They only need the Merkle proof path (O(log n) hashes).</p>
+<p><strong>Amazon Dynamo (Anti-Entropy):</strong>
+Dynamo uses Merkle trees to synchronize replicas. Each replica builds a Merkle tree over its data. Replicas compare root hashes:</p>
+<ul>
+<li>If roots match, replicas are in sync</li>
+<li>If roots differ, they compare subtrees to identify exactly which key ranges have diverged</li>
+<li>Only the divergent data is transferred</li>
+</ul>
+<p>This is dramatically more efficient than comparing every key-value pair across replicas.</p>
+<p><strong>Git:</strong>
+Git uses Merkle trees (via its object model) to track file changes. Each commit points to a tree object whose hash depends on the hashes of all contained files. Changing any file changes the tree hash, enabling efficient difference detection.</p>
+<div class="important">
+
+<p>Merkle trees are the standard answer to &quot;how do you efficiently detect differences between replicas in a distributed database?&quot; If an interviewer asks about anti-entropy or replica synchronization, Merkle trees should be your go-to data structure.</p>
+</div>
+
+
+<hr>
+<h2>Consistent Hashing (Brief)</h2>
+<p>Consistent hashing distributes data across nodes such that adding or removing a node only affects a small fraction of keys. It is essential for distributed caches, databases, and any sharded system.</p>
+<p>The core idea: arrange all possible hash values in a ring. Place nodes on the ring. Each key maps to the first node clockwise from its hash position. When a node is added or removed, only the keys between the affected node and its predecessor need to move.</p>
+<p>Virtual nodes (multiple positions per physical node) solve the load balancing problem that arises with few nodes on the ring.</p>
+<p>For a comprehensive treatment, see the <a href="consistent-hashing.html">Consistent Hashing</a> article.</p>
+<hr>
+<h2>LSM Trees (Brief)</h2>
+<p>Log-Structured Merge Trees are the write-optimized data structure underlying databases like Cassandra, RocksDB, LevelDB, and HBase.</p>
+<p>The core idea: writes go to an in-memory buffer (memtable). When the buffer fills, it is flushed to disk as a sorted, immutable file (SSTable). Background compaction merges SSTables to reduce read amplification. Bloom filters on each SSTable prevent unnecessary disk reads.</p>
+<p>LSM trees trade read performance for write performance, making them ideal for write-heavy workloads.</p>
+<p>For a comprehensive treatment, see the databases article.</p>
+<hr>
+<h2>When to Use Each Data Structure</h2>
+<p>This decision table summarizes when to reach for each data structure in a system design interview.</p>
+<table>
+<thead>
+<tr>
+<th>Problem</th>
+<th>Data Structure</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>&quot;Check if X exists in a huge set&quot;</td>
+<td>Bloom Filter</td>
+<td>O(1) membership test, tiny memory, no false negatives</td>
+</tr>
+<tr>
+<td>&quot;Count distinct elements&quot;</td>
+<td>HyperLogLog</td>
+<td>12 KB for billions of uniques, mergeable across nodes</td>
+</tr>
+<tr>
+<td>&quot;Find most frequent items in a stream&quot;</td>
+<td>Count-Min Sketch</td>
+<td>Sub-linear space frequency estimation</td>
+</tr>
+<tr>
+<td>&quot;Find nearby locations&quot;</td>
+<td>Geohash or Quadtree</td>
+<td>Geohash for simplicity with any DB; quadtree for adaptive precision</td>
+</tr>
+<tr>
+<td>&quot;Autocomplete / prefix search&quot;</td>
+<td>Trie (Prefix Tree)</td>
+<td>O(prefix_length) lookup, natural prefix enumeration</td>
+</tr>
+<tr>
+<td>&quot;Ordered set with range queries&quot;</td>
+<td>Skip List</td>
+<td>O(log n) operations, simpler than balanced BST</td>
+</tr>
+<tr>
+<td>&quot;Detect data differences between replicas&quot;</td>
+<td>Merkle Tree</td>
+<td>O(log n) divergence detection, efficient sync</td>
+</tr>
+<tr>
+<td>&quot;Distribute data across nodes&quot;</td>
+<td>Consistent Hashing</td>
+<td>Minimal data movement on node add/remove</td>
+</tr>
+<tr>
+<td>&quot;Write-heavy database storage&quot;</td>
+<td>LSM Tree</td>
+<td>Sequential writes, high write throughput</td>
+</tr>
+<tr>
+<td>&quot;Approximate: is X in the set?&quot;</td>
+<td>Bloom Filter</td>
+<td>Cannot tell you &quot;what&quot; is in the set, only &quot;probably yes/definitely no&quot;</td>
+</tr>
+<tr>
+<td>&quot;Approximate: how many unique Xs?&quot;</td>
+<td>HyperLogLog</td>
+<td>Cannot list the elements, only count them</td>
+</tr>
+<tr>
+<td>&quot;Approximate: how often does X appear?&quot;</td>
+<td>Count-Min Sketch</td>
+<td>Over-estimates only, never under-counts</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>When an interviewer presents a scale challenge, pause and think about whether an approximate solution is acceptable. Counting exact unique visitors across 1 billion pageviews requires terabytes. HyperLogLog does it in 12 KB with 0.81% error. For most business purposes, that approximation is more than good enough, and saying so demonstrates engineering maturity.</p>
+</div>
+
+
+<hr>
+<h2>Combining Data Structures in Real Systems</h2>
+<p>In practice, these data structures are rarely used in isolation. Real systems combine them to solve complex problems.</p>
+<h3>Example: Web Crawler</h3>
+<p>A web crawler that indexes billions of pages uses multiple data structures together:</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Data Structure</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>URL deduplication</td>
+<td>Bloom Filter</td>
+<td>Quickly check if a URL was already crawled without storing all URLs</td>
+</tr>
+<tr>
+<td>Unique page count</td>
+<td>HyperLogLog</td>
+<td>Track how many distinct pages have been indexed</td>
+</tr>
+<tr>
+<td>Priority queue</td>
+<td>Skip List or Heap</td>
+<td>Order URLs by priority for crawling</td>
+</tr>
+<tr>
+<td>Content fingerprinting</td>
+<td>Merkle Tree (SimHash variant)</td>
+<td>Detect near-duplicate pages</td>
+</tr>
+<tr>
+<td>Domain frequency</td>
+<td>Count-Min Sketch</td>
+<td>Track crawl rate per domain to respect rate limits</td>
+</tr>
+</tbody></table>
+<h3>Example: Ride-Sharing Platform</h3>
+<p>A ride-sharing system like Uber combines spatial data structures:</p>
+<ol>
+<li><strong>Quadtree</strong> for driver location indexing -- find the nearest available drivers</li>
+<li><strong>Geohash</strong> for persistent storage -- store ride history with location-searchable indexes</li>
+<li><strong>Bloom filter</strong> for promo code validation -- quickly reject invalid promo codes without database lookup</li>
+<li><strong>Count-Min Sketch</strong> for surge detection -- track request frequency per geographic cell to detect demand spikes</li>
+<li><strong>Consistent hashing</strong> for distributing location data -- partition driver location updates across servers by city/region</li>
+</ol>
+<h3>Example: Social Media Feed</h3>
+<p>A social media platform uses:</p>
+<ol>
+<li><strong>Trie</strong> for typeahead search -- autocomplete usernames and hashtags</li>
+<li><strong>HyperLogLog</strong> for post view counts -- approximate unique viewer counts (shown as &quot;~1.2M views&quot;)</li>
+<li><strong>Bloom filter</strong> for &quot;already seen&quot; detection -- prevent showing the same post twice in a user&#39;s feed</li>
+<li><strong>Count-Min Sketch</strong> for trending topics -- identify the most frequently mentioned hashtags in real time</li>
+<li><strong>Skip list</strong> (Redis sorted sets) for leaderboards and feed ranking -- maintain sorted scores</li>
+</ol>
+<h3>Memory Comparison at Scale</h3>
+<p>To appreciate why probabilistic data structures matter, consider tracking 1 billion unique items:</p>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Memory Required</th>
+<th>Accuracy</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>HashSet (exact)</td>
+<td>~40-80 GB</td>
+<td>100%</td>
+</tr>
+<tr>
+<td>Bloom Filter (membership)</td>
+<td>~1.2 GB (1% FPR)</td>
+<td>No false negatives</td>
+</tr>
+<tr>
+<td>HyperLogLog (cardinality)</td>
+<td>12 KB</td>
+<td>0.81% standard error</td>
+</tr>
+<tr>
+<td>Count-Min Sketch (frequency)</td>
+<td>~40 MB (with good accuracy)</td>
+<td>Over-estimates only</td>
+</tr>
+</tbody></table>
+<p>The difference is staggering. At internet scale, exact data structures simply cannot fit in memory, and probabilistic alternatives are not just nice-to-haves -- they are necessities.</p>
+<div class="warning">
+
+<p>Probabilistic data structures have important limitations beyond accuracy. Most cannot delete elements (standard Bloom filters, HyperLogLog). They cannot enumerate their contents (you can&#39;t list all elements in a Bloom filter). And their error characteristics must be understood: Bloom filters have false positives, Count-Min Sketch over-estimates, and HyperLogLog has a standard error. Choose them when these limitations are acceptable for your use case.</p>
+</div>
+
+
+<hr>
+<h2>Comparison: Exact vs Probabilistic</h2>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Exact (HashSet, TreeMap)</th>
+<th>Probabilistic (Bloom, HLL, CMS)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Memory</td>
+<td>O(n) -- grows with data size</td>
+<td>O(1) or O(epsilon) -- constant or sub-linear</td>
+</tr>
+<tr>
+<td>Accuracy</td>
+<td>100% correct</td>
+<td>Small, bounded error rate</td>
+</tr>
+<tr>
+<td>Deletions</td>
+<td>Supported</td>
+<td>Usually not (except counting variants)</td>
+</tr>
+<tr>
+<td>Mergeability</td>
+<td>Expensive (union of sets)</td>
+<td>Cheap (bitwise OR, counter addition)</td>
+</tr>
+<tr>
+<td>Scale</td>
+<td>Limited by memory</td>
+<td>Works at any scale</td>
+</tr>
+<tr>
+<td>Use when</td>
+<td>Correctness is mandatory</td>
+<td>Approximate is good enough, scale is huge</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>Interview Cheat Sheet</h2>
+<table>
+<thead>
+<tr>
+<th>Data Structure</th>
+<th>One-Liner</th>
+<th>Typical Interview Signal</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Bloom Filter</td>
+<td>Probabilistic set membership: no false negatives</td>
+<td>&quot;Check if URL was crawled&quot;, &quot;cache key existence&quot;</td>
+</tr>
+<tr>
+<td>HyperLogLog</td>
+<td>Cardinality estimation in constant space</td>
+<td>&quot;Count unique visitors&quot;, &quot;distinct elements&quot;</td>
+</tr>
+<tr>
+<td>Count-Min Sketch</td>
+<td>Frequency estimation in sub-linear space</td>
+<td>&quot;Top-K items&quot;, &quot;heavy hitters&quot;, &quot;trending&quot;</td>
+</tr>
+<tr>
+<td>Geohash</td>
+<td>Encode lat/lng as string, prefix = proximity</td>
+<td>&quot;Find nearby&quot;, location search with SQL database</td>
+</tr>
+<tr>
+<td>Quadtree</td>
+<td>Adaptive spatial partitioning</td>
+<td>&quot;Find nearest drivers&quot;, ride-sharing, delivery</td>
+</tr>
+<tr>
+<td>Trie</td>
+<td>Character-by-character tree, prefix operations</td>
+<td>&quot;Autocomplete&quot;, &quot;typeahead&quot;, &quot;spell check&quot;</td>
+</tr>
+<tr>
+<td>Skip List</td>
+<td>Probabilistic balanced linked list</td>
+<td>&quot;Redis sorted sets&quot;, &quot;ordered data structure&quot;</td>
+</tr>
+<tr>
+<td>Merkle Tree</td>
+<td>Hash tree for integrity and diff detection</td>
+<td>&quot;Replica sync&quot;, &quot;anti-entropy&quot;, &quot;data verification&quot;</td>
+</tr>
+<tr>
+<td>Consistent Hashing</td>
+<td>Hash ring for distributed data placement</td>
+<td>&quot;Shard data&quot;, &quot;distributed cache&quot;</td>
+</tr>
+<tr>
+<td>LSM Tree</td>
+<td>Write-optimized storage with background compaction</td>
+<td>&quot;Write-heavy workload&quot;, &quot;time-series database&quot;</td>
+</tr>
+</tbody></table>
+<p><strong>Key interview phrases:</strong></p>
+<ul>
+<li>&quot;We can use a Bloom filter as a first check to avoid hitting the database for keys that definitely don&#39;t exist.&quot;</li>
+<li>&quot;For counting unique visitors, HyperLogLog gives us 0.81% error in 12 KB -- we don&#39;t need exact counts for this use case.&quot;</li>
+<li>&quot;To find the top-K trending topics, I&#39;d use a Count-Min Sketch paired with a min-heap.&quot;</li>
+<li>&quot;For proximity search, I&#39;d geohash the locations and use prefix queries on a standard database index. For adaptive precision in dense areas, a quadtree is better.&quot;</li>
+<li>&quot;To sync replicas efficiently, we compare Merkle tree roots -- if they match, the replicas are identical. If not, we walk the tree to find exactly which keys diverged.&quot;</li>
+<li>&quot;The trie gives us O(prefix_length) autocomplete lookups, and we can precompute the top-K suggestions at each node for instant results.&quot;</li>
+</ul>
+
+</body>
+</html>

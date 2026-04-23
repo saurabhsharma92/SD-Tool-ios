@@ -1,0 +1,1155 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Databases Deep Dive -- Complete System Design Reference</title>
+</head>
+<body>
+
+<h1>Databases Deep Dive -- Complete System Design Reference</h1>
+<h3>Staff Engineer Interview Preparation Guide</h3>
+<div class="tip">
+
+<p><strong>Why databases matter in interviews:</strong> Every system design question involves choosing a database. Interviewers want to see that you can pick the right database for the right use case, explain why, and discuss indexing, normalization, and query performance tradeoffs. &quot;I would use a database&quot; is not an answer -- &quot;I would use Cassandra because we need high write throughput with eventual consistency across regions&quot; is.</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-relational-databases-and-acid">Relational Databases and ACID</a></li>
+<li><a href="#2-transaction-isolation-levels">Transaction Isolation Levels</a></li>
+<li><a href="#3-nosql-database-types">NoSQL Database Types</a></li>
+<li><a href="#4-sql-vs-nosql-decision-framework">SQL vs NoSQL Decision Framework</a></li>
+<li><a href="#5-database-indexing">Database Indexing</a></li>
+<li><a href="#6-full-text-search">Full-Text Search</a></li>
+<li><a href="#7-normalization-and-denormalization">Normalization and Denormalization</a></li>
+<li><a href="#8-write-ahead-logging-wal">Write-Ahead Logging (WAL)</a></li>
+<li><a href="#9-polyglot-persistence">Polyglot Persistence</a></li>
+<li><a href="#10-comprehensive-database-comparison">Comprehensive Database Comparison</a></li>
+<li><a href="#11-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. Relational Databases and ACID</h2>
+<p>Relational databases (PostgreSQL, MySQL, Oracle, SQL Server) store data in tables with predefined schemas. They enforce relationships between tables using foreign keys and guarantee data integrity through ACID properties.</p>
+<h3>ACID Properties Explained</h3>
+<h4>Atomicity -- &quot;All or Nothing&quot;</h4>
+<p>A transaction is a single unit of work. Either all operations in the transaction succeed, or none of them do. There is no partial completion.</p>
+<p><strong>Example:</strong> Transferring $500 from Account A to Account B.</p>
+<pre><code class="language-sql">BEGIN TRANSACTION;
+  UPDATE accounts SET balance = balance - 500 WHERE id = &#39;A&#39;;
+  UPDATE accounts SET balance = balance + 500 WHERE id = &#39;B&#39;;
+COMMIT;
+</code></pre>
+<p>If the server crashes after debiting A but before crediting B, atomicity guarantees the entire transaction is rolled back. Account A gets its $500 back. The money does not vanish.</p>
+<h4>Consistency -- &quot;Valid State to Valid State&quot;</h4>
+<p>A transaction brings the database from one valid state to another. All constraints (foreign keys, unique constraints, check constraints) are satisfied before and after the transaction.</p>
+<p><strong>Example:</strong> If there is a constraint that account balances cannot be negative, and Account A has $300, a transaction trying to transfer $500 from A will be rejected -- the database remains in a consistent state.</p>
+<h4>Isolation -- &quot;Transactions Don&#39;t Interfere&quot;</h4>
+<p>Concurrent transactions execute as if they were serial -- one after the other. In practice, databases use various isolation levels that trade off between strictness and performance (covered in the next section).</p>
+<p><strong>Example:</strong> Two users simultaneously reading and updating the same inventory count. Without isolation, one update could be lost. With proper isolation, each transaction sees a consistent view of the data.</p>
+<h4>Durability -- &quot;Committed Means Permanent&quot;</h4>
+<p>Once a transaction is committed, it survives system failures -- power loss, crashes, disk failures (assuming proper replication). This is typically achieved through Write-Ahead Logging (WAL), covered in Section 8.</p>
+<div class="important">
+
+<p>ACID is a spectrum, not a binary. Many databases let you tune how strictly these properties are enforced. For example, PostgreSQL supports multiple isolation levels. Understanding these tradeoffs is what distinguishes a senior engineer from a junior one.</p>
+</div>
+
+
+<hr>
+<h2>2. Transaction Isolation Levels</h2>
+<p>Isolation levels define how much one transaction can see of another concurrent transaction&#39;s uncommitted changes. Higher isolation means stronger correctness guarantees but lower concurrency (and thus lower throughput).</p>
+<h3>The Four Standard Isolation Levels</h3>
+<h4>Read Uncommitted (Lowest Isolation)</h4>
+<p>A transaction can read data modified by other transactions that have not yet committed. This is called a <strong>dirty read</strong>.</p>
+<pre><code>Transaction A:                   Transaction B:
+UPDATE products SET price=50     
+  WHERE id=1;                    
+                                 SELECT price FROM products
+                                   WHERE id=1;
+                                 -- Returns 50 (dirty read!)
+ROLLBACK;                        
+                                 -- Transaction B used a price
+                                 -- that was never committed!
+</code></pre>
+<p><strong>Used in practice:</strong> Almost never. The risk of dirty reads is too high.</p>
+<h4>Read Committed</h4>
+<p>A transaction only sees data that has been committed. No dirty reads. However, if you read the same row twice in a transaction, you might get different values if another transaction committed in between. This is called a <strong>non-repeatable read</strong>.</p>
+<pre><code>Transaction A:                   Transaction B:
+SELECT price FROM products       
+  WHERE id=1;                    
+-- Returns 100                   
+                                 UPDATE products SET price=150
+                                   WHERE id=1;
+                                 COMMIT;
+SELECT price FROM products       
+  WHERE id=1;                    
+-- Returns 150 (changed!)        
+</code></pre>
+<p><strong>Used in practice:</strong> Default in PostgreSQL and Oracle. Good enough for most use cases.</p>
+<h4>Repeatable Read</h4>
+<p>Once you read a row, you see the same value for the entire duration of your transaction, even if other transactions modify and commit changes to that row. However, <strong>phantom reads</strong> can still occur -- new rows inserted by other transactions may appear.</p>
+<pre><code>Transaction A:                   Transaction B:
+SELECT * FROM products           
+  WHERE price &gt; 100;             
+-- Returns 5 rows                
+                                 INSERT INTO products (price)
+                                   VALUES (200);
+                                 COMMIT;
+SELECT * FROM products           
+  WHERE price &gt; 100;             
+-- Returns 6 rows (phantom!)     
+</code></pre>
+<p><strong>Used in practice:</strong> Default in MySQL/InnoDB. Good for most read-heavy workloads.</p>
+<h4>Serializable (Highest Isolation)</h4>
+<p>Transactions execute as if they were run one after another, in some serial order. No dirty reads, no non-repeatable reads, no phantom reads. This is the safest but slowest level.</p>
+<p><strong>Used in practice:</strong> Financial transactions, booking systems, inventory systems where correctness is more important than throughput.</p>
+<h3>Isolation Level Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Isolation Level</th>
+<th>Dirty Read</th>
+<th>Non-Repeatable Read</th>
+<th>Phantom Read</th>
+<th>Performance</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Read Uncommitted</td>
+<td>Possible</td>
+<td>Possible</td>
+<td>Possible</td>
+<td>Fastest</td>
+</tr>
+<tr>
+<td>Read Committed</td>
+<td>Prevented</td>
+<td>Possible</td>
+<td>Possible</td>
+<td>Fast</td>
+</tr>
+<tr>
+<td>Repeatable Read</td>
+<td>Prevented</td>
+<td>Prevented</td>
+<td>Possible</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Serializable</td>
+<td>Prevented</td>
+<td>Prevented</td>
+<td>Prevented</td>
+<td>Slowest</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> Know that Read Committed is the default for PostgreSQL and Repeatable Read is the default for MySQL. When asked about isolation levels, explain the anomalies (dirty read, non-repeatable read, phantom read) with concrete examples. This demonstrates real understanding rather than memorization.</p>
+</div>
+
+
+<h3>Implementation Techniques</h3>
+<p>Databases implement isolation using two main strategies:</p>
+<p><strong>Pessimistic locking (traditional):</strong> Acquire locks on rows/tables before reading or writing. Other transactions wait for the lock to be released. Simple but can lead to deadlocks and reduced concurrency.</p>
+<p><strong>Optimistic concurrency control (MVCC):</strong> Multi-Version Concurrency Control keeps multiple versions of each row. Readers see a snapshot of the data as of their transaction start time. Writers create a new version. No read locks needed. Used by PostgreSQL, MySQL/InnoDB, Oracle.</p>
+<hr>
+<h2>3. NoSQL Database Types</h2>
+<p>NoSQL databases relax the relational model to optimize for specific access patterns. There is no single &quot;NoSQL&quot; model -- it is an umbrella term covering several fundamentally different architectures.</p>
+<h3>Key-Value Stores</h3>
+<p>The simplest model. Every item is stored as a key-value pair. Lookups by key are O(1). No support for complex queries.</p>
+<p><strong>Examples:</strong> Redis, Amazon DynamoDB, Memcached, etcd</p>
+<p><strong>Data model:</strong></p>
+<pre><code>Key: &quot;user:7:session&quot;
+Value: &quot;{ \&quot;token\&quot;: \&quot;abc123\&quot;, \&quot;expires\&quot;: 1700000000 }&quot;
+
+Key: &quot;product:42:price&quot;
+Value: &quot;29.99&quot;
+</code></pre>
+<p><strong>Best for:</strong> Caching, session storage, feature flags, rate limiting counters, leaderboards.</p>
+<p><strong>Redis specifically</strong> adds data structures (lists, sets, sorted sets, hashes, streams) on top of the key-value model, making it much more than a simple cache.</p>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Extremely fast (sub-millisecond reads)</td>
+<td>No relationships between keys</td>
+</tr>
+<tr>
+<td>Simple mental model</td>
+<td>Limited query capabilities (only by key)</td>
+</tr>
+<tr>
+<td>Horizontally scalable</td>
+<td>Value size limits (Redis: 512 MB, but practical limit is much lower)</td>
+</tr>
+<tr>
+<td>Great for caching and sessions</td>
+<td>Not suitable for complex data models</td>
+</tr>
+</tbody></table>
+<h3>Document Stores</h3>
+<p>Store data as semi-structured documents (usually JSON or BSON). Each document can have a different structure. Documents can be nested (objects within objects).</p>
+<p><strong>Examples:</strong> MongoDB, Couchbase, Amazon DocumentDB, Firestore</p>
+<p><strong>Data model:</strong></p>
+<pre><code class="language-json">{
+  &quot;_id&quot;: &quot;user_7&quot;,
+  &quot;name&quot;: &quot;Alice Chen&quot;,
+  &quot;email&quot;: &quot;alice@example.com&quot;,
+  &quot;addresses&quot;: [
+    {
+      &quot;type&quot;: &quot;home&quot;,
+      &quot;street&quot;: &quot;123 Main St&quot;,
+      &quot;city&quot;: &quot;Seattle&quot;,
+      &quot;state&quot;: &quot;WA&quot;
+    },
+    {
+      &quot;type&quot;: &quot;work&quot;,
+      &quot;street&quot;: &quot;456 Pine Ave&quot;,
+      &quot;city&quot;: &quot;Seattle&quot;,
+      &quot;state&quot;: &quot;WA&quot;
+    }
+  ],
+  &quot;preferences&quot;: {
+    &quot;theme&quot;: &quot;dark&quot;,
+    &quot;notifications&quot;: true
+  }
+}
+</code></pre>
+<p><strong>Best for:</strong> Content management, user profiles, product catalogs, any data with variable schemas or deeply nested structures.</p>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Flexible schema -- no migrations needed</td>
+<td>No joins (must denormalize or do application-level joins)</td>
+</tr>
+<tr>
+<td>Natural mapping to application objects</td>
+<td>Data duplication is common</td>
+</tr>
+<tr>
+<td>Good read performance for document-level access</td>
+<td>Transactions across documents are limited</td>
+</tr>
+<tr>
+<td>Horizontal scaling via sharding</td>
+<td>Schema discipline must be enforced in application code</td>
+</tr>
+</tbody></table>
+<h3>Wide-Column Stores</h3>
+<p>Data is organized by column families rather than rows. Each row can have a different set of columns. Optimized for queries that read specific columns across many rows.</p>
+<p><strong>Examples:</strong> Apache Cassandra, Apache HBase, Google Bigtable, ScyllaDB</p>
+<p><strong>Data model (conceptual):</strong></p>
+<pre><code>Row Key: &quot;user:7&quot;
+Column Family &quot;profile&quot;:    name=&quot;Alice&quot;, email=&quot;alice@co.com&quot;
+Column Family &quot;activity&quot;:   last_login=&quot;2024-01-15&quot;, login_count=342
+Column Family &quot;preferences&quot;: theme=&quot;dark&quot;, lang=&quot;en&quot;
+</code></pre>
+<p><strong>Best for:</strong> Time-series data, IoT sensor data, messaging systems, write-heavy workloads, data that spans multiple data centers.</p>
+<p><strong>Cassandra specifically</strong> is designed for:</p>
+<ul>
+<li>Multi-datacenter replication with tunable consistency</li>
+<li>Linear scalability (add nodes to increase throughput)</li>
+<li>High write throughput (append-only storage using LSM trees)</li>
+<li>No single point of failure (peer-to-peer architecture, no master node)</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Extreme write throughput</td>
+<td>Limited query flexibility (must design around partition keys)</td>
+</tr>
+<tr>
+<td>Linear horizontal scaling</td>
+<td>No joins, no subqueries</td>
+</tr>
+<tr>
+<td>Multi-datacenter replication built in</td>
+<td>Eventual consistency by default</td>
+</tr>
+<tr>
+<td>No single point of failure</td>
+<td>Data modeling is complex and unintuitive</td>
+</tr>
+</tbody></table>
+<h3>Graph Databases</h3>
+<p>Store data as nodes (entities) and edges (relationships). Optimized for traversing relationships, which is extremely slow in relational databases (requires multiple joins).</p>
+<p><strong>Examples:</strong> Neo4j, Amazon Neptune, ArangoDB, JanusGraph</p>
+<p><strong>Data model:</strong></p>
+<pre><code>(Alice)-[:FRIENDS_WITH]-&gt;(Bob)
+(Alice)-[:WORKS_AT]-&gt;(Acme Corp)
+(Bob)-[:WORKS_AT]-&gt;(Acme Corp)
+(Alice)-[:PURCHASED]-&gt;(Product42)
+(Bob)-[:REVIEWED]-&gt;(Product42)
+</code></pre>
+<p><strong>Best for:</strong> Social networks, recommendation engines, fraud detection, knowledge graphs, dependency analysis.</p>
+<p><strong>Example query (Cypher, Neo4j&#39;s query language):</strong></p>
+<pre><code class="language-cypher">// Find friends of friends who bought the same product
+MATCH (me:User {name: &quot;Alice&quot;})-[:FRIENDS_WITH*2]-(fof:User)
+      -[:PURCHASED]-&gt;(p:Product)&lt;-[:PURCHASED]-(me)
+RETURN fof.name, p.name
+</code></pre>
+<p>This query would require 4+ joins in SQL and would be extremely slow on large datasets.</p>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Relationship traversal is O(1) per hop</td>
+<td>Not good for bulk data processing</td>
+</tr>
+<tr>
+<td>Intuitive for connected data</td>
+<td>Smaller ecosystem than relational DBs</td>
+</tr>
+<tr>
+<td>Complex queries are natural to express</td>
+<td>Sharding graph data is hard</td>
+</tr>
+<tr>
+<td>Pattern matching is built in</td>
+<td>Not suitable for simple CRUD apps</td>
+</tr>
+</tbody></table>
+<h3>Time-Series Databases</h3>
+<p>Optimized for data that is indexed by time. Each data point has a timestamp, a set of tags (metadata), and one or more values. Designed for high-throughput inserts and time-range queries.</p>
+<p><strong>Examples:</strong> InfluxDB, TimescaleDB (PostgreSQL extension), Prometheus, QuestDB</p>
+<p><strong>Data model:</strong></p>
+<pre><code>measurement: cpu_usage
+tags: host=server1, region=us-east-1
+time: 2024-01-15T10:30:00Z
+fields: usage_percent=78.5, cores_active=6
+</code></pre>
+<p><strong>Best for:</strong> Application metrics, infrastructure monitoring, IoT sensor data, financial tick data, analytics event streams.</p>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Extremely high write throughput</td>
+<td>Not suitable for general-purpose querying</td>
+</tr>
+<tr>
+<td>Efficient time-range queries</td>
+<td>Limited relationship modeling</td>
+</tr>
+<tr>
+<td>Automatic data retention/downsampling</td>
+<td>Smaller community/tooling than RDBMS</td>
+</tr>
+<tr>
+<td>Built-in aggregation functions</td>
+<td>Updates/deletes are expensive</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>TimescaleDB is worth mentioning in interviews because it adds time-series capabilities on top of PostgreSQL, giving you the best of both worlds -- full SQL support plus time-series optimizations. This avoids the need for a separate database.</p>
+</div>
+
+
+<hr>
+<h2>4. SQL vs NoSQL Decision Framework</h2>
+<h3>When to Choose SQL (Relational)</h3>
+<ul>
+<li>Data has clear relationships (foreign keys, joins are common)</li>
+<li>Schema is well-defined and unlikely to change drastically</li>
+<li>ACID transactions are required (financial, booking, inventory)</li>
+<li>Complex queries with aggregations, joins, subqueries</li>
+<li>Data integrity is more important than write speed</li>
+<li>Team is experienced with SQL</li>
+</ul>
+<h3>When to Choose NoSQL</h3>
+<ul>
+<li>Schema evolves rapidly (early-stage product, flexible content)</li>
+<li>Massive write throughput is needed (IoT, logging, metrics)</li>
+<li>Data is naturally hierarchical/nested (JSON documents)</li>
+<li>Horizontal scaling is a primary requirement</li>
+<li>Simple access patterns (key lookup, document retrieval)</li>
+<li>Eventual consistency is acceptable</li>
+</ul>
+<h3>Decision Tree</h3>
+<pre class="mermaid">
+graph TD
+    START["What are your\ndata requirements?"] --> Q1{"Need ACID\ntransactions?"}
+    
+    Q1 -->|"Yes, strict"| Q2{"Need complex\njoins?"}
+    Q1 -->|"No, eventual\nconsistency OK"| Q3{"Primary\naccess pattern?"}
+    
+    Q2 -->|Yes| SQL["Relational DB\nPostgreSQL, MySQL"]
+    Q2 -->|"Minimal joins"| Q4{"Need horizontal\nscaling?"}
+    
+    Q4 -->|Yes| NEWSQL["NewSQL\nCockroachDB,\nGoogle Spanner"]
+    Q4 -->|No| SQL
+    
+    Q3 -->|"Key lookup"| KV["Key-Value\nRedis, DynamoDB"]
+    Q3 -->|"Document retrieval"| DOC["Document Store\nMongoDB, Firestore"]
+    Q3 -->|"Time-range queries"| TS["Time-Series\nInfluxDB,\nTimescaleDB"]
+    Q3 -->|"Relationship\ntraversal"| GRAPH["Graph DB\nNeo4j, Neptune"]
+    Q3 -->|"High write\nthroughput"| WIDE["Wide-Column\nCassandra,\nScyllaDB"]
+</pre>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> Never say &quot;I would use NoSQL because it scales better.&quot; This is a red flag. Instead, articulate the specific access pattern that makes a particular NoSQL type a better fit. For example: &quot;We have a social graph with deep traversal queries, so Neo4j is a better fit than joining 5 tables in PostgreSQL.&quot;</p>
+</div>
+
+
+<hr>
+<h2>5. Database Indexing</h2>
+<p>Indexes are data structures that speed up read queries at the cost of slower writes and additional storage. Understanding how indexes work internally is essential for system design interviews.</p>
+<h3>B-Tree Index</h3>
+<p>The most common index type in relational databases. A B-tree is a self-balancing tree where each node can have multiple children. All leaf nodes are at the same depth.</p>
+<pre class="mermaid">
+graph TD
+    ROOT["Root Node\n[30 | 70]"]
+    
+    N1["[10 | 20]"]
+    N2["[40 | 50 | 60]"]
+    N3["[80 | 90]"]
+    
+    L1["Leaf: 5, 8"]
+    L2["Leaf: 12, 15, 18"]
+    L3["Leaf: 22, 25, 28"]
+    L4["Leaf: 35, 38"]
+    L5["Leaf: 42, 45, 48"]
+    L6["Leaf: 52, 55, 58"]
+    L7["Leaf: 62, 65, 68"]
+    L8["Leaf: 75, 78"]
+    L9["Leaf: 82, 85, 88"]
+    L10["Leaf: 92, 95, 98"]
+    
+    ROOT --> N1
+    ROOT --> N2
+    ROOT --> N3
+    
+    N1 --> L1
+    N1 --> L2
+    N1 --> L3
+    
+    N2 --> L4
+    N2 --> L5
+    N2 --> L6
+    N2 --> L7
+    
+    N3 --> L8
+    N3 --> L9
+    N3 --> L10
+</pre>
+<p><strong>How a B-tree lookup works:</strong></p>
+<p>To find the value 55:</p>
+<ol>
+<li>Start at root [30 | 70]. 55 is between 30 and 70, go to middle child.</li>
+<li>At node [40 | 50 | 60]. 55 is between 50 and 60, go to corresponding child.</li>
+<li>At leaf [52, 55, 58]. Found 55! Return the pointer to the actual row.</li>
+</ol>
+<p><strong>Performance:</strong> O(log N) for lookups, inserts, and deletes. A B-tree with a branching factor of 100 can index 1 billion rows with only 5 levels -- meaning 5 disk reads to find any row.</p>
+<p><strong>Characteristics:</strong></p>
+<ul>
+<li>Keeps data sorted -- great for range queries (<code>WHERE price BETWEEN 10 AND 50</code>)</li>
+<li>All leaf nodes are linked -- efficient for scanning ranges</li>
+<li>Self-balancing -- performance does not degrade as data grows</li>
+<li>Used by: PostgreSQL, MySQL, Oracle, SQL Server (all major RDBMS)</li>
+</ul>
+<h3>LSM Tree (Log-Structured Merge Tree)</h3>
+<p>Optimized for write-heavy workloads. Instead of updating data in place (like B-trees), LSM trees buffer writes in memory and periodically flush them to sorted files on disk.</p>
+<pre class="mermaid">
+graph TD
+    subgraph Memory["In-Memory (MemTable)"]
+        MT["Sorted MemTable\n(Red-Black Tree)\n~64 MB"]
+    end
+
+    subgraph Disk["On-Disk (SSTables)"]
+        subgraph L0["Level 0 (newest)"]
+            SS1["SSTable 1"]
+            SS2["SSTable 2"]
+        end
+        subgraph L1["Level 1"]
+            SS3["SSTable 3\n(merged, larger)"]
+            SS4["SSTable 4"]
+        end
+        subgraph L2["Level 2"]
+            SS5["SSTable 5\n(merged, largest)"]
+        end
+    end
+
+    WRITE["Write\nRequest"] -->|"1. Write to\nMemTable"| MT
+    MT -->|"2. Flush when\nMemTable full"| L0
+    L0 -->|"3. Compact &\nmerge"| L1
+    L1 -->|"4. Compact &\nmerge"| L2
+
+    READ["Read\nRequest"] -->|"Check MemTable\nthen L0, L1, L2"| MT
+</pre>
+<p><strong>How LSM tree writes work:</strong></p>
+<ol>
+<li>Write goes to an in-memory sorted structure (MemTable, typically a red-black tree)</li>
+<li>Writes are also appended to a WAL on disk for durability</li>
+<li>When the MemTable reaches a size threshold, it is flushed to disk as an immutable Sorted String Table (SSTable)</li>
+<li>Background compaction merges SSTables from level N into level N+1, removing duplicates and deleted entries</li>
+</ol>
+<p><strong>How LSM tree reads work:</strong></p>
+<ol>
+<li>Check the MemTable first (fastest)</li>
+<li>Check Level 0 SSTables (most recent)</li>
+<li>Check Level 1, then Level 2, and so on</li>
+<li>Bloom filters are used at each level to quickly skip SSTables that definitely do not contain the key</li>
+</ol>
+<p><strong>Performance:</strong></p>
+<ul>
+<li>Writes: O(1) amortized (just append to MemTable)</li>
+<li>Reads: Can be slower than B-trees (must check multiple levels)</li>
+<li>Space: Write amplification from compaction</li>
+</ul>
+<p><strong>Used by:</strong> Cassandra, RocksDB, LevelDB, HBase, ScyllaDB, CockroachDB.</p>
+<h3>B-Tree vs LSM Tree Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>B-Tree</th>
+<th>LSM Tree</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Write speed</td>
+<td>Slower (random I/O)</td>
+<td>Faster (sequential I/O)</td>
+</tr>
+<tr>
+<td>Read speed</td>
+<td>Faster (single lookup)</td>
+<td>Slower (check multiple levels)</td>
+</tr>
+<tr>
+<td>Space efficiency</td>
+<td>More space (fragmentation)</td>
+<td>Less space (compaction removes waste)</td>
+</tr>
+<tr>
+<td>Write amplification</td>
+<td>Low</td>
+<td>High (due to compaction)</td>
+</tr>
+<tr>
+<td>Best for</td>
+<td>Read-heavy workloads</td>
+<td>Write-heavy workloads</td>
+</tr>
+<tr>
+<td>Range queries</td>
+<td>Excellent</td>
+<td>Good (after compaction)</td>
+</tr>
+<tr>
+<td>Predictable latency</td>
+<td>Yes</td>
+<td>Less predictable (compaction can spike latency)</td>
+</tr>
+</tbody></table>
+<h3>Hash Index</h3>
+<p>A hash table that maps keys to file offsets. O(1) lookups for exact match queries.</p>
+<p><strong>Limitation:</strong> Cannot do range queries. If you need <code>WHERE age &gt; 25</code>, a hash index is useless -- you need a B-tree.</p>
+<p><strong>Used by:</strong> Memory-optimized tables in some databases, hash partitioning in DynamoDB.</p>
+<h3>Composite (Multi-Column) Indexes</h3>
+<p>An index on multiple columns, ordered left to right. The order matters significantly.</p>
+<pre><code class="language-sql">CREATE INDEX idx_name_age ON users (last_name, first_name, age);
+</code></pre>
+<p><strong>This index helps with:</strong></p>
+<pre><code class="language-sql">WHERE last_name = &#39;Chen&#39;                          -- Yes (leftmost prefix)
+WHERE last_name = &#39;Chen&#39; AND first_name = &#39;Alice&#39;  -- Yes (uses two columns)
+WHERE last_name = &#39;Chen&#39; AND first_name = &#39;Alice&#39; AND age &gt; 25  -- Yes (all three)
+</code></pre>
+<p><strong>This index does NOT help with:</strong></p>
+<pre><code class="language-sql">WHERE first_name = &#39;Alice&#39;              -- No (skips leftmost column)
+WHERE age &gt; 25                           -- No (skips two leftmost columns)
+WHERE first_name = &#39;Alice&#39; AND age &gt; 25  -- No (skips leftmost column)
+</code></pre>
+<div class="warning">
+
+<p>The order of columns in a composite index is critical. Put the most selective (highest cardinality) column first, unless your most common query filters on a different column. Index design should be driven by your query patterns.</p>
+</div>
+
+
+<h3>Covering Index</h3>
+<p>An index that includes all the columns a query needs, so the database can answer the query entirely from the index without touching the main table. This is a significant performance optimization.</p>
+<pre><code class="language-sql">-- If we frequently run:
+SELECT email, name FROM users WHERE last_name = &#39;Chen&#39;;
+
+-- A covering index:
+CREATE INDEX idx_covering ON users (last_name) INCLUDE (email, name);
+-- The query is answered from the index alone -- no table lookup needed.
+</code></pre>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> When discussing database optimization, always mention that you would analyze query patterns before creating indexes. More indexes means slower writes and more storage. The goal is to have indexes that cover your most frequent and most critical queries.</p>
+</div>
+
+
+<hr>
+<h2>6. Full-Text Search</h2>
+<p>When you need to search text content (product descriptions, article bodies, user comments), standard database indexes are insufficient. You need inverted indexes.</p>
+<h3>How an Inverted Index Works</h3>
+<p>An inverted index maps every unique word (term) to the list of documents that contain it.</p>
+<p><strong>Documents:</strong></p>
+<pre><code>Doc 1: &quot;the quick brown fox&quot;
+Doc 2: &quot;the lazy brown dog&quot;
+Doc 3: &quot;the quick red fox jumps&quot;
+</code></pre>
+<p><strong>Inverted Index:</strong></p>
+<pre><code>the    -&gt; [Doc 1, Doc 2, Doc 3]
+quick  -&gt; [Doc 1, Doc 3]
+brown  -&gt; [Doc 1, Doc 2]
+fox    -&gt; [Doc 1, Doc 3]
+lazy   -&gt; [Doc 2]
+dog    -&gt; [Doc 2]
+red    -&gt; [Doc 3]
+jumps  -&gt; [Doc 3]
+</code></pre>
+<p><strong>Searching for &quot;quick fox&quot;:</strong></p>
+<ul>
+<li>Look up &quot;quick&quot; -&gt; [Doc 1, Doc 3]</li>
+<li>Look up &quot;fox&quot; -&gt; [Doc 1, Doc 3]</li>
+<li>Intersect -&gt; [Doc 1, Doc 3]</li>
+</ul>
+<h3>Elasticsearch</h3>
+<p>Elasticsearch is the dominant full-text search engine. Built on Apache Lucene, it provides:</p>
+<ul>
+<li><strong>Inverted indexes</strong> for fast text search</li>
+<li><strong>Analyzers</strong> that tokenize text, apply stemming (running -&gt; run), remove stop words (the, a, an)</li>
+<li><strong>Relevance scoring</strong> (TF-IDF, BM25) to rank results by how well they match</li>
+<li><strong>Fuzzy matching</strong> to handle typos</li>
+<li><strong>Aggregations</strong> for analytics (similar to SQL GROUP BY)</li>
+<li><strong>Horizontal scaling</strong> via sharding</li>
+</ul>
+<p><strong>Common architecture pattern:</strong></p>
+<pre><code>Primary Database (PostgreSQL) --&gt; CDC/Sync --&gt; Elasticsearch
+       (source of truth)                      (search index)
+</code></pre>
+<p>The primary database remains the source of truth. Elasticsearch is a read-optimized search index that is kept in sync through Change Data Capture or application-level dual writes.</p>
+<div class="note">
+
+<p>PostgreSQL has built-in full-text search (<code>tsvector</code>, <code>tsquery</code>) that is good enough for many use cases. You do not always need Elasticsearch. If your search needs are simple (search within a few million documents with basic relevance ranking), PostgreSQL full-text search avoids the operational complexity of running a separate search cluster.</p>
+</div>
+
+
+<hr>
+<h2>7. Normalization and Denormalization</h2>
+<h3>Normalization</h3>
+<p>Normalization is the process of organizing data to minimize redundancy and dependency. Each fact is stored exactly once.</p>
+<h4>First Normal Form (1NF)</h4>
+<p><strong>Rule:</strong> Each column contains atomic (indivisible) values. No repeating groups or arrays.</p>
+<p><strong>Violation:</strong></p>
+<pre><code>| student_id | name  | phone_numbers          |
+|-----------|-------|------------------------|
+| 1         | Alice | 555-1234, 555-5678     |
+</code></pre>
+<p><strong>1NF (fixed):</strong></p>
+<pre><code>| student_id | name  | phone_number |
+|-----------|-------|--------------|
+| 1         | Alice | 555-1234     |
+| 1         | Alice | 555-5678     |
+</code></pre>
+<p>Or better, create a separate phone_numbers table:</p>
+<pre><code>students:       | student_id | name  |
+                | 1          | Alice |
+
+phone_numbers:  | student_id | phone_number |
+                | 1          | 555-1234     |
+                | 1          | 555-5678     |
+</code></pre>
+<h4>Second Normal Form (2NF)</h4>
+<p><strong>Rule:</strong> Must be in 1NF, and every non-key column must depend on the entire primary key, not just part of it.</p>
+<p><strong>Violation (composite key: student_id + course_id):</strong></p>
+<pre><code>| student_id | course_id | student_name | course_name | grade |
+|-----------|----------|-------------|------------|-------|
+| 1         | CS101    | Alice       | Intro CS   | A     |
+</code></pre>
+<p><code>student_name</code> depends only on <code>student_id</code>, not on the full key (student_id, course_id). <code>course_name</code> depends only on <code>course_id</code>.</p>
+<p><strong>2NF (fixed) -- split into three tables:</strong></p>
+<pre><code>students:     | student_id | student_name |
+courses:      | course_id  | course_name  |
+enrollments:  | student_id | course_id | grade |
+</code></pre>
+<h4>Third Normal Form (3NF)</h4>
+<p><strong>Rule:</strong> Must be in 2NF, and no non-key column depends on another non-key column (no transitive dependencies).</p>
+<p><strong>Violation:</strong></p>
+<pre><code>| employee_id | department_id | department_name | department_head |
+|------------|--------------|----------------|----------------|
+| 1          | D10          | Engineering    | Bob            |
+</code></pre>
+<p><code>department_name</code> and <code>department_head</code> depend on <code>department_id</code>, not on <code>employee_id</code>.</p>
+<p><strong>3NF (fixed):</strong></p>
+<pre><code>employees:    | employee_id | department_id |
+departments:  | department_id | department_name | department_head |
+</code></pre>
+<h3>Denormalization</h3>
+<p>Denormalization is the deliberate introduction of redundancy to speed up read queries. Instead of joining 5 tables, you store pre-computed data together.</p>
+<p><strong>When to denormalize:</strong></p>
+<ul>
+<li>Read performance is critical and joins are too slow</li>
+<li>Data is read far more often than written</li>
+<li>The data rarely changes (or you can tolerate stale data)</li>
+<li>You need sub-millisecond query latency</li>
+</ul>
+<p><strong>Example:</strong> An e-commerce product page needs product name, seller name, average rating, and review count. Normalized, this requires joining 4 tables. Denormalized:</p>
+<pre><code class="language-json">{
+  &quot;product_id&quot;: 42,
+  &quot;product_name&quot;: &quot;Wireless Mouse&quot;,
+  &quot;seller_name&quot;: &quot;TechGadgets Inc&quot;,
+  &quot;average_rating&quot;: 4.3,
+  &quot;review_count&quot;: 1247,
+  &quot;price&quot;: 29.99
+}
+</code></pre>
+<p><strong>The tradeoff:</strong> Writes become more complex because you must update redundant data in multiple places. If the seller changes their name, you must update every product document.</p>
+<h3>Normalization vs Denormalization Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Normalized</th>
+<th>Denormalized</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Data redundancy</td>
+<td>Minimal</td>
+<td>Intentional duplication</td>
+</tr>
+<tr>
+<td>Write complexity</td>
+<td>Simple (update once)</td>
+<td>Complex (update many places)</td>
+</tr>
+<tr>
+<td>Read performance</td>
+<td>Slower (joins needed)</td>
+<td>Faster (data pre-joined)</td>
+</tr>
+<tr>
+<td>Storage</td>
+<td>Efficient</td>
+<td>More storage used</td>
+</tr>
+<tr>
+<td>Data consistency</td>
+<td>Guaranteed by schema</td>
+<td>Must be maintained by application</td>
+</tr>
+<tr>
+<td>Best for</td>
+<td>OLTP (transactional systems)</td>
+<td>OLAP (analytics), read-heavy systems</td>
+</tr>
+<tr>
+<td>Schema changes</td>
+<td>Easier (well-structured)</td>
+<td>Harder (redundancy spread around)</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p><strong>Interview tip:</strong> Start normalized. Denormalize only when you have evidence (query performance metrics) that joins are a bottleneck. &quot;Premature denormalization is the root of all evil&quot; -- paraphrasing Knuth. Always mention this tradeoff in interviews.</p>
+</div>
+
+
+<hr>
+<h2>8. Write-Ahead Logging (WAL)</h2>
+<p>WAL is the mechanism that ensures database durability. Every database that claims durability (the D in ACID) uses some form of write-ahead logging.</p>
+<h3>The Problem WAL Solves</h3>
+<p>Databases keep frequently accessed data in memory (buffer pool) for performance. But memory is volatile -- a crash would lose all uncommitted changes. Writing every change directly to the data files on disk would be too slow (random I/O).</p>
+<h3>How WAL Works</h3>
+<ol>
+<li><strong>Before</strong> modifying any data page in memory, write a log record describing the change to a sequential log file on disk.</li>
+<li>The log write is sequential (fast -- just append to a file).</li>
+<li>Only after the log record is safely on disk, acknowledge the transaction as committed.</li>
+<li>Periodically, flush the modified data pages from memory to disk (checkpoint).</li>
+</ol>
+<p><strong>The key insight:</strong> Sequential writes to a log file are orders of magnitude faster than random writes to data files. By writing to the log first, the database gets both durability and performance.</p>
+<h3>Recovery After a Crash</h3>
+<p>When the database restarts after a crash:</p>
+<ol>
+<li>Read the WAL from the last checkpoint forward</li>
+<li><strong>Redo</strong> all committed transactions that may not have been flushed to data files</li>
+<li><strong>Undo</strong> all uncommitted transactions that modified data pages in memory</li>
+</ol>
+<p>This ensures the database returns to a consistent state, with all committed transactions present and all uncommitted transactions rolled back.</p>
+<h3>WAL in Practice</h3>
+<table>
+<thead>
+<tr>
+<th>Database</th>
+<th>WAL Implementation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>PostgreSQL</td>
+<td>WAL (used for replication, point-in-time recovery, crash recovery)</td>
+</tr>
+<tr>
+<td>MySQL/InnoDB</td>
+<td>Redo log + undo log</td>
+</tr>
+<tr>
+<td>SQLite</td>
+<td>WAL mode (alternative to rollback journal)</td>
+</tr>
+<tr>
+<td>Cassandra</td>
+<td>Commit log (similar concept)</td>
+</tr>
+<tr>
+<td>MongoDB</td>
+<td>Journal (oplog for replication)</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>WAL is also the foundation for database replication. The leader ships WAL records to replicas, which replay them to stay in sync. This is how PostgreSQL streaming replication works.</p>
+</div>
+
+
+<hr>
+<h2>9. Polyglot Persistence</h2>
+<p>Polyglot persistence means using different database technologies for different parts of your system, choosing the best tool for each specific data access pattern.</p>
+<h3>Example: E-Commerce Platform</h3>
+<pre><code>User Profiles + Orders   --&gt;  PostgreSQL     (ACID transactions, complex queries)
+Product Catalog Search   --&gt;  Elasticsearch  (full-text search, faceted filters)
+Shopping Cart + Sessions --&gt;  Redis          (fast reads/writes, TTL expiry)
+Recommendations          --&gt;  Neo4j          (graph traversal for &quot;users who bought X also bought Y&quot;)
+Analytics + Event Stream --&gt;  ClickHouse     (columnar storage for aggregation queries)
+Product Images Metadata  --&gt;  MongoDB        (flexible schema for varying image attributes)
+Application Metrics      --&gt;  Prometheus     (time-series, alerting)
+</code></pre>
+<h3>Benefits and Risks</h3>
+<p><strong>Benefits:</strong></p>
+<ul>
+<li>Each data store is optimized for its specific use case</li>
+<li>Better performance than forcing everything into one database type</li>
+<li>Can scale each store independently</li>
+</ul>
+<p><strong>Risks:</strong></p>
+<ul>
+<li>Operational complexity (must run, monitor, and maintain multiple databases)</li>
+<li>Data consistency across stores is hard (no cross-database transactions)</li>
+<li>Team must learn multiple query languages and operational procedures</li>
+<li>Data synchronization between stores adds latency and failure modes</li>
+</ul>
+<div class="important">
+
+<p>Polyglot persistence is powerful but comes with significant operational overhead. In an interview, do not suggest 5 different databases for a system that could work fine with PostgreSQL + Redis. Start with the simplest stack that meets requirements, and add specialized databases only when you can justify the complexity.</p>
+</div>
+
+
+<hr>
+<h2>10. Comprehensive Database Comparison</h2>
+<table>
+<thead>
+<tr>
+<th>Database</th>
+<th>Type</th>
+<th>Best For</th>
+<th>Consistency</th>
+<th>Scaling</th>
+<th>Query Language</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>PostgreSQL</strong></td>
+<td>Relational</td>
+<td>General purpose, complex queries, geospatial</td>
+<td>Strong (ACID)</td>
+<td>Vertical + read replicas</td>
+<td>SQL</td>
+</tr>
+<tr>
+<td><strong>MySQL</strong></td>
+<td>Relational</td>
+<td>Web apps, read-heavy workloads</td>
+<td>Strong (ACID)</td>
+<td>Vertical + read replicas</td>
+<td>SQL</td>
+</tr>
+<tr>
+<td><strong>CockroachDB</strong></td>
+<td>NewSQL</td>
+<td>Global distributed ACID</td>
+<td>Strong (serializable)</td>
+<td>Horizontal</td>
+<td>SQL</td>
+</tr>
+<tr>
+<td><strong>Google Spanner</strong></td>
+<td>NewSQL</td>
+<td>Global consistency at scale</td>
+<td>Strong (external)</td>
+<td>Horizontal</td>
+<td>SQL</td>
+</tr>
+<tr>
+<td><strong>MongoDB</strong></td>
+<td>Document</td>
+<td>Flexible schema, rapid prototyping</td>
+<td>Configurable</td>
+<td>Horizontal (sharding)</td>
+<td>MQL</td>
+</tr>
+<tr>
+<td><strong>Redis</strong></td>
+<td>Key-Value</td>
+<td>Caching, sessions, real-time</td>
+<td>Single-node strong</td>
+<td>Redis Cluster</td>
+<td>Commands</td>
+</tr>
+<tr>
+<td><strong>DynamoDB</strong></td>
+<td>Key-Value/Doc</td>
+<td>Serverless, predictable latency</td>
+<td>Configurable</td>
+<td>Automatic</td>
+<td>PartiQL/API</td>
+</tr>
+<tr>
+<td><strong>Cassandra</strong></td>
+<td>Wide-Column</td>
+<td>Write-heavy, multi-DC</td>
+<td>Tunable</td>
+<td>Horizontal (linear)</td>
+<td>CQL</td>
+</tr>
+<tr>
+<td><strong>HBase</strong></td>
+<td>Wide-Column</td>
+<td>Hadoop ecosystem, analytics</td>
+<td>Strong (row-level)</td>
+<td>Horizontal</td>
+<td>Java API/HQL</td>
+</tr>
+<tr>
+<td><strong>Neo4j</strong></td>
+<td>Graph</td>
+<td>Social networks, knowledge graphs</td>
+<td>ACID</td>
+<td>Limited horizontal</td>
+<td>Cypher</td>
+</tr>
+<tr>
+<td><strong>Elasticsearch</strong></td>
+<td>Search</td>
+<td>Full-text search, log analytics</td>
+<td>Near real-time</td>
+<td>Horizontal</td>
+<td>Query DSL</td>
+</tr>
+<tr>
+<td><strong>InfluxDB</strong></td>
+<td>Time-Series</td>
+<td>Metrics, monitoring</td>
+<td>Eventual</td>
+<td>Horizontal (enterprise)</td>
+<td>InfluxQL/Flux</td>
+</tr>
+<tr>
+<td><strong>TimescaleDB</strong></td>
+<td>Time-Series</td>
+<td>Time-series with SQL support</td>
+<td>Strong (ACID)</td>
+<td>Horizontal</td>
+<td>SQL</td>
+</tr>
+<tr>
+<td><strong>ClickHouse</strong></td>
+<td>Columnar</td>
+<td>OLAP, analytics</td>
+<td>Eventual</td>
+<td>Horizontal</td>
+<td>SQL</td>
+</tr>
+<tr>
+<td><strong>SQLite</strong></td>
+<td>Relational</td>
+<td>Embedded, mobile, edge</td>
+<td>Strong (ACID)</td>
+<td>None (single file)</td>
+<td>SQL</td>
+</tr>
+</tbody></table>
+<h3>When Interviewers Ask &quot;Why Not Just Use Postgres for Everything?&quot;</h3>
+<p>PostgreSQL is remarkably versatile. It supports JSON documents (JSONB), full-text search, geospatial data (PostGIS), time-series (TimescaleDB extension), and even graph queries (recursive CTEs). For many startups and mid-size applications, PostgreSQL is genuinely sufficient.</p>
+<p>You should choose a specialized database when:</p>
+<ul>
+<li>PostgreSQL cannot meet your latency requirements (use Redis for sub-millisecond reads)</li>
+<li>You need to write millions of rows per second (use Cassandra or ClickHouse)</li>
+<li>You have complex graph traversals with 4+ hops (use Neo4j)</li>
+<li>You need multi-region strong consistency (use CockroachDB or Spanner)</li>
+<li>You need advanced search features like fuzzy matching, facets, and relevance scoring at scale (use Elasticsearch)</li>
+</ul>
+<hr>
+<h2>11. Interview Cheat Sheet</h2>
+<h3>Quick Reference Card</h3>
+<table>
+<thead>
+<tr>
+<th>Topic</th>
+<th>Key Point</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>ACID</strong></td>
+<td>Atomicity (all or nothing), Consistency (valid states), Isolation (no interference), Durability (permanent commits)</td>
+</tr>
+<tr>
+<td><strong>Default isolation</strong></td>
+<td>PostgreSQL: Read Committed. MySQL: Repeatable Read</td>
+</tr>
+<tr>
+<td><strong>Key-Value DB</strong></td>
+<td>Redis, DynamoDB. Use for: caching, sessions, counters</td>
+</tr>
+<tr>
+<td><strong>Document DB</strong></td>
+<td>MongoDB, Firestore. Use for: flexible schema, nested data</td>
+</tr>
+<tr>
+<td><strong>Wide-Column</strong></td>
+<td>Cassandra, HBase. Use for: write-heavy, time-series, multi-DC</td>
+</tr>
+<tr>
+<td><strong>Graph DB</strong></td>
+<td>Neo4j. Use for: social graphs, recommendations, fraud detection</td>
+</tr>
+<tr>
+<td><strong>B-Tree</strong></td>
+<td>O(log N) reads, in-place updates, range queries. Used by RDBMS</td>
+</tr>
+<tr>
+<td><strong>LSM Tree</strong></td>
+<td>O(1) writes, sequential I/O, needs compaction. Used by Cassandra</td>
+</tr>
+<tr>
+<td><strong>Composite index</strong></td>
+<td>Column order matters. Leftmost prefix rule</td>
+</tr>
+<tr>
+<td><strong>Normalization</strong></td>
+<td>Minimize redundancy. Start here. 3NF is usually sufficient</td>
+</tr>
+<tr>
+<td><strong>Denormalization</strong></td>
+<td>Add redundancy for read speed. Only when justified by metrics</td>
+</tr>
+<tr>
+<td><strong>WAL</strong></td>
+<td>Write log first, then data. Sequential writes for durability</td>
+</tr>
+<tr>
+<td><strong>Polyglot persistence</strong></td>
+<td>Right DB for each use case. Do not over-complicate</td>
+</tr>
+</tbody></table>
+<h3>Database Selection Cheat Sheet</h3>
+<table>
+<thead>
+<tr>
+<th>Use Case</th>
+<th>Recommended Database</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>E-commerce orders</td>
+<td>PostgreSQL</td>
+<td>ACID transactions, complex queries</td>
+</tr>
+<tr>
+<td>User sessions</td>
+<td>Redis</td>
+<td>Sub-millisecond reads, TTL expiry</td>
+</tr>
+<tr>
+<td>Product catalog</td>
+<td>MongoDB or PostgreSQL</td>
+<td>Flexible attributes vs strong schema</td>
+</tr>
+<tr>
+<td>Social graph</td>
+<td>Neo4j</td>
+<td>Deep relationship traversal</td>
+</tr>
+<tr>
+<td>Chat messages</td>
+<td>Cassandra</td>
+<td>High write throughput, time-ordered</td>
+</tr>
+<tr>
+<td>Search</td>
+<td>Elasticsearch</td>
+<td>Full-text search, relevance ranking</td>
+</tr>
+<tr>
+<td>Metrics/monitoring</td>
+<td>InfluxDB or Prometheus</td>
+<td>Time-series optimized</td>
+</tr>
+<tr>
+<td>Analytics warehouse</td>
+<td>ClickHouse or BigQuery</td>
+<td>Columnar storage, fast aggregations</td>
+</tr>
+<tr>
+<td>Global ACID at scale</td>
+<td>CockroachDB or Spanner</td>
+<td>Distributed strong consistency</td>
+</tr>
+<tr>
+<td>Mobile/embedded</td>
+<td>SQLite</td>
+<td>Single-file, zero configuration</td>
+</tr>
+</tbody></table>
+<h3>Common Mistakes to Avoid</h3>
+<ol>
+<li>Choosing a database before understanding access patterns</li>
+<li>Using MongoDB &quot;because it is web scale&quot; without considering if you need joins</li>
+<li>Not creating indexes for frequent queries</li>
+<li>Creating too many indexes (slowing down writes)</li>
+<li>Ignoring composite index column order</li>
+<li>Denormalizing prematurely without performance evidence</li>
+<li>Using eventual consistency when strong consistency is needed (financial data)</li>
+<li>Suggesting 5 different databases for a system that could work with PostgreSQL + Redis</li>
+<li>Not mentioning WAL when asked about durability</li>
+<li>Confusing 401 (Unauthorized/Unauthenticated) with 403 (Forbidden/Unauthorized)</li>
+</ol>
+<h3>Talking Points That Impress Interviewers</h3>
+<ul>
+<li>&quot;I would start with PostgreSQL for this use case because it covers 80% of our needs. We can add Elasticsearch later specifically for search if PostgreSQL&#39;s built-in full-text search becomes a bottleneck.&quot;</li>
+<li>&quot;Cassandra is the right choice here because we need multi-datacenter replication with high write throughput. The tradeoff is that we lose joins and must design our data model around query patterns.&quot;</li>
+<li>&quot;I would create a composite index on (user_id, created_at) because our most frequent query filters by user and sorts by creation time. The leftmost prefix rule means this also serves queries that filter only by user_id.&quot;</li>
+<li>&quot;We should normalize this data to Third Normal Form because data integrity is critical for financial records. We can add materialized views for read-heavy reporting queries.&quot;</li>
+<li>&quot;LSM trees are better for this write-heavy workload because writes are sequential I/O. The tradeoff is that reads may need to check multiple levels, but we mitigate that with Bloom filters.&quot;</li>
+</ul>
+
+</body>
+</html>

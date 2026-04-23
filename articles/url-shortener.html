@@ -1,0 +1,1275 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Design Interview: URL Shortener</title>
+</head>
+<body>
+
+<h1>System Design Interview: URL Shortener</h1>
+<h3>TinyURL / Bit.ly Scale</h3>
+<div class="note">
+
+<p><strong>Staff Engineer Interview Preparation Guide</strong> — High Level Design Round</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-problem-clarification--requirements">Problem Clarification &amp; Requirements</a></li>
+<li><a href="#2-capacity-estimation--scale">Capacity Estimation &amp; Scale</a></li>
+<li><a href="#3-high-level-architecture">High-Level Architecture</a></li>
+<li><a href="#4-core-components-deep-dive">Core Components Deep Dive</a></li>
+<li><a href="#5-url-encoding-strategies">URL Encoding Strategies</a></li>
+<li><a href="#6-data-models--storage">Data Models &amp; Storage</a></li>
+<li><a href="#7-read-heavy-optimization">Read-Heavy Optimization</a></li>
+<li><a href="#8-redirect-strategy-301-vs-302">Redirect Strategy: 301 vs 302</a></li>
+<li><a href="#9-analytics--tracking">Analytics &amp; Tracking</a></li>
+<li><a href="#10-url-expiration--cleanup">URL Expiration &amp; Cleanup</a></li>
+<li><a href="#11-scalability-strategies">Scalability Strategies</a></li>
+<li><a href="#12-design-trade-offs--justifications">Design Trade-offs &amp; Justifications</a></li>
+<li><a href="#13-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. Problem Clarification &amp; Requirements</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> A URL shortener sounds simple, but it has surprising depth. Start by clarifying the exact scope. Many candidates jump into encoding schemes without understanding the full picture.</p>
+</div>
+
+
+<h3>Questions to Ask the Interviewer</h3>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Question</th>
+<th>Why It Matters</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Scale</strong></td>
+<td>How many URLs shortened per day?</td>
+<td>Drives database and caching choices</td>
+</tr>
+<tr>
+<td><strong>Read:Write</strong></td>
+<td>What is the read-to-write ratio?</td>
+<td>Determines caching strategy</td>
+</tr>
+<tr>
+<td><strong>Length</strong></td>
+<td>How short should the URLs be?</td>
+<td>Constrains the encoding space</td>
+</tr>
+<tr>
+<td><strong>Custom Aliases</strong></td>
+<td>Can users pick their own short codes?</td>
+<td>Adds uniqueness checking complexity</td>
+</tr>
+<tr>
+<td><strong>Expiration</strong></td>
+<td>Do URLs expire? Default TTL?</td>
+<td>Storage reclamation, cleanup jobs</td>
+</tr>
+<tr>
+<td><strong>Analytics</strong></td>
+<td>Do we track clicks, referrers, geography?</td>
+<td>Adds write amplification per redirect</td>
+</tr>
+<tr>
+<td><strong>Authentication</strong></td>
+<td>Do users need accounts to create URLs?</td>
+<td>Affects rate limiting approach</td>
+</tr>
+<tr>
+<td><strong>Availability</strong></td>
+<td>What availability target?</td>
+<td>Drives replication strategy</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>Functional Requirements (Agreed Upon)</h3>
+<ul>
+<li>Given a long URL, generate a unique short URL</li>
+<li>When a user hits the short URL, redirect them to the original long URL</li>
+<li>Users can optionally pick a custom alias for the short URL</li>
+<li>URLs have a configurable expiration (default: 5 years)</li>
+<li>Basic analytics: click count, geographic breakdown, referrer info</li>
+<li>API access for programmatic URL shortening</li>
+</ul>
+<h3>Non-Functional Requirements</h3>
+<ul>
+<li><strong>Availability:</strong> 99.99% uptime — redirects must always work</li>
+<li><strong>Latency:</strong> Redirect latency &lt; 10ms P99 (excluding network round-trip)</li>
+<li><strong>Scale:</strong> 100 million new URLs per day, 10 billion redirects per day</li>
+<li><strong>Durability:</strong> Once a short URL is created, it must never be lost within its TTL</li>
+<li><strong>Consistency:</strong> No two long URLs should map to the same short code (uniqueness guarantee)</li>
+</ul>
+<hr>
+<h2>2. Capacity Estimation &amp; Scale</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Show your math step by step. Round numbers aggressively to keep the arithmetic clean. The point is demonstrating you can reason about scale, not that you can multiply precisely.</p>
+</div>
+
+
+<h3>Traffic Estimation</h3>
+<pre><code>New URLs per day    = 100 Million
+Read:Write ratio    = 100:1
+Redirects per day   = 100M × 100 = 10 Billion
+
+Write QPS = 100M / 86,400 ≈ 1,160 URLs/sec
+Read QPS  = 10B / 86,400  ≈ 116,000 redirects/sec
+
+Peak (2x average):
+Write QPS = ~2,300/sec
+Read QPS  = ~232,000/sec
+</code></pre>
+<h3>Storage Estimation</h3>
+<pre><code>Each URL record:
+  - Short code (7 chars)     = 7 bytes
+  - Long URL (avg 200 chars) = 200 bytes
+  - Created timestamp        = 8 bytes
+  - Expiry timestamp         = 8 bytes
+  - User ID (optional)       = 16 bytes
+  - Click count              = 8 bytes
+  - Overhead / padding       = ~60 bytes
+  Total per record           ≈ 300 bytes
+
+Per day:  100M × 300 bytes = 30 GB/day
+Per year: 30 GB × 365      = ~11 TB/year
+5 years:                    = ~55 TB
+
+With replication (3x):      = ~165 TB
+</code></pre>
+<h3>Memory Estimation (Cache)</h3>
+<pre><code>If we cache 20% of URLs (hot set, 80/20 rule):
+Daily redirects = 10 Billion
+Unique URLs accessed per day ≈ 1 Billion (many URLs accessed repeatedly)
+20% of 1B = 200 Million URLs to cache
+
+Cache memory = 200M × 300 bytes = 60 GB
+
+This fits comfortably in a modern Redis cluster.
+</code></pre>
+<h3>Bandwidth Estimation</h3>
+<pre><code>Incoming (writes): 1,160 × 300 bytes = ~350 KB/sec (negligible)
+Outgoing (reads):  116,000 × 300 bytes = ~35 MB/sec
+
+Including HTTP headers + redirect response (~500 bytes each):
+116,000 × 500 = ~58 MB/sec outgoing
+
+This is well within the capacity of modern load balancers.
+</code></pre>
+<hr>
+<h2>3. High-Level Architecture</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Draw the high-level architecture first, then go deep on each component. This shows you can think top-down before diving into details.</p>
+</div>
+
+
+<pre class="mermaid">
+graph TB
+    subgraph Clients
+        WEB[Web Browser]
+        MOB[Mobile App]
+        API_CLIENT[API Client]
+    end
+
+    subgraph Load Balancing
+        LB[Load Balancer<br/>Round Robin + Health Checks]
+    end
+
+    subgraph Application Layer
+        WS1[URL Service 1]
+        WS2[URL Service 2]
+        WS3[URL Service N]
+    end
+
+    subgraph Caching Layer
+        RC1[Redis Cluster<br/>Node 1]
+        RC2[Redis Cluster<br/>Node 2]
+        RC3[Redis Cluster<br/>Node N]
+    end
+
+    subgraph Database Layer
+        DB_PRIMARY[(Primary DB)]
+        DB_REPLICA1[(Read Replica 1)]
+        DB_REPLICA2[(Read Replica 2)]
+    end
+
+    subgraph Key Generation
+        KGS[Key Generation<br/>Service]
+        ZK[ZooKeeper<br/>Counter Ranges]
+    end
+
+    subgraph Analytics
+        KAFKA[Kafka<br/>Click Events]
+        ANALYTICS[Analytics<br/>Processor]
+        ANALYTICS_DB[(Analytics DB<br/>ClickHouse)]
+    end
+
+    WEB --> LB
+    MOB --> LB
+    API_CLIENT --> LB
+    LB --> WS1
+    LB --> WS2
+    LB --> WS3
+    WS1 --> RC1
+    WS2 --> RC2
+    WS3 --> RC3
+    RC1 --> DB_PRIMARY
+    RC2 --> DB_REPLICA1
+    RC3 --> DB_REPLICA2
+    DB_PRIMARY --> DB_REPLICA1
+    DB_PRIMARY --> DB_REPLICA2
+    WS1 --> KGS
+    KGS --> ZK
+    WS1 --> KAFKA
+    WS2 --> KAFKA
+    WS3 --> KAFKA
+    KAFKA --> ANALYTICS
+    ANALYTICS --> ANALYTICS_DB
+</pre>
+<h3>URL Shortening Flow</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant LB as Load Balancer
+    participant S as URL Service
+    participant KGS as Key Gen Service
+    participant Cache as Redis Cache
+    participant DB as Database
+
+    C->>LB: POST /api/shorten {longUrl, customAlias?}
+    LB->>S: Forward request
+
+    alt Custom Alias Provided
+        S->>DB: Check if alias exists
+        DB-->>S: Available / Taken
+        alt Alias Taken
+            S-->>C: 409 Conflict
+        end
+    else Generate Short Code
+        S->>KGS: Get next unique key
+        KGS-->>S: Return short code (e.g., "aB3x7Kq")
+    end
+
+    S->>DB: INSERT (shortCode, longUrl, expiry, userId)
+    S->>Cache: SET shortCode → longUrl (with TTL)
+    S-->>C: 201 Created {shortUrl: "https://short.ly/aB3x7Kq"}
+</pre>
+<h3>Redirect Flow</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant LB as Load Balancer
+    participant S as URL Service
+    participant Cache as Redis Cache
+    participant DB as Database
+    participant K as Kafka
+
+    C->>LB: GET /aB3x7Kq
+    LB->>S: Forward request
+
+    S->>Cache: GET aB3x7Kq
+    alt Cache Hit
+        Cache-->>S: Return longUrl
+    else Cache Miss
+        S->>DB: SELECT longUrl WHERE shortCode = 'aB3x7Kq'
+        DB-->>S: Return longUrl
+        S->>Cache: SET aB3x7Kq → longUrl (backfill cache)
+    end
+
+    S->>K: Async publish click event (shortCode, timestamp, IP, user-agent, referrer)
+    S-->>C: 302 Redirect → longUrl
+</pre>
+<hr>
+<h2>4. Core Components Deep Dive</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> The URL shortening service looks simple, but the key generation strategy is where senior engineers differentiate themselves. Be ready to compare at least 3 approaches with their trade-offs.</p>
+</div>
+
+
+<h3>4.1 URL Service</h3>
+<p>The URL Service is a stateless HTTP server responsible for two operations:</p>
+<ol>
+<li><strong>Shorten:</strong> Accept a long URL, generate or accept a short code, persist the mapping, and return the short URL.</li>
+<li><strong>Redirect:</strong> Look up a short code, return the corresponding long URL as a redirect response.</li>
+</ol>
+<p>Because the service is stateless, it scales horizontally by adding more instances behind the load balancer.</p>
+<p><strong>Rate Limiting:</strong> Each service instance enforces rate limits per API key or IP address. For anonymous users, we allow 10 URL creations per minute. For authenticated API users, limits are configurable per plan. We use a sliding window rate limiter backed by Redis.</p>
+<p><strong>Input Validation:</strong> The service validates incoming URLs:</p>
+<ul>
+<li>Must be a valid URL format (scheme + host at minimum)</li>
+<li>Must not exceed 2,048 characters</li>
+<li>Must not redirect to our own domain (prevents redirect loops)</li>
+<li>Custom aliases: 4-16 characters, alphanumeric and hyphens only</li>
+</ul>
+<h3>4.2 Load Balancer</h3>
+<p>We use a Layer 7 load balancer for several reasons:</p>
+<ul>
+<li><strong>Path-based routing:</strong> Write requests (<code>POST /api/shorten</code>) can be routed differently from read requests (<code>GET /&lt;code&gt;</code>) if needed</li>
+<li><strong>Health checks:</strong> Remove unhealthy service instances from the pool</li>
+<li><strong>SSL termination:</strong> Handle TLS at the edge to reduce CPU load on application servers</li>
+<li><strong>Connection pooling:</strong> Multiplex client connections to reduce backend load</li>
+</ul>
+<p>The load balancer uses weighted round-robin, allowing us to gradually shift traffic to new deployments (canary releases).</p>
+<h3>4.3 Key Generation Service (KGS)</h3>
+<p>This is the most critical component for correctness. It must guarantee globally unique short codes with high throughput and no coordination overhead at request time.</p>
+<p>We explore encoding strategies in detail in Section 5, but at the architectural level, the KGS works as follows:</p>
+<ol>
+<li>On startup, each KGS instance requests a <strong>range</strong> of counter values from ZooKeeper (e.g., 1,000,000 to 1,999,999).</li>
+<li>It converts each counter to a base62 string to produce a short code.</li>
+<li>When a URL Service instance needs a key, it calls its local KGS, which returns the next counter from its range and increments.</li>
+<li>When a range is exhausted, the KGS requests a new range from ZooKeeper.</li>
+</ol>
+<div class="important">
+
+<p>The KGS must pre-fetch ranges before the current range is exhausted. If it waits until the range runs out, there is a brief period where URL creation will block. A good implementation starts fetching the next range when the current range is 80% consumed.</p>
+</div>
+
+
+<h3>4.4 Cache Layer (Redis)</h3>
+<p>We deploy a Redis cluster to cache short-code-to-long-URL mappings. Given our calculation of ~60 GB for the hot set, a 3-node Redis cluster with 32 GB per node (with replication) handles this comfortably.</p>
+<p><strong>Cache Strategy:</strong></p>
+<ul>
+<li><strong>Read path:</strong> Check cache first. On cache miss, read from the database and backfill the cache.</li>
+<li><strong>Write path:</strong> After inserting into the database, also write to the cache (write-through).</li>
+<li><strong>Eviction:</strong> LRU eviction policy. The 80/20 rule means 20% of URLs generate 80% of traffic, so the cache hit rate should be very high (&gt;90%).</li>
+<li><strong>TTL:</strong> Cache entries have a TTL matching the URL&#39;s expiration date. This prevents serving expired URLs from cache.</li>
+</ul>
+<hr>
+<h2>5. URL Encoding Strategies</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> This is the core algorithmic decision in a URL shortener design. Be prepared to discuss at least 3 approaches and clearly articulate the trade-offs of each. Senior candidates are expected to recommend a strategy and defend it.</p>
+</div>
+
+
+<h3>How Long Should the Short Code Be?</h3>
+<p>With base62 encoding (a-z, A-Z, 0-9):</p>
+<table>
+<thead>
+<tr>
+<th>Length</th>
+<th>Possible Codes</th>
+<th>Duration at 100M/day</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>5</td>
+<td>916 million</td>
+<td>~9 days</td>
+</tr>
+<tr>
+<td>6</td>
+<td>56.8 billion</td>
+<td>~1.5 years</td>
+</tr>
+<tr>
+<td>7</td>
+<td>3.52 trillion</td>
+<td>~96 years</td>
+</tr>
+<tr>
+<td>8</td>
+<td>218 trillion</td>
+<td>~5,900 years</td>
+</tr>
+</tbody></table>
+<p><strong>Decision:</strong> 7 characters gives us runway for nearly a century at our target rate. This is the sweet spot between URL shortness and address space.</p>
+<hr>
+<h3>Strategy 1: Hash-Based (MD5 / SHA-256 Truncation)</h3>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Hash the long URL using MD5 (128 bits) or SHA-256 (256 bits)</li>
+<li>Take the first 43 bits (enough for 7 base62 characters)</li>
+<li>Encode those bits as base62</li>
+</ol>
+<pre><code>Long URL:  &quot;https://example.com/very/long/path?query=params&quot;
+MD5 Hash:  &quot;e4d909c290d0fb1ca068ffaddf22cbd0&quot;
+First 43 bits → base62 → &quot;aB3x7Kq&quot;
+</code></pre>
+<p><strong>Collision Handling:</strong>
+Since we are truncating a hash, collisions will occur. When a collision is detected (the generated code already exists in the database), we can:</p>
+<ol>
+<li>Append an incrementing counter to the URL before re-hashing</li>
+<li>Try the next 43 bits from the hash</li>
+<li>Prepend a timestamp to the input</li>
+</ol>
+<p><strong>Pros:</strong></p>
+<ul>
+<li>Same long URL always generates the same short code (deduplication is free)</li>
+<li>No coordination needed between servers</li>
+</ul>
+<p><strong>Cons:</strong></p>
+<ul>
+<li>Collisions require database lookups to detect, adding latency</li>
+<li>As the keyspace fills up, collision rate increases</li>
+<li>Collision resolution adds complexity</li>
+</ul>
+<hr>
+<h3>Strategy 2: Counter-Based with ZooKeeper</h3>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Maintain a global counter using ZooKeeper (or etcd)</li>
+<li>Each application server requests a <strong>range</strong> of counter values (e.g., server A gets 1M-2M, server B gets 2M-3M)</li>
+<li>Convert each counter value to base62</li>
+</ol>
+<pre><code>Counter:   1000000
+Base62:    &quot;4c92&quot;  (padded to 7 chars: &quot;004c92x&quot;)
+
+Counter:   1000001
+Base62:    &quot;004c92y&quot;
+</code></pre>
+<div class="warning">
+
+<p>Counter-based approaches make the short codes predictable. An attacker could enumerate recently created URLs by incrementing. Mitigate this by either: (a) shuffling the counter bits before encoding, or (b) using a reversible scrambling function like a Feistel cipher on the counter value.</p>
+</div>
+
+
+<p><strong>Pros:</strong></p>
+<ul>
+<li>Zero collisions by design — every counter value is unique</li>
+<li>Very fast — no database check needed for uniqueness</li>
+<li>Predictable capacity planning</li>
+</ul>
+<p><strong>Cons:</strong></p>
+<ul>
+<li>ZooKeeper is a single point of coordination (mitigated by range allocation)</li>
+<li>Short codes are sequential unless scrambled</li>
+<li>Different long URLs always produce different short codes (no deduplication)</li>
+</ul>
+<hr>
+<h3>Strategy 3: Pre-Generated Key Table</h3>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Offline, generate all possible 7-character base62 strings and store them in a database table</li>
+<li>Mark each key as &quot;available&quot; or &quot;used&quot;</li>
+<li>When a URL needs shortening, grab an available key and mark it used</li>
+<li>Use two tables: <code>keys_available</code> and <code>keys_used</code> to avoid row-level locking</li>
+</ol>
+<p><strong>Pros:</strong></p>
+<ul>
+<li>No collision possible</li>
+<li>Very simple at request time — just read a pre-generated key</li>
+<li>Keys are random-looking (no sequential patterns)</li>
+</ul>
+<p><strong>Cons:</strong></p>
+<ul>
+<li>3.52 trillion possible keys is too many to pre-generate and store</li>
+<li>Practical variant: pre-generate a smaller pool (e.g., 100M keys) and refill</li>
+<li>Requires a concurrency-safe mechanism to prevent two servers from taking the same key</li>
+</ul>
+<hr>
+<h3>Strategy 4: Snowflake-Style ID Generation</h3>
+<p><strong>How it works:</strong>
+Similar to Twitter&#39;s Snowflake ID generator:</p>
+<ul>
+<li>41 bits: timestamp (milliseconds since epoch) — ~69 years</li>
+<li>10 bits: machine/worker ID (1024 workers)</li>
+<li>12 bits: sequence number within the same millisecond (4096 per ms per worker)</li>
+</ul>
+<p>Total: 63 bits, converted to base62 gives 10-11 characters. To get 7 characters, we use fewer bits for each component.</p>
+<p><strong>Pros:</strong></p>
+<ul>
+<li>Completely distributed, no coordination after initial worker ID assignment</li>
+<li>Roughly time-ordered, which can be useful for analytics</li>
+<li>Very high throughput (4096 per millisecond per worker)</li>
+</ul>
+<p><strong>Cons:</strong></p>
+<ul>
+<li>Depends on clock synchronization (NTP)</li>
+<li>Slightly longer than pure counter-based approach</li>
+</ul>
+<hr>
+<h3>Recommended Approach</h3>
+<div class="important">
+
+<p>For the interview, recommend the <strong>counter-based approach with ZooKeeper range allocation</strong> combined with a <strong>bit-scrambling function</strong>. This gives you zero collisions, high throughput, no coordination at request time, and non-sequential codes. It is the most practical approach for production systems at scale.</p>
+</div>
+
+
+<pre><code>Counter: 1000000
+Scramble: feistel_cipher(1000000) → 738291456
+Base62:  738291456 → &quot;kP4mNx2&quot;
+</code></pre>
+<hr>
+<h2>6. Data Models &amp; Storage</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Database choice is a common follow-up question. Be ready to justify SQL vs NoSQL and explain your sharding strategy.</p>
+</div>
+
+
+<h3>Core Data Models</h3>
+<p><strong>URL Mapping Table</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>id</td>
+<td>BIGINT (PK)</td>
+<td>Auto-incrementing primary key</td>
+</tr>
+<tr>
+<td>short_code</td>
+<td>VARCHAR(7)</td>
+<td>The generated short code (unique index)</td>
+</tr>
+<tr>
+<td>long_url</td>
+<td>VARCHAR(2048)</td>
+<td>The original long URL</td>
+</tr>
+<tr>
+<td>user_id</td>
+<td>VARCHAR(36)</td>
+<td>Creator&#39;s user ID (nullable for anonymous)</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>Creation timestamp</td>
+</tr>
+<tr>
+<td>expires_at</td>
+<td>TIMESTAMP</td>
+<td>Expiration timestamp</td>
+</tr>
+<tr>
+<td>is_custom</td>
+<td>BOOLEAN</td>
+<td>Whether this was a custom alias</td>
+</tr>
+<tr>
+<td>click_count</td>
+<td>BIGINT</td>
+<td>Total redirect count (denormalized)</td>
+</tr>
+</tbody></table>
+<p><strong>User Table (if authentication is required)</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>user_id</td>
+<td>VARCHAR(36) PK</td>
+<td>UUID</td>
+</tr>
+<tr>
+<td>email</td>
+<td>VARCHAR(255)</td>
+<td>User email</td>
+</tr>
+<tr>
+<td>api_key</td>
+<td>VARCHAR(64)</td>
+<td>API key for programmatic access</td>
+</tr>
+<tr>
+<td>tier</td>
+<td>ENUM</td>
+<td>free, pro, enterprise</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>Account creation date</td>
+</tr>
+</tbody></table>
+<p><strong>Click Analytics Table</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>click_id</td>
+<td>BIGINT PK</td>
+<td>Auto-incrementing ID</td>
+</tr>
+<tr>
+<td>short_code</td>
+<td>VARCHAR(7)</td>
+<td>Foreign key to URL table</td>
+</tr>
+<tr>
+<td>clicked_at</td>
+<td>TIMESTAMP</td>
+<td>When the redirect happened</td>
+</tr>
+<tr>
+<td>ip_address</td>
+<td>VARCHAR(45)</td>
+<td>Client IP (IPv4 or IPv6)</td>
+</tr>
+<tr>
+<td>user_agent</td>
+<td>VARCHAR(512)</td>
+<td>Browser/client info</td>
+</tr>
+<tr>
+<td>referrer</td>
+<td>VARCHAR(2048)</td>
+<td>HTTP Referer header</td>
+</tr>
+<tr>
+<td>country</td>
+<td>VARCHAR(2)</td>
+<td>Derived from IP (GeoIP lookup)</td>
+</tr>
+<tr>
+<td>city</td>
+<td>VARCHAR(128)</td>
+<td>Derived from IP</td>
+</tr>
+<tr>
+<td>device_type</td>
+<td>VARCHAR(20)</td>
+<td>mobile, desktop, tablet, bot</td>
+</tr>
+</tbody></table>
+<h3>Database Choice: SQL vs NoSQL</h3>
+<table>
+<thead>
+<tr>
+<th>Factor</th>
+<th>SQL (MySQL/PostgreSQL)</th>
+<th>NoSQL (DynamoDB/Cassandra)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Schema</strong></td>
+<td>Fixed schema, ACID transactions</td>
+<td>Flexible schema, eventual consistency</td>
+</tr>
+<tr>
+<td><strong>Reads</strong></td>
+<td>Fast with proper indexing</td>
+<td>Very fast key-value lookups</td>
+</tr>
+<tr>
+<td><strong>Writes</strong></td>
+<td>Good, but row locking can bottleneck</td>
+<td>Excellent write throughput</td>
+</tr>
+<tr>
+<td><strong>Sharding</strong></td>
+<td>Manual sharding required</td>
+<td>Built-in horizontal scaling</td>
+</tr>
+<tr>
+<td><strong>Joins</strong></td>
+<td>Supported (useful for analytics)</td>
+<td>Not supported natively</td>
+</tr>
+<tr>
+<td><strong>Consistency</strong></td>
+<td>Strong consistency by default</td>
+<td>Tunable (eventual to strong)</td>
+</tr>
+</tbody></table>
+<p><strong>Recommendation:</strong> Use <strong>NoSQL (DynamoDB or Cassandra)</strong> for the URL mapping table because:</p>
+<ol>
+<li>The access pattern is simple: key-value lookup by short_code</li>
+<li>We need horizontal scalability for 100M writes/day</li>
+<li>We do not need joins for the core redirect path</li>
+<li>DynamoDB provides single-digit millisecond reads at any scale</li>
+</ol>
+<p>Use a <strong>columnar analytics database (ClickHouse)</strong> for the click analytics table because:</p>
+<ol>
+<li>Click events are append-only (write-optimized)</li>
+<li>Analytics queries aggregate over time ranges (ClickHouse excels at this)</li>
+<li>We can tolerate eventual consistency for analytics data</li>
+</ol>
+<h3>Sharding Strategy</h3>
+<p>For DynamoDB/Cassandra, the <strong>partition key</strong> is <code>short_code</code>. Since our base62 encoding produces well-distributed keys, the data distributes evenly across partitions without hot spots.</p>
+<p>If using SQL, shard by the <strong>hash of the short_code</strong> across N database instances. Consistent hashing ensures minimal data movement when adding or removing shards.</p>
+<div class="warning">
+
+<p>Do not shard by <code>user_id</code> for the URL table. The redirect path looks up by <code>short_code</code>, not by user. Sharding by user would require a scatter-gather query for every redirect, which destroys performance.</p>
+</div>
+
+
+<hr>
+<h2>7. Read-Heavy Optimization</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> With a 100:1 read:write ratio, caching is not optional — it is a fundamental part of the design. Interviewers will probe whether you understand cache invalidation, eviction policies, and hot key handling.</p>
+</div>
+
+
+<h3>The 80/20 Rule</h3>
+<p>In URL shortening services, traffic follows a power-law distribution. A small fraction of URLs receive the vast majority of traffic. Consider:</p>
+<ul>
+<li>A viral tweet with a shortened link might get millions of clicks in hours</li>
+<li>Most URLs created today will receive fewer than 10 clicks ever</li>
+</ul>
+<p>This means caching the top 20% of URLs by popularity will serve over 80% of redirect requests from cache.</p>
+<h3>Multi-Layer Caching Architecture</h3>
+<pre class="mermaid">
+graph LR
+    subgraph Layer 1 - Client
+        BROWSER[Browser Cache<br/>301 redirects cached<br/>by browser automatically]
+    end
+
+    subgraph Layer 2 - CDN
+        CDN[CDN Edge Cache<br/>Cache redirect responses<br/>at edge locations globally]
+    end
+
+    subgraph Layer 3 - Application
+        APP_CACHE[Local In-Memory Cache<br/>LRU cache on each<br/>application server<br/>~1 GB per server]
+    end
+
+    subgraph Layer 4 - Distributed Cache
+        REDIS[Redis Cluster<br/>~60 GB total<br/>Shared across all servers]
+    end
+
+    subgraph Layer 5 - Database
+        DB[(Database<br/>Source of truth)]
+    end
+
+    BROWSER --> CDN --> APP_CACHE --> REDIS --> DB
+</pre>
+<h3>Cache Population Strategy</h3>
+<p><strong>Write-Through on Creation:</strong>
+When a new short URL is created, immediately write it to Redis. This ensures that the very first redirect hits the cache.</p>
+<p><strong>Read-Through on Miss:</strong>
+If a redirect request misses the cache (the URL was evicted or created before caching was in place), read from the database and backfill the cache.</p>
+<p><strong>Cache Warming:</strong>
+On service startup or after a cache flush, pre-load the top N most popular URLs from the database into cache. This prevents a &quot;thundering herd&quot; of database queries.</p>
+<h3>Handling Hot Keys</h3>
+<p>Some URLs go viral and receive millions of requests per second. Even Redis can struggle if a single key receives disproportionate traffic (all requests hash to the same Redis node).</p>
+<p><strong>Mitigation Strategies:</strong></p>
+<ol>
+<li><strong>Replicate hot keys:</strong> Detect hot keys (&gt;10K QPS) and replicate them across multiple Redis nodes with a suffix (e.g., <code>aB3x7Kq:1</code>, <code>aB3x7Kq:2</code>, ...). The application randomly picks a replica.</li>
+<li><strong>Local caching:</strong> Each application server maintains a small local LRU cache. Hot URLs naturally stay in the local cache, reducing Redis load.</li>
+<li><strong>CDN caching:</strong> For extremely popular URLs, cache the redirect response at the CDN edge. This is the most effective layer because it prevents traffic from reaching our infrastructure entirely.</li>
+</ol>
+<hr>
+<h2>8. Redirect Strategy: 301 vs 302</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> This is a classic trade-off question. Interviewers want to see that you understand the implications of HTTP status codes beyond just &quot;it redirects.&quot;</p>
+</div>
+
+
+<h3>301 Permanent Redirect</h3>
+<p>The browser caches the redirect permanently. Subsequent visits to the short URL skip our servers entirely — the browser goes directly to the long URL.</p>
+<p><strong>Pros:</strong></p>
+<ul>
+<li>Dramatically reduces server load</li>
+<li>Faster experience for returning users</li>
+<li>Better for SEO — search engines transfer link juice to the destination</li>
+</ul>
+<p><strong>Cons:</strong></p>
+<ul>
+<li>We lose visibility into click analytics (the browser never calls us again)</li>
+<li>We cannot change the destination URL after the first visit</li>
+<li>If the URL expires, browsers with cached 301s will still redirect to the old destination</li>
+</ul>
+<h3>302 Temporary Redirect</h3>
+<p>The browser does NOT cache the redirect. Every visit goes through our servers.</p>
+<p><strong>Pros:</strong></p>
+<ul>
+<li>Full analytics on every click</li>
+<li>We can change the destination URL at any time</li>
+<li>URL expiration works correctly — we can return 404 after expiry</li>
+</ul>
+<p><strong>Cons:</strong></p>
+<ul>
+<li>Higher server load (every click hits our infrastructure)</li>
+<li>Slightly slower for users (extra round-trip through our servers)</li>
+<li>Search engines may not transfer SEO value to the destination</li>
+</ul>
+<h3>Recommendation</h3>
+<div class="important">
+
+<p>Use <strong>302 Temporary Redirect</strong> as the default. Analytics is a core feature, and we need visibility into every click. The additional server load is handled by our caching layers. For enterprise customers who explicitly opt for SEO benefits and do not need analytics, offer 301 as an option.</p>
+</div>
+
+
+<hr>
+<h2>9. Analytics &amp; Tracking</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Analytics adds significant write amplification — every redirect now generates an analytics event. Show that you understand this overhead and have a plan to handle it asynchronously.</p>
+</div>
+
+
+<h3>Click Event Pipeline</h3>
+<p>Every redirect generates a click event containing:</p>
+<ul>
+<li>Short code</li>
+<li>Timestamp</li>
+<li>Client IP address</li>
+<li>User-Agent header</li>
+<li>HTTP Referer header</li>
+<li>Derived fields: country, city, device type, OS, browser</li>
+</ul>
+<h3>Asynchronous Processing</h3>
+<p>We must NOT let analytics slow down the redirect response. The redirect should complete in &lt;10ms. Analytics processing happens asynchronously:</p>
+<ol>
+<li>The URL Service publishes a click event to <strong>Kafka</strong> immediately after sending the redirect response.</li>
+<li>A <strong>Stream Processor</strong> (Kafka Streams or Flink) consumes events and:<ul>
+<li>Enriches them with GeoIP data (MaxMind database)</li>
+<li>Parses User-Agent strings into device/browser/OS</li>
+<li>Deduplicates (optional: count unique visitors vs total clicks)</li>
+</ul>
+</li>
+<li>Enriched events are written to <strong>ClickHouse</strong> for analytical queries.</li>
+<li>A <strong>Counter Service</strong> atomically increments the <code>click_count</code> in the URL mapping table (batched updates, not per-click).</li>
+</ol>
+<pre class="mermaid">
+graph LR
+    subgraph Redirect Path - Synchronous
+        REQ[Redirect Request] --> SVC[URL Service]
+        SVC --> RESP[302 Redirect Response]
+    end
+
+    subgraph Analytics Path - Asynchronous
+        SVC -->|Fire and forget| KAFKA[Kafka<br/>Click Events Topic]
+        KAFKA --> ENRICHER[Stream Processor<br/>GeoIP + User-Agent parsing]
+        ENRICHER --> CH[(ClickHouse<br/>Analytics Storage)]
+        ENRICHER --> COUNTER[Counter Service<br/>Batch increment click_count]
+        COUNTER --> DB[(URL Database)]
+    end
+</pre>
+<h3>Analytics Queries Supported</h3>
+<table>
+<thead>
+<tr>
+<th>Query</th>
+<th>Example</th>
+<th>Storage</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Total clicks</td>
+<td>&quot;How many clicks did this URL get?&quot;</td>
+<td>URL table (denormalized click_count)</td>
+</tr>
+<tr>
+<td>Clicks over time</td>
+<td>&quot;Clicks per hour for the last 7 days&quot;</td>
+<td>ClickHouse (time-series aggregation)</td>
+</tr>
+<tr>
+<td>Geographic breakdown</td>
+<td>&quot;Top 10 countries by clicks&quot;</td>
+<td>ClickHouse (GROUP BY country)</td>
+</tr>
+<tr>
+<td>Referrer analysis</td>
+<td>&quot;Where is the traffic coming from?&quot;</td>
+<td>ClickHouse (GROUP BY referrer domain)</td>
+</tr>
+<tr>
+<td>Device breakdown</td>
+<td>&quot;Mobile vs Desktop split&quot;</td>
+<td>ClickHouse (GROUP BY device_type)</td>
+</tr>
+<tr>
+<td>Unique visitors</td>
+<td>&quot;How many unique IPs clicked?&quot;</td>
+<td>ClickHouse (COUNT DISTINCT ip_address)</td>
+</tr>
+</tbody></table>
+<h3>Real-Time vs Batch Analytics</h3>
+<p>For dashboards that show real-time click counts, we maintain an approximate counter using Redis <code>INCR</code>. This is updated synchronously during the redirect (a single Redis INCR adds &lt; 1ms latency). The precise analytics in ClickHouse may lag by a few seconds but provides richer data.</p>
+<hr>
+<h2>10. URL Expiration &amp; Cleanup</h2>
+<h3>Expiration Strategies</h3>
+<p><strong>Lazy Deletion (Recommended Primary Strategy):</strong></p>
+<ul>
+<li>When a redirect request comes in, check the <code>expires_at</code> timestamp</li>
+<li>If the URL has expired, return 410 Gone instead of redirecting</li>
+<li>Remove the expired entry from cache</li>
+<li>Do NOT delete from the database immediately (the record serves as an audit trail)</li>
+</ul>
+<p><strong>Active Cleanup (Background Job):</strong></p>
+<ul>
+<li>A scheduled job runs periodically (e.g., every hour) and scans for expired URLs</li>
+<li>Expired URLs older than a grace period (e.g., 30 days past expiration) are moved to a cold storage archive, then deleted from the primary database</li>
+<li>This reclaims storage space and keeps the primary database lean</li>
+</ul>
+<p><strong>TTL in Cache:</strong></p>
+<ul>
+<li>When writing to Redis, set the TTL to match the URL&#39;s expiration date</li>
+<li>Redis automatically evicts expired entries, so no cleanup job is needed for the cache layer</li>
+</ul>
+<div class="note">
+
+<p>Lazy deletion alone is insufficient. Without active cleanup, the database will grow indefinitely with expired URLs. However, lazy deletion ensures correctness — we never serve an expired URL — while active cleanup handles storage efficiency.</p>
+</div>
+
+
+<h3>Short Code Recycling</h3>
+<p>After a URL expires and is cleaned up, should we recycle the short code?</p>
+<p><strong>Arguments for recycling:</strong></p>
+<ul>
+<li>Prevents keyspace exhaustion over very long time horizons</li>
+<li>With 7-character base62, we have 3.52 trillion codes, so exhaustion is unlikely within decades</li>
+</ul>
+<p><strong>Arguments against recycling:</strong></p>
+<ul>
+<li>A recycled code might be cached by browsers or CDNs pointing to the old destination</li>
+<li>Users who bookmarked the old URL would be surprised to land on a different page</li>
+<li>Adds complexity to the key generation system</li>
+</ul>
+<p><strong>Recommendation:</strong> Do not recycle short codes. The 7-character keyspace is large enough that exhaustion is not a practical concern. If it ever becomes one, extend to 8 characters.</p>
+<hr>
+<h2>11. Scalability Strategies</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Scalability is not just about adding more servers. Talk about what bottlenecks exist at each layer and how you would address them specifically.</p>
+</div>
+
+
+<h3>Application Layer Scaling</h3>
+<p>The URL Service is stateless, so horizontal scaling is straightforward. Add more instances behind the load balancer. Auto-scaling based on CPU utilization or request rate.</p>
+<h3>Database Scaling</h3>
+<p><strong>Read Replicas:</strong>
+Since reads dominate (100:1), add read replicas. Redirect queries go to replicas. Write queries go to the primary.</p>
+<p><strong>Sharding:</strong>
+Partition the URL table by short_code hash. With consistent hashing, adding a new shard requires migrating only 1/N of the data. Each shard handles ~100M/N writes per day.</p>
+<pre class="mermaid">
+graph TB
+    subgraph Application Layer
+        S1[Service 1]
+        S2[Service 2]
+        S3[Service N]
+    end
+
+    subgraph Shard Router
+        ROUTER[Consistent Hash Ring<br/>short_code → shard]
+    end
+
+    subgraph Database Shards
+        SHARD1[(Shard 1<br/>codes a-f)]
+        SHARD2[(Shard 2<br/>codes g-m)]
+        SHARD3[(Shard 3<br/>codes n-s)]
+        SHARD4[(Shard 4<br/>codes t-z)]
+    end
+
+    subgraph Replicas
+        R1A[(Replica 1A)]
+        R1B[(Replica 1B)]
+        R2A[(Replica 2A)]
+        R2B[(Replica 2B)]
+    end
+
+    S1 --> ROUTER
+    S2 --> ROUTER
+    S3 --> ROUTER
+    ROUTER --> SHARD1
+    ROUTER --> SHARD2
+    ROUTER --> SHARD3
+    ROUTER --> SHARD4
+    SHARD1 --> R1A
+    SHARD1 --> R1B
+    SHARD2 --> R2A
+    SHARD2 --> R2B
+</pre>
+<h3>Cache Scaling</h3>
+<p>Redis Cluster automatically partitions keys across nodes using hash slots. To scale:</p>
+<ul>
+<li>Add more nodes to the cluster</li>
+<li>Redis migrates hash slots automatically</li>
+<li>No application-level sharding logic needed</li>
+</ul>
+<h3>Multi-Region Deployment</h3>
+<p>For global low-latency redirects:</p>
+<ol>
+<li>Deploy URL Services in multiple regions (US, EU, Asia)</li>
+<li>Use GeoDNS to route users to the nearest region</li>
+<li>Each region has its own Redis cache cluster</li>
+<li>Database replication across regions with eventual consistency (acceptable for reads; writes always go to the primary region)</li>
+</ol>
+<div class="warning">
+
+<p>Multi-region writes create conflict resolution complexity. For a URL shortener, the simplest approach is single-region writes with multi-region read replicas. The write latency increase for users far from the primary region is acceptable because URL creation is infrequent and not latency-sensitive (unlike redirects).</p>
+</div>
+
+
+<hr>
+<h2>12. Design Trade-offs &amp; Justifications</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> The best candidates proactively discuss trade-offs. Do not wait for the interviewer to ask — call out the decisions you made and why.</p>
+</div>
+
+
+<h3>Trade-off 1: NoSQL vs SQL for URL Storage</h3>
+<table>
+<thead>
+<tr>
+<th>Consideration</th>
+<th>Our Decision</th>
+<th>Alternative</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Access pattern is key-value</td>
+<td>DynamoDB (NoSQL)</td>
+<td>PostgreSQL with index on short_code</td>
+</tr>
+<tr>
+<td>Scalability</td>
+<td>DynamoDB scales automatically</td>
+<td>PostgreSQL requires manual sharding</td>
+</tr>
+<tr>
+<td>Analytics joins</td>
+<td>Separate ClickHouse for analytics</td>
+<td>PostgreSQL with JOIN to analytics table</td>
+</tr>
+<tr>
+<td>Consistency</td>
+<td>Eventual (acceptable)</td>
+<td>Strong (not needed for reads)</td>
+</tr>
+</tbody></table>
+<p><strong>Justification:</strong> The redirect path is a pure key-value lookup. NoSQL databases are purpose-built for this pattern and eliminate the operational overhead of managing shards, replicas, and failover manually.</p>
+<h3>Trade-off 2: Counter-Based vs Hash-Based Key Generation</h3>
+<table>
+<thead>
+<tr>
+<th>Consideration</th>
+<th>Our Decision</th>
+<th>Alternative</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Uniqueness</td>
+<td>Counter (guaranteed unique)</td>
+<td>MD5 truncation (collision possible)</td>
+</tr>
+<tr>
+<td>Deduplication</td>
+<td>Not built-in (same URL gets different codes)</td>
+<td>Hash gives same code for same URL</td>
+</tr>
+<tr>
+<td>Coordination</td>
+<td>ZooKeeper for range allocation</td>
+<td>No coordination needed for hashing</td>
+</tr>
+<tr>
+<td>Predictability</td>
+<td>Scrambled counter (non-sequential)</td>
+<td>Hash output is unpredictable</td>
+</tr>
+</tbody></table>
+<p><strong>Justification:</strong> Collision-free generation eliminates an entire class of failure modes. The lack of deduplication is acceptable — if a user shortens the same URL twice, they get two short codes, each with independent analytics.</p>
+<h3>Trade-off 3: 302 vs 301 Redirects</h3>
+<table>
+<thead>
+<tr>
+<th>Consideration</th>
+<th>Our Decision</th>
+<th>Alternative</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Analytics</td>
+<td>302 (full visibility)</td>
+<td>301 (lose click data after first visit)</td>
+</tr>
+<tr>
+<td>Server load</td>
+<td>Higher (every click hits us)</td>
+<td>Lower (browser caches the redirect)</td>
+</tr>
+<tr>
+<td>Flexibility</td>
+<td>Can change destination anytime</td>
+<td>Destination is &quot;permanent&quot;</td>
+</tr>
+<tr>
+<td>SEO</td>
+<td>Weaker link juice transfer</td>
+<td>Stronger SEO benefit</td>
+</tr>
+</tbody></table>
+<p><strong>Justification:</strong> Analytics is a core value proposition. The additional server load is manageable with our caching strategy. We achieve sub-10ms redirect latency even with 302.</p>
+<h3>Trade-off 4: Synchronous vs Asynchronous Analytics</h3>
+<table>
+<thead>
+<tr>
+<th>Consideration</th>
+<th>Our Decision</th>
+<th>Alternative</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Redirect latency</td>
+<td>Async (no impact on redirect)</td>
+<td>Sync (adds ~5-10ms per redirect)</td>
+</tr>
+<tr>
+<td>Data loss risk</td>
+<td>Kafka provides durability</td>
+<td>Direct DB write is simpler</td>
+</tr>
+<tr>
+<td>Complexity</td>
+<td>Higher (Kafka + stream processor)</td>
+<td>Lower (single DB write)</td>
+</tr>
+<tr>
+<td>Throughput</td>
+<td>Handles 116K redirects/sec easily</td>
+<td>DB writes would bottleneck</td>
+</tr>
+</tbody></table>
+<p><strong>Justification:</strong> At 116K redirects/sec, synchronous writes to an analytics database would create severe contention. Kafka decouples the redirect path from analytics processing, ensuring redirect latency is unaffected by analytics load.</p>
+<hr>
+<h2>13. Interview Cheat Sheet</h2>
+<div class="important">
+
+<p>Use this as a quick reference during your interview preparation. Memorize the key numbers and decision points.</p>
+</div>
+
+
+<h3>Key Numbers to Remember</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>New URLs per day</td>
+<td>100 Million</td>
+</tr>
+<tr>
+<td>Redirects per day</td>
+<td>10 Billion</td>
+</tr>
+<tr>
+<td>Write QPS</td>
+<td>~1,200/sec</td>
+</tr>
+<tr>
+<td>Read QPS</td>
+<td>~120,000/sec</td>
+</tr>
+<tr>
+<td>Storage per URL</td>
+<td>~300 bytes</td>
+</tr>
+<tr>
+<td>Storage per year</td>
+<td>~11 TB</td>
+</tr>
+<tr>
+<td>Cache size (20% hot set)</td>
+<td>~60 GB</td>
+</tr>
+<tr>
+<td>Short code length</td>
+<td>7 characters (base62)</td>
+</tr>
+<tr>
+<td>Keyspace</td>
+<td>3.52 trillion unique codes</td>
+</tr>
+</tbody></table>
+<h3>Decision Summary</h3>
+<table>
+<thead>
+<tr>
+<th>Decision Point</th>
+<th>Choice</th>
+<th>Key Reason</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Short code generation</td>
+<td>Counter + ZooKeeper + scramble</td>
+<td>Zero collisions</td>
+</tr>
+<tr>
+<td>Database</td>
+<td>DynamoDB (NoSQL)</td>
+<td>Key-value access pattern</td>
+</tr>
+<tr>
+<td>Cache</td>
+<td>Redis Cluster</td>
+<td>90%+ hit rate with 80/20 rule</td>
+</tr>
+<tr>
+<td>Redirect type</td>
+<td>302 Temporary</td>
+<td>Analytics visibility</td>
+</tr>
+<tr>
+<td>Analytics pipeline</td>
+<td>Kafka + ClickHouse</td>
+<td>Async, no redirect latency impact</td>
+</tr>
+<tr>
+<td>Consistency model</td>
+<td>Eventual for reads</td>
+<td>Acceptable for redirects</td>
+</tr>
+</tbody></table>
+<h3>Common Follow-Up Questions</h3>
+<p><strong>Q: How do you prevent abuse (spam/phishing URLs)?</strong>
+A: Check submitted URLs against Google Safe Browsing API before shortening. Rate limit URL creation per IP/API key. Implement a reporting mechanism for users to flag malicious URLs.</p>
+<p><strong>Q: How do you handle a URL that gets 10M clicks in one minute?</strong>
+A: The multi-layer caching (local cache + Redis + CDN) handles this. CDN edge caching is the most effective — the viral URL is served from edge nodes globally without hitting our origin servers.</p>
+<p><strong>Q: What if ZooKeeper goes down?</strong>
+A: Each KGS instance pre-fetches counter ranges, so it can continue generating keys for thousands or millions of URLs without ZooKeeper. ZooKeeper is only needed when a range is exhausted. We also run ZooKeeper as a 3 or 5 node ensemble for fault tolerance.</p>
+<p><strong>Q: How would you implement custom domains (e.g., user wants links under their own domain)?</strong>
+A: Users configure a CNAME DNS record pointing their domain to our service. Our load balancer accepts traffic for any configured domain. The URL Service resolves the domain to the user&#39;s account and looks up the short code within that account&#39;s namespace.</p>
+<p><strong>Q: How do you handle URL encoding for international characters?</strong>
+A: We accept and store URLs in their encoded form (percent-encoding for non-ASCII characters). The short code itself is always ASCII base62. We validate that the URL is well-formed after encoding.</p>
+<h3>Diagram to Draw on the Whiteboard</h3>
+<p>If you have limited time, draw this simplified architecture:</p>
+<pre><code>Client → Load Balancer → URL Service → Redis Cache → Database
+                              ↓
+                         Key Gen Service (ZooKeeper)
+                              ↓
+                         Kafka → Analytics (ClickHouse)
+</code></pre>
+<p>The five key components to emphasize:</p>
+<ol>
+<li><strong>Key Generation</strong> — how you produce unique, short, non-sequential codes</li>
+<li><strong>Cache</strong> — why it matters with 100:1 read:write ratio</li>
+<li><strong>302 vs 301</strong> — trade-off between analytics and performance</li>
+<li><strong>Async analytics</strong> — Kafka decouples redirects from analytics</li>
+<li><strong>Database choice</strong> — NoSQL for the key-value access pattern</li>
+</ol>
+<hr>
+<div class="note">
+
+<p><strong>Final Thought:</strong> The URL shortener is often the first system design question candidates encounter. Despite its apparent simplicity, it tests fundamental concepts: hashing, caching, database selection, consistency models, and scalability. Master this design and the patterns transfer directly to more complex systems.</p>
+</div>
+
+
+</body>
+</html>

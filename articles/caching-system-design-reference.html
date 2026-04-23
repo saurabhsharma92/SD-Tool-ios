@@ -1,0 +1,1702 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Caching — Complete System Design Reference</title>
+</head>
+<body>
+
+<h1>⚡ Caching — Complete System Design Reference</h1>
+<h3>Staff Engineer Interview Preparation Guide</h3>
+<div class="tip">
+
+<p><strong>Why caching matters in interviews:</strong> Every large-scale system design question eventually comes down to caching. Interviewers expect you to know <em>which</em> cache type to use, <em>why</em>, and <em>what the tradeoffs are</em> — not just &quot;add Redis.&quot;</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-why-cache-the-fundamental-problem">Why Cache? The Fundamental Problem</a></li>
+<li><a href="#2-caching-hierarchy--the-big-picture">Caching Hierarchy — The Big Picture</a></li>
+<li><a href="#3-cache-types--complete-reference">Cache Types — Complete Reference</a></li>
+<li><a href="#4-caching-strategies-read-patterns">Caching Strategies (Read Patterns)</a></li>
+<li><a href="#5-cache-write-policies">Cache Write Policies</a></li>
+<li><a href="#6-cache-eviction-policies">Cache Eviction Policies</a></li>
+<li><a href="#7-cache-invalidation--the-hard-problem">Cache Invalidation — The Hard Problem</a></li>
+<li><a href="#8-distributed-caching">Distributed Caching</a></li>
+<li><a href="#9-when-to-use-which-cache">When to Use Which Cache</a></li>
+<li><a href="#10-cache-anti-patterns--failure-modes">Cache Anti-Patterns &amp; Failure Modes</a></li>
+<li><a href="#11-real-world-system-examples">Real-World System Examples</a></li>
+<li><a href="#12-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. Why Cache? The Fundamental Problem</h2>
+<h3>The Latency Gap</h3>
+<pre class="mermaid">
+graph LR
+    subgraph Fast["⚡ Fast (Target)"]
+        L1["L1 Cache\n1 ns"]
+        L2["L2 Cache\n4 ns"]
+        RAM["RAM\n100 ns"]
+        REDIS["Redis\n~1 ms"]
+    end
+
+    subgraph Slow["🐢 Slow (Problem)"]
+        DB["Database\n5–50 ms"]
+        DISK["HDD\n5–10 ms"]
+        REMOTE["Cross-Region\n100–150 ms"]
+        API["3rd-Party API\n50–500 ms"]
+    end
+
+    subgraph Impact["📈 Business Impact"]
+        CONV["100ms latency\n= 1% revenue loss\n(Amazon study)"]
+        LOAD["DB overload\n= cascading failure"]
+        COST["More DB servers\n= higher infra cost"]
+    end
+
+    Slow --> Impact
+    Fast -->|"Cache bridges\nthis gap"| Impact
+</pre>
+<h3>The Core Value Proposition</h3>
+<table>
+<thead>
+<tr>
+<th>Without Cache</th>
+<th>With Cache</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Every request hits the database</td>
+<td>95%+ requests served from memory</td>
+</tr>
+<tr>
+<td>DB becomes bottleneck at scale</td>
+<td>DB handles only cache misses</td>
+</tr>
+<tr>
+<td>Latency = DB query time (5–50ms)</td>
+<td>Latency = cache lookup (&lt;1ms)</td>
+</tr>
+<tr>
+<td>Vertical scaling only (expensive)</td>
+<td>Horizontal scale-out possible</td>
+</tr>
+<tr>
+<td>3rd-party API rate limits hit</td>
+<td>API called once, result cached</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>2. Caching Hierarchy — The Big Picture</h2>
+<pre class="mermaid">
+graph TD
+    subgraph Client["📱 Client Side"]
+        BC["Browser Cache\nHTTP headers, Service Workers\nLatency: 0ms | Size: MBs"]
+        AC["App / Mobile Cache\nIn-memory, SQLite\nLatency: 0ms | Size: MBs–GBs"]
+    end
+
+    subgraph Edge["🌐 Edge / Network"]
+        CDN["CDN Cache\nCloudFront, Akamai, Fastly\nLatency: 1–10ms | Size: TBs globally"]
+        DNS["DNS Cache\nOS-level, ISP-level\nLatency: 0–1ms"]
+        LB["Load Balancer Cache\nNginx, HAProxy\nLatency: <1ms"]
+    end
+
+    subgraph Server["🖥️ Server Side"]
+        AL1["L1: In-Process Cache\nHeap memory per server\nLatency: <0.1ms | Size: MBs"]
+        AL2["L2: Distributed Cache\nRedis, Memcached\nLatency: 1–5ms | Size: GBs–TBs"]
+    end
+
+    subgraph DB["💾 Database Layer"]
+        QC["Query Cache\nMySQL, PostgreSQL buffer pool\nLatency: 0ms (if hot) | Size: Configured"]
+        IC["Index Cache\nB-Tree nodes in RAM\nLatency: <1ms"]
+        RC["Row Cache\nCassandra row cache\nLatency: <1ms"]
+    end
+
+    subgraph Storage["🗄️ Storage Layer"]
+        OS["OS Page Cache\nKernel-managed disk buffer\nLatency: μs | Size: Available RAM"]
+        FC["Flash / SSD Cache\nNVMe tier\nLatency: μs | Size: GBs–TBs"]
+    end
+
+    Client -->|"Cache miss"| Edge
+    Edge -->|"Cache miss"| Server
+    Server -->|"Cache miss"| DB
+    DB -->|"Cache miss"| Storage
+</pre>
+<h3>Hierarchy Summary</h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Technology</th>
+<th>Latency</th>
+<th>Scope</th>
+<th>Best For</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Browser</td>
+<td>HTTP Cache, SW</td>
+<td>0 ms</td>
+<td>Per user</td>
+<td>Static assets, API responses</td>
+</tr>
+<tr>
+<td>CDN</td>
+<td>CloudFront, Akamai</td>
+<td>1–10 ms</td>
+<td>Global</td>
+<td>Images, video, static files</td>
+</tr>
+<tr>
+<td>Load Balancer</td>
+<td>Nginx</td>
+<td>&lt; 1 ms</td>
+<td>Regional</td>
+<td>Common API responses</td>
+</tr>
+<tr>
+<td>In-Process (L1)</td>
+<td>Guava, Caffeine</td>
+<td>&lt; 0.1 ms</td>
+<td>Per server</td>
+<td>Hot configuration, session tokens</td>
+</tr>
+<tr>
+<td>Distributed (L2)</td>
+<td>Redis, Memcached</td>
+<td>1–5 ms</td>
+<td>Cluster-wide</td>
+<td>User sessions, computed results</td>
+</tr>
+<tr>
+<td>Database</td>
+<td>Buffer pool, row cache</td>
+<td>&lt; 1 ms</td>
+<td>Per DB node</td>
+<td>Hot rows and index pages</td>
+</tr>
+<tr>
+<td>OS</td>
+<td>Page cache</td>
+<td>μs</td>
+<td>Per machine</td>
+<td>Sequential file reads</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>3. Cache Types — Complete Reference</h2>
+<h3>3.1 In-Process / Local Cache</h3>
+<pre class="mermaid">
+graph LR
+    subgraph AppServer["Application Server Process"]
+        REQ["Incoming Request"] --> CACHE["In-Memory Cache\nHashMap / Caffeine / Guava\nLives in JVM Heap"]
+        CACHE -->|"Hit"| RES["Response"]
+        CACHE -->|"Miss"| DB[("Database")]
+        DB --> CACHE
+        DB --> RES
+    end
+
+    style CACHE fill:#22c55e,color:#fff
+</pre>
+<p><strong>Characteristics:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Latency</strong></td>
+<td>Sub-millisecond (&lt; 0.1ms)</td>
+</tr>
+<tr>
+<td><strong>Scope</strong></td>
+<td>Single process / single server only</td>
+</tr>
+<tr>
+<td><strong>Size limit</strong></td>
+<td>JVM heap size (typically 256MB – 4GB)</td>
+</tr>
+<tr>
+<td><strong>Consistency</strong></td>
+<td>Each server has its own copy — can diverge</td>
+</tr>
+<tr>
+<td><strong>Eviction</strong></td>
+<td>LRU, LFU, Size-based</td>
+</tr>
+<tr>
+<td><strong>Serialization</strong></td>
+<td>None — objects stored as-is</td>
+</tr>
+<tr>
+<td><strong>Implementation</strong></td>
+<td>Caffeine (Java), Guava Cache, Python <code>functools.lru_cache</code></td>
+</tr>
+</tbody></table>
+<p><strong>When to use:</strong></p>
+<ul>
+<li>Configuration values that rarely change (feature flags, app config)</li>
+<li>Rate limiting counters per server</li>
+<li>Frequently accessed, immutable reference data (country codes, enums)</li>
+<li>Cost-sensitive environments where Redis is overkill</li>
+</ul>
+<p><strong>When NOT to use:</strong></p>
+<ul>
+<li>Data that must be consistent across servers</li>
+<li>Session data (user might hit different server on next request)</li>
+<li>Large datasets that exceed heap budget</li>
+</ul>
+<hr>
+<h3>3.2 Distributed Cache</h3>
+<pre class="mermaid">
+graph TB
+    subgraph AppServers["Application Servers"]
+        S1["Server 1"]
+        S2["Server 2"]
+        S3["Server 3"]
+        SN["Server N"]
+    end
+
+    subgraph DistCache["Distributed Cache Cluster"]
+        subgraph Shard1["Shard 1 (Primary + 2 Replicas)"]
+            P1[("Primary")]
+            R1A[("Replica A")]
+            R1B[("Replica B")]
+            P1 --> R1A
+            P1 --> R1B
+        end
+        subgraph Shard2["Shard 2 (Primary + 2 Replicas)"]
+            P2[("Primary")]
+            R2A[("Replica A")]
+            R2B[("Replica B")]
+            P2 --> R2A
+            P2 --> R2B
+        end
+    end
+
+    S1 & S2 & S3 & SN <--> Shard1
+    S1 & S2 & S3 & SN <--> Shard2
+
+    style P1 fill:#3b82f6,color:#fff
+    style P2 fill:#3b82f6,color:#fff
+</pre>
+<p><strong>Characteristics:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Latency</strong></td>
+<td>1–5 ms (network round trip)</td>
+</tr>
+<tr>
+<td><strong>Scope</strong></td>
+<td>Shared across all servers in cluster</td>
+</tr>
+<tr>
+<td><strong>Size limit</strong></td>
+<td>Scales horizontally (TBs possible)</td>
+</tr>
+<tr>
+<td><strong>Consistency</strong></td>
+<td>Strong within cluster</td>
+</tr>
+<tr>
+<td><strong>Eviction</strong></td>
+<td>LRU, LFU, Allkeys, Volatile</td>
+</tr>
+<tr>
+<td><strong>Serialization</strong></td>
+<td>Required (JSON, MessagePack, Protobuf)</td>
+</tr>
+<tr>
+<td><strong>Implementation</strong></td>
+<td>Redis, Memcached, Hazelcast, Apache Ignite</td>
+</tr>
+</tbody></table>
+<p><strong>When to use:</strong></p>
+<ul>
+<li>User sessions (must be server-agnostic)</li>
+<li>Computed / aggregated results shared across services</li>
+<li>Rate limiting at cluster level</li>
+<li>Leaderboards, counters, pub/sub</li>
+</ul>
+<hr>
+<h3>3.3 CDN Cache (Content Delivery Network)</h3>
+<pre class="mermaid">
+graph TB
+    subgraph Users["👥 Users"]
+        US["User (San Jose)"]
+        EU["User (London)"]
+        AP["User (Tokyo)"]
+    end
+
+    subgraph CDN["🌍 CDN Edge Nodes"]
+        SFO["Edge: San Jose\n~5ms to user"]
+        LON["Edge: London\n~5ms to user"]
+        TYO["Edge: Tokyo\n~5ms to user"]
+    end
+
+    subgraph Origin["🏢 Origin Servers"]
+        OR["Origin\nUS-East"]
+    end
+
+    US <-->|"Cache Hit: 5ms"| SFO
+    EU <-->|"Cache Hit: 5ms"| LON
+    AP <-->|"Cache Hit: 5ms"| TYO
+
+    SFO <-->|"Cache Miss\n~80ms"| OR
+    LON <-->|"Cache Miss\n~100ms"| OR
+    TYO <-->|"Cache Miss\n~150ms"| OR
+
+    style SFO fill:#f59e0b,color:#fff
+    style LON fill:#f59e0b,color:#fff
+    style TYO fill:#f59e0b,color:#fff
+</pre>
+<p><strong>Cache-Control Headers — The CDN Control Plane:</strong></p>
+<pre><code># Cache forever (immutable assets with hash in filename)
+Cache-Control: public, max-age=31536000, immutable
+→ Use for: /static/app.a3b4c5.js, /images/logo.png
+
+# Cache for 5 minutes, allow stale while revalidating
+Cache-Control: public, max-age=300, stale-while-revalidate=60
+→ Use for: API responses, product listings
+
+# Never cache (private user data)
+Cache-Control: private, no-store
+→ Use for: /api/account/details, /cart
+
+# Cache but always revalidate with origin
+Cache-Control: no-cache
+→ Use for: HTML pages (ensures fresh content)
+</code></pre>
+<p><strong>When to use CDN:</strong></p>
+<ul>
+<li>Static assets (JS, CSS, images, fonts, video)</li>
+<li>Public API responses (product catalog, news articles)</li>
+<li>User-generated media (profile photos, uploaded images)</li>
+<li>Anything that can tolerate eventual consistency</li>
+</ul>
+<hr>
+<h3>3.4 Database Query Cache / Buffer Pool</h3>
+<pre class="mermaid">
+graph LR
+    subgraph DBServer["Database Server"]
+        QRY["Incoming Query\nSELECT * FROM users\nWHERE id = 123"]
+
+        subgraph BP["Buffer Pool (RAM)"]
+            PC["Page Cache\nHot data pages in RAM\n(Avoid disk I/O)"]
+            IC["Index Cache\nB-Tree nodes in RAM"]
+            QC["Query Result Cache\n(MySQL - deprecated in 8.0)"]
+        end
+
+        DISK[("Disk\nData Files")]
+
+        QRY --> PC
+        PC -->|"Page not in pool"| DISK
+        DISK --> PC
+        PC -->|"Page in pool"| RES["Result"]
+    end
+
+    style PC fill:#8b5cf6,color:#fff
+    style IC fill:#8b5cf6,color:#fff
+</pre>
+<p><strong>PostgreSQL / MySQL Buffer Pool sizing rule:</strong></p>
+<pre><code>Recommended buffer pool = 70–80% of available RAM
+
+Example: 64 GB RAM server
+  Buffer pool = 64 × 0.75 = 48 GB
+  OS + connections use remaining 16 GB
+
+Monitor with:
+  SHOW STATUS LIKE &#39;Innodb_buffer_pool_read_requests&#39;;  -- Total reads
+  SHOW STATUS LIKE &#39;Innodb_buffer_pool_reads&#39;;          -- Disk reads
+  Hit Rate = 1 - (reads / read_requests) → aim for &gt; 99%
+</code></pre>
+<hr>
+<h3>3.5 Write-Ahead Log (WAL) / Redo Log Cache</h3>
+<p>Not typically discussed but worth mentioning at Staff level:</p>
+<ul>
+<li>Databases buffer writes in memory (WAL buffer) before flushing to disk</li>
+<li>PostgreSQL: <code>wal_buffers = 16MB</code> default</li>
+<li>This makes writes appear fast even though disk I/O is expensive</li>
+<li>Crash recovery replays the WAL to restore consistency</li>
+</ul>
+<hr>
+<h3>3.6 Application-Level Memoization</h3>
+<pre class="mermaid">
+graph LR
+    subgraph Function["Expensive Function"]
+        INPUT["Input: computeRecommendations(userId=123)"]
+        CHECK{"Result in\nmemo cache?"}
+        COMPUTE["Run computation\n200ms CPU-bound work"]
+        STORE["Store result\nin memo cache"]
+        RETURN["Return result\n< 0.1ms"]
+    end
+
+    INPUT --> CHECK
+    CHECK -->|"Hit"| RETURN
+    CHECK -->|"Miss"| COMPUTE
+    COMPUTE --> STORE
+    STORE --> RETURN
+</pre>
+<p><strong>Implementation examples:</strong></p>
+<pre><code class="language-python"># Python — functools.lru_cache
+from functools import lru_cache
+
+@lru_cache(maxsize=1000)
+def get_user_permissions(user_id: int) -&gt; list[str]:
+    return db.query(&quot;SELECT permissions FROM users WHERE id = ?&quot;, user_id)
+
+# Python — TTL-aware with cachetools
+from cachetools import TTLCache, cached
+
+cache = TTLCache(maxsize=1000, ttl=300)  # 5-minute TTL
+
+@cached(cache)
+def get_exchange_rate(currency: str) -&gt; float:
+    return external_api.get_rate(currency)
+</code></pre>
+<hr>
+<h3>3.7 Session Cache</h3>
+<p>Dedicated pattern for user authentication state:</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant API as API Server
+    participant SC as Session Cache (Redis)
+    participant DB as User DB
+
+    C->>API: POST /login {username, password}
+    API->>DB: Validate credentials
+    DB-->>API: User record
+    API->>SC: SET session:{token} {userId, roles, expiry} EX 3600
+    API-->>C: Set-Cookie: session_token=abc123
+
+    C->>API: GET /profile (Cookie: session_token=abc123)
+    API->>SC: GET session:abc123
+    SC-->>API: {userId: 42, roles: ["admin"]}
+    API-->>C: Profile data (no DB hit!)
+</pre>
+<hr>
+<h3>3.8 Write-Through vs. Side Cache — Summary Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Cache Type</th>
+<th>Data Lives</th>
+<th>Consistency</th>
+<th>Latency</th>
+<th>Best For</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>In-Process</td>
+<td>App heap</td>
+<td>Per-server</td>
+<td>&lt; 0.1ms</td>
+<td>Immutable reference data</td>
+</tr>
+<tr>
+<td>Distributed</td>
+<td>Redis/Memcached</td>
+<td>Cluster-wide</td>
+<td>1–5ms</td>
+<td>Sessions, shared state</td>
+</tr>
+<tr>
+<td>CDN</td>
+<td>Edge nodes globally</td>
+<td>Eventual</td>
+<td>1–10ms</td>
+<td>Static assets, public content</td>
+</tr>
+<tr>
+<td>DB Buffer Pool</td>
+<td>DB server RAM</td>
+<td>Strong</td>
+<td>&lt; 1ms</td>
+<td>Hot rows and index pages</td>
+</tr>
+<tr>
+<td>Session Cache</td>
+<td>Redis</td>
+<td>Strong</td>
+<td>1–5ms</td>
+<td>Auth state, user context</td>
+</tr>
+<tr>
+<td>Memoization</td>
+<td>Function scope</td>
+<td>N/A</td>
+<td>&lt; 0.1ms</td>
+<td>CPU-bound computation results</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>4. Caching Strategies (Read Patterns)</h2>
+<h3>4.1 Cache-Aside (Lazy Loading)</h3>
+<div class="tip">
+
+<p>The most common pattern. Application code manages the cache explicitly.</p>
+</div>
+
+
+<pre class="mermaid">
+sequenceDiagram
+    participant App as Application
+    participant C as Cache (Redis)
+    participant DB as Database
+
+    App->>C: GET user:123
+    alt Cache Hit
+        C-->>App: {id:123, name:"Alice"} ✅
+    else Cache Miss
+        C-->>App: null ❌
+        App->>DB: SELECT * FROM users WHERE id=123
+        DB-->>App: {id:123, name:"Alice"}
+        App->>C: SET user:123 {id:123, name:"Alice"} EX 3600
+        App-->>App: Return data
+    end
+</pre>
+<p><strong>Pseudocode:</strong></p>
+<pre><code class="language-python">def get_user(user_id: int) -&gt; User:
+    # 1. Check cache
+    cached = redis.get(f&quot;user:{user_id}&quot;)
+    if cached:
+        return deserialize(cached)
+
+    # 2. Cache miss → query DB
+    user = db.query(&quot;SELECT * FROM users WHERE id = ?&quot;, user_id)
+
+    # 3. Populate cache (TTL = 1 hour)
+    redis.setex(f&quot;user:{user_id}&quot;, 3600, serialize(user))
+
+    return user
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>✅ Pros</th>
+<th>❌ Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Cache only what&#39;s actually requested</td>
+<td>Cache miss = 2 round trips (slower first load)</td>
+</tr>
+<tr>
+<td>Cache failure doesn&#39;t block reads (falls back to DB)</td>
+<td>Cold start = all misses</td>
+</tr>
+<tr>
+<td>Flexible TTL per key</td>
+<td>Risk of stale data between TTL expiry</td>
+</tr>
+<tr>
+<td>Simple to implement</td>
+<td>Cache stampede risk on popular keys</td>
+</tr>
+</tbody></table>
+<p><strong>Best for:</strong> General-purpose read caching, user profiles, product data</p>
+<hr>
+<h3>4.2 Read-Through Cache</h3>
+<div class="tip">
+
+<p>Cache sits in front of DB. Application never talks to DB directly.</p>
+</div>
+
+
+<pre class="mermaid">
+graph LR
+    APP["Application"] -->|"GET user:123"| CACHE["Cache Layer\n(Read-Through)"]
+    CACHE -->|"Hit → return data"| APP
+    CACHE -->|"Miss → fetch & cache"| DB[("Database")]
+    DB -->|"Data + populate cache"| CACHE
+
+    style CACHE fill:#3b82f6,color:#fff
+</pre>
+<table>
+<thead>
+<tr>
+<th>✅ Pros</th>
+<th>❌ Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Application logic is simpler (one interface)</td>
+<td>Cache layer must be smart / configurable</td>
+</tr>
+<tr>
+<td>Cache population is transparent</td>
+<td>Less control over what gets cached</td>
+</tr>
+<tr>
+<td>Consistent caching behavior</td>
+<td>Cache provider must support this pattern natively</td>
+</tr>
+</tbody></table>
+<p><strong>Best for:</strong> Systems using cache providers like AWS ElastiCache, DAX (DynamoDB Accelerator), or Varnish</p>
+<hr>
+<h3>4.3 Write-Through Cache</h3>
+<div class="tip">
+
+<p>Every write goes to cache AND database synchronously.</p>
+</div>
+
+
+<pre class="mermaid">
+sequenceDiagram
+    participant App as Application
+    participant C as Cache
+    participant DB as Database
+
+    App->>C: SET user:123 {new data}
+    C->>DB: INSERT/UPDATE users WHERE id=123
+    DB-->>C: Commit ✅
+    C-->>App: Write confirmed ✅
+
+    Note over C,DB: Both updated atomically in same operation
+</pre>
+<table>
+<thead>
+<tr>
+<th>✅ Pros</th>
+<th>❌ Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Cache always consistent with DB</td>
+<td>Write latency = cache + DB (slower writes)</td>
+</tr>
+<tr>
+<td>No stale reads after writes</td>
+<td>Every write hits DB (no write offloading benefit)</td>
+</tr>
+<tr>
+<td>No separate invalidation needed</td>
+<td>Unused data gets cached (wasted space)</td>
+</tr>
+</tbody></table>
+<p><strong>Best for:</strong> Systems where read consistency is critical and write volume is low — financial dashboards, inventory systems</p>
+<hr>
+<h3>4.4 Write-Behind (Write-Back) Cache</h3>
+<div class="tip">
+
+<p>Writes go to cache first. DB write happens asynchronously later.</p>
+</div>
+
+
+<pre class="mermaid">
+sequenceDiagram
+    participant App as Application
+    participant C as Cache
+    participant WQ as Write Queue
+    participant DB as Database
+
+    App->>C: SET user:123 {new data}
+    C-->>App: ACK ✅ (immediately!)
+    C->>WQ: Queue write job
+
+    Note over C,WQ: Application gets fast ACK
+
+    WQ->>DB: Flush writes (batch, async)
+    DB-->>WQ: Commit
+
+    Note over WQ,DB: DB write happens after — risk window!
+</pre>
+<table>
+<thead>
+<tr>
+<th>✅ Pros</th>
+<th>❌ Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Very fast writes (cache speed)</td>
+<td>Data loss risk if cache fails before flush</td>
+</tr>
+<tr>
+<td>Write batching reduces DB load</td>
+<td>Complexity — need reliable write queue</td>
+</tr>
+<tr>
+<td>Great for write-heavy workloads</td>
+<td>Harder to debug inconsistency</td>
+</tr>
+</tbody></table>
+<p><strong>Best for:</strong> Analytics counters, like/view counts, leaderboards, gaming scores — where losing a few writes is tolerable</p>
+<hr>
+<h3>4.5 Refresh-Ahead (Predictive Cache)</h3>
+<div class="tip">
+
+<p>Cache proactively refreshes before TTL expires, based on access patterns.</p>
+</div>
+
+
+<pre class="mermaid">
+flowchart LR
+    KEY["Cache Key\nTTL = 60s"] -->|"Access at t=0"| DATA["Data Served"]
+    KEY -->|"Access at t=45s\n(75% through TTL)"| TRIGGER["Trigger async\nbackground refresh"]
+    TRIGGER --> DB[("Database")]
+    DB --> KEY2["Cache updated\nbefore expiry"]
+    KEY2 -->|"Access at t=60s+"| DATA2["Fresh data served\n(no miss!)"]
+</pre>
+<table>
+<thead>
+<tr>
+<th>✅ Pros</th>
+<th>❌ Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Eliminates cache miss latency for hot keys</td>
+<td>Complex to implement correctly</td>
+</tr>
+<tr>
+<td>Users always get low latency</td>
+<td>May refresh keys that won&#39;t be accessed again</td>
+</tr>
+<tr>
+<td>Prevents thundering herd on expiry</td>
+<td>Requires prediction logic</td>
+</tr>
+</tbody></table>
+<p><strong>Best for:</strong> Hot keys with predictable access patterns — homepage content, trending items, config values</p>
+<hr>
+<h3>Strategy Selection Guide</h3>
+<pre class="mermaid">
+flowchart TD
+    Q1{"Read-heavy\nor Write-heavy?"}
+
+    Q1 -->|"Read-heavy"| Q2{"Consistency\ncritical?"}
+    Q1 -->|"Write-heavy"| Q3{"Can tolerate\ndata loss?"}
+
+    Q2 -->|"Yes — must be fresh"| WT["Write-Through\nor Read-Through"]
+    Q2 -->|"No — eventual OK"| CA["Cache-Aside\n(most common)"]
+
+    Q3 -->|"Yes (counters, analytics)"| WB["Write-Behind\n(Write-Back)"]
+    Q3 -->|"No (financial, orders)"| WT2["Write-Through\n+ strong consistency"]
+
+    CA --> HOT{"Hot key\nproblem?"}
+    HOT -->|"Yes"| RA["Refresh-Ahead\n+ jitter on TTL"]
+    HOT -->|"No"| CA2["Cache-Aside\nwith TTL"]
+</pre>
+<hr>
+<h2>5. Cache Write Policies</h2>
+<table>
+<thead>
+<tr>
+<th>Policy</th>
+<th>Write Path</th>
+<th>Read Consistency</th>
+<th>Durability</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Write-Through</strong></td>
+<td>Cache + DB (sync)</td>
+<td>Strong</td>
+<td>High</td>
+<td>Financial, inventory</td>
+</tr>
+<tr>
+<td><strong>Write-Behind</strong></td>
+<td>Cache → DB (async)</td>
+<td>Eventual</td>
+<td>Lower</td>
+<td>Counters, analytics</td>
+</tr>
+<tr>
+<td><strong>Write-Around</strong></td>
+<td>Skip cache, DB only</td>
+<td>Eventual</td>
+<td>High</td>
+<td>Write-once read-never data</td>
+</tr>
+<tr>
+<td><strong>Write-Invalidate</strong></td>
+<td>Write DB → delete cache key</td>
+<td>Strong on next read</td>
+<td>High</td>
+<td>Most common invalidation</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>6. Cache Eviction Policies</h2>
+<div class="tip">
+
+<p>When the cache is full, which key gets removed?</p>
+</div>
+
+
+<pre class="mermaid">
+graph TD
+    subgraph Policies["Eviction Policy Comparison"]
+        LRU["LRU\nLeast Recently Used\nEvict key accessed longest ago\n✅ Best general purpose"]
+        LFU["LFU\nLeast Frequently Used\nEvict key accessed fewest times\n✅ Best for skewed access patterns"]
+        FIFO["FIFO\nFirst In First Out\nEvict oldest inserted key\n⚠️ Ignores access patterns"]
+        TTL["TTL-based\nEvict when time expires\n✅ Predictable expiry"]
+        RR["Random\nEvict random key\n⚠️ Unpredictable, rarely used"]
+        MRU["MRU\nMost Recently Used\nEvict most recently accessed\n⚠️ Rarely useful (scan workloads)"]
+    end
+</pre>
+<h3>Redis Eviction Policies</h3>
+<table>
+<thead>
+<tr>
+<th>Policy</th>
+<th>Description</th>
+<th>When to Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>noeviction</code></td>
+<td>Return error when memory full</td>
+<td>When cache loss is unacceptable</td>
+</tr>
+<tr>
+<td><code>allkeys-lru</code> ✅</td>
+<td>LRU across all keys</td>
+<td>General-purpose caching</td>
+</tr>
+<tr>
+<td><code>volatile-lru</code></td>
+<td>LRU only on keys with TTL set</td>
+<td>Mix of persistent + cached data</td>
+</tr>
+<tr>
+<td><code>allkeys-lfu</code> ✅</td>
+<td>LFU across all keys</td>
+<td>Skewed hot-key workloads</td>
+</tr>
+<tr>
+<td><code>volatile-ttl</code></td>
+<td>Evict keys with shortest TTL</td>
+<td>Prioritize long-lived data</td>
+</tr>
+<tr>
+<td><code>allkeys-random</code></td>
+<td>Random eviction</td>
+<td>Uniform access distributions</td>
+</tr>
+</tbody></table>
+<h3>LRU vs LFU Decision</h3>
+<pre><code>Use LRU when:
+  - Access pattern is recency-based (recently viewed = likely viewed again)
+  - Sequential scan workloads
+  - General web application caching
+
+Use LFU when:
+  - Some keys are accessed much more than others (Zipfian distribution)
+  - Social media (1% of content = 99% of views)
+  - Product catalog (top 100 products = 80% of traffic)
+</code></pre>
+<hr>
+<h2>7. Cache Invalidation — The Hard Problem</h2>
+<blockquote>
+<p><em>&quot;There are only two hard things in Computer Science: cache invalidation and naming things.&quot;</em> — Phil Karlton</p>
+</blockquote>
+<h3>7.1 Invalidation Strategies</h3>
+<pre class="mermaid">
+graph TD
+    subgraph Strategies["Cache Invalidation Strategies"]
+        TTL["① TTL-Based Expiry\nSet expiry on write\nSimplest, always stale up to TTL"]
+        EXP["② Explicit Invalidation\nDelete key on data change\nStrong consistency, requires coordination"]
+        EV["③ Event-Driven Invalidation\nListen to DB change events (CDC)\nDecoupled, eventual consistency"]
+        VER["④ Version-Based\nKey includes version: user:123:v4\nNo invalidation needed — just new key"]
+        WI["⑤ Write-Invalidate\nWrite to DB → delete cache key\nMost common pattern"]
+    end
+</pre>
+<h3>7.2 TTL Strategy — Choose Your TTL Wisely</h3>
+<table>
+<thead>
+<tr>
+<th>Data Type</th>
+<th>Recommended TTL</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>User profile</td>
+<td>5–30 minutes</td>
+<td>Changes infrequently</td>
+</tr>
+<tr>
+<td>Product price</td>
+<td>1–5 minutes</td>
+<td>Can change, must be fairly fresh</td>
+</tr>
+<tr>
+<td>Session token</td>
+<td>1–24 hours</td>
+<td>Matches auth session lifetime</td>
+</tr>
+<tr>
+<td>Config / feature flags</td>
+<td>1–5 minutes</td>
+<td>Must propagate quickly</td>
+</tr>
+<tr>
+<td>Exchange rates</td>
+<td>30–60 seconds</td>
+<td>Changes frequently</td>
+</tr>
+<tr>
+<td>Static reference data</td>
+<td>24 hours – forever</td>
+<td>Never changes (country codes)</td>
+</tr>
+<tr>
+<td>Search results</td>
+<td>1–5 minutes</td>
+<td>Tolerate slight staleness</td>
+</tr>
+<tr>
+<td>News feed</td>
+<td>30 seconds – 2 minutes</td>
+<td>Freshness is important</td>
+</tr>
+<tr>
+<td>Stock prices</td>
+<td>1–15 seconds</td>
+<td>Very high freshness requirement</td>
+</tr>
+</tbody></table>
+<h3>7.3 Event-Driven Invalidation (CDC Pattern)</h3>
+<pre class="mermaid">
+flowchart LR
+    APP["Application\nWrite to DB"] --> DB[("PostgreSQL")]
+    DB -->|"Change Data\nCapture (CDC)"| CDC["Debezium / Maxwell\nCapture DB events"]
+    CDC --> KF["Kafka\nChange Events Topic"]
+    KF --> INV["Cache Invalidation\nConsumer"]
+    INV --> REDIS["Redis\nDEL affected keys"]
+
+    style CDC fill:#f59e0b,color:#fff
+    style INV fill:#ef4444,color:#fff
+</pre>
+<p><strong>CDC advantages:</strong></p>
+<ul>
+<li>DB write and cache invalidation are decoupled</li>
+<li>No risk of forgetting to invalidate in application code</li>
+<li>Handles bulk DB updates (migration scripts) automatically</li>
+<li>Audit trail of all changes</li>
+</ul>
+<hr>
+<h3>7.4 The Cache Stampede Problem</h3>
+<div class="warning">
+
+<p>When a popular cache key expires, thousands of simultaneous requests all hit the DB at once.</p>
+</div>
+
+
+<pre class="mermaid">
+sequenceDiagram
+    participant C1 as Request 1
+    participant C2 as Request 2
+    participant CN as Request N
+    participant CA as Cache
+    participant DB as Database
+
+    Note over CA: Key "trending:feed" expires at T=0
+
+    C1->>CA: GET trending:feed → MISS
+    C2->>CA: GET trending:feed → MISS
+    CN->>CA: GET trending:feed → MISS
+
+    C1->>DB: SELECT trending posts (expensive!)
+    C2->>DB: SELECT trending posts (expensive!)
+    CN->>DB: SELECT trending posts (expensive!)
+
+    Note over DB: 💥 N identical queries hit DB simultaneously
+    Note over DB: DB overloaded — cascading failure risk!
+</pre>
+<p><strong>Solutions:</strong></p>
+<pre class="mermaid">
+graph TD
+    subgraph Solutions["Cache Stampede Solutions"]
+        MUTEX["① Mutex / Lock\nOnly 1 request hits DB\nOthers wait for lock\n✅ Correct, ❌ Higher latency"]
+        PROB["② Probabilistic Early Expiry\nRandomly refresh before TTL\nNo stampede, no locking\n✅ Simple, ✅ Effective"]
+        STALE["③ Stale-While-Revalidate\nReturn stale data\nAsync refresh in background\n✅ Zero latency impact"]
+        JITTER["④ TTL Jitter\nAdd random offset to TTL\nPrevents synchronized expiry\n✅ Simplest prevention"]
+    end
+</pre>
+<p><strong>TTL Jitter Implementation:</strong></p>
+<pre><code class="language-python">import random
+
+def set_with_jitter(key: str, value: Any, base_ttl: int, jitter_pct: float = 0.1):
+    &quot;&quot;&quot;Add ±10% jitter to TTL to prevent synchronized expiry&quot;&quot;&quot;
+    jitter = int(base_ttl * jitter_pct)
+    ttl = base_ttl + random.randint(-jitter, jitter)
+    redis.setex(key, ttl, serialize(value))
+
+# 1-hour TTL with ±6 minutes jitter
+set_with_jitter(&quot;trending:feed&quot;, feed_data, base_ttl=3600, jitter_pct=0.1)
+</code></pre>
+<hr>
+<h2>8. Distributed Caching</h2>
+<h3>8.1 Redis vs. Memcached</h3>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Redis</th>
+<th>Memcached</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Data Structures</strong></td>
+<td>Strings, Hashes, Lists, Sets, Sorted Sets, Streams</td>
+<td>Strings only</td>
+</tr>
+<tr>
+<td><strong>Persistence</strong></td>
+<td>RDB snapshots + AOF log</td>
+<td>None (memory only)</td>
+</tr>
+<tr>
+<td><strong>Replication</strong></td>
+<td>Primary-Replica + Sentinel + Cluster</td>
+<td>None (client-side only)</td>
+</tr>
+<tr>
+<td><strong>Pub/Sub</strong></td>
+<td>✅ Native</td>
+<td>❌ No</td>
+</tr>
+<tr>
+<td><strong>Lua Scripting</strong></td>
+<td>✅ Yes</td>
+<td>❌ No</td>
+</tr>
+<tr>
+<td><strong>Cluster Mode</strong></td>
+<td>✅ Native cluster</td>
+<td>✅ Client-side sharding</td>
+</tr>
+<tr>
+<td><strong>Memory Efficiency</strong></td>
+<td>Slightly higher overhead</td>
+<td>Slightly more memory-efficient for strings</td>
+</tr>
+<tr>
+<td><strong>Multi-threading</strong></td>
+<td>Single-threaded (I/O multi-threaded in v6+)</td>
+<td>Multi-threaded</td>
+</tr>
+<tr>
+<td><strong>Use Case</strong></td>
+<td>Sessions, pub/sub, sorted sets, complex data</td>
+<td>Simple key-value at massive scale</td>
+</tr>
+</tbody></table>
+<p><strong>Decision rule:</strong> Choose Redis unless you specifically need Memcached&#39;s multi-threading advantage at extreme scale (100K+ ops/sec on a single node with simple string values).</p>
+<hr>
+<h3>8.2 Redis Data Structures — When to Use Each</h3>
+<table>
+<thead>
+<tr>
+<th>Structure</th>
+<th>Commands</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>String</strong></td>
+<td>GET/SET/INCR</td>
+<td>Simple key-value, counters, sessions</td>
+</tr>
+<tr>
+<td><strong>Hash</strong></td>
+<td>HGET/HSET/HGETALL</td>
+<td>User profile fields (avoid serializing whole object)</td>
+</tr>
+<tr>
+<td><strong>List</strong></td>
+<td>LPUSH/RPOP/LRANGE</td>
+<td>Message queues, activity feeds, recent items</td>
+</tr>
+<tr>
+<td><strong>Set</strong></td>
+<td>SADD/SMEMBERS/SINTER</td>
+<td>Unique visitors, friend lists, tags</td>
+</tr>
+<tr>
+<td><strong>Sorted Set</strong></td>
+<td>ZADD/ZRANGE/ZRANK</td>
+<td>Leaderboards, rate limiting, priority queues</td>
+</tr>
+<tr>
+<td><strong>Bitmap</strong></td>
+<td>SETBIT/GETBIT/BITCOUNT</td>
+<td>Daily active users, feature flags per user</td>
+</tr>
+<tr>
+<td><strong>HyperLogLog</strong></td>
+<td>PFADD/PFCOUNT</td>
+<td>Approximate unique counts (&lt; 1% error, 12KB max)</td>
+</tr>
+<tr>
+<td><strong>Stream</strong></td>
+<td>XADD/XREAD</td>
+<td>Event sourcing, message bus</td>
+</tr>
+<tr>
+<td><strong>Geo</strong></td>
+<td>GEOADD/GEODIST/GEORADIUS</td>
+<td>Location-based queries (Uber, Yelp)</td>
+</tr>
+</tbody></table>
+<pre><code>Leaderboard example (Sorted Set):
+  ZADD leaderboard 9500 &quot;alice&quot;
+  ZADD leaderboard 8800 &quot;bob&quot;
+  ZREVRANGE leaderboard 0 9 WITHSCORES  → Top 10 players
+
+Rate limiting (Sorted Set sliding window):
+  ZADD rate:userId timestamp timestamp  → Record request
+  ZREMRANGEBYSCORE rate:userId 0 (now-60s)  → Remove old
+  ZCARD rate:userId → Count in last 60s
+</code></pre>
+<hr>
+<h3>8.3 Cache Sharding Strategies</h3>
+<pre class="mermaid">
+graph TB
+    subgraph Strategies["Sharding Strategies"]
+        subgraph Hash["Hash-Based Sharding"]
+            HK["key → hash(key) % N\nNode = hash mod num_nodes"]
+            HP["✅ Even distribution\n❌ Resharding = mass migration"]
+        end
+
+        subgraph ConsistentHash["Consistent Hashing (Better)"]
+            CH["key → position on ring\nNode = nearest node clockwise\nOnly K/N keys move on add/remove"]
+            CHP["✅ Minimal resharding impact\n✅ Used by Redis Cluster, Cassandra\n✅ Virtual nodes for balance"]
+        end
+
+        subgraph Range["Range-Based Sharding"]
+            RB["key range → shard\ne.g., A-M → Shard1, N-Z → Shard2"]
+            RBP["✅ Range queries efficient\n❌ Hotspots if range is uneven"]
+        end
+    end
+</pre>
+<p><strong>Redis Cluster — Consistent Hashing with Hash Slots:</strong></p>
+<pre><code>Redis Cluster divides keyspace into 16,384 hash slots.
+Each node owns a range of slots.
+
+hash_slot = CRC16(key) % 16384
+
+3-node cluster:
+  Node A: slots 0–5460
+  Node B: slots 5461–10922
+  Node C: slots 10923–16383
+
+Adding a node: only reassign slots from existing nodes.
+Removing a node: redistribute its slots to remaining nodes.
+No full data migration needed! ✅
+</code></pre>
+<hr>
+<h3>8.4 Cache Topology Patterns</h3>
+<pre class="mermaid">
+graph TD
+    subgraph T1["Single Node"]
+        SN["Redis Primary\n↑ Simple\n↑ Fast\n↓ SPOF\n↓ Limited size"]
+    end
+
+    subgraph T2["Primary-Replica"]
+        PR["Primary\n(Writes)"] --> RR1["Replica 1\n(Reads)"]
+        PR --> RR2["Replica 2\n(Reads)"]
+        NOTE2["↑ Read scale-out\n↑ Failover with Sentinel\n↓ Writes still single node"]
+    end
+
+    subgraph T3["Redis Sentinel"]
+        SP["Primary"] --> SR1["Replica 1"]
+        SP --> SR2["Replica 2"]
+        SEN1["Sentinel 1"] & SEN2["Sentinel 2"] & SEN3["Sentinel 3"] --> SP
+        NOTE3["↑ Automatic failover\n↑ Monitoring\n↓ No horizontal write scale"]
+    end
+
+    subgraph T4["Redis Cluster"]
+        CC1["Shard 1\nPrimary+Replica"] --- CC2["Shard 2\nPrimary+Replica"]
+        CC2 --- CC3["Shard 3\nPrimary+Replica"]
+        NOTE4["↑ Horizontal scale\n↑ Automatic sharding\n↑ Fault tolerant\n↓ Complex ops"]
+    end
+</pre>
+<hr>
+<h2>9. When to Use Which Cache</h2>
+<h3>Decision Framework</h3>
+<pre class="mermaid">
+flowchart TD
+    START["What are you caching?"] --> Q1
+
+    Q1{"Static assets?\n(JS, CSS, images)"}
+    Q1 -->|Yes| CDN["✅ CDN\nCloudFront, Akamai\nCache-Control headers"]
+    Q1 -->|No| Q2
+
+    Q2{"Per-user session\nor auth state?"}
+    Q2 -->|Yes| SESSION["✅ Distributed Cache\nRedis with TTL\nvolatile-lru eviction"]
+    Q2 -->|No| Q3
+
+    Q3{"Shared across\nmultiple servers?"}
+    Q3 -->|Yes| Q4
+    Q3 -->|No| LOCAL["✅ In-Process Cache\nCaffeine / Guava\nFor immutable or rarely-changing data"]
+
+    Q4{"Write-heavy?\n(> 10K writes/sec)"}
+    Q4 -->|Yes| Q5
+    Q4 -->|No| Q6
+
+    Q5{"Can tolerate\ndata loss?"}
+    Q5 -->|Yes| WB["✅ Redis Write-Behind\nAsync persistence\nCounters, analytics"]
+    Q5 -->|No| WT["✅ Redis Write-Through\n+ Cassandra/DB\nOrders, financial"]
+
+    Q6{"Hot keys /\nuneven access?"}
+    Q6 -->|Yes| LFU["✅ Redis with allkeys-lfu\nRefresh-Ahead for top keys"]
+    Q6 -->|No| CA["✅ Cache-Aside\nRedis, TTL-based\nGeneral purpose"]
+</pre>
+<hr>
+<h3>Master Decision Table</h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Cache Type</th>
+<th>Strategy</th>
+<th>Eviction</th>
+<th>TTL</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Static website assets</td>
+<td>CDN</td>
+<td>Cache-Control immutable</td>
+<td>Size-based</td>
+<td>1 year</td>
+</tr>
+<tr>
+<td>User profile data</td>
+<td>Distributed (Redis)</td>
+<td>Cache-Aside</td>
+<td>LRU</td>
+<td>15–30 min</td>
+</tr>
+<tr>
+<td>User session / auth</td>
+<td>Distributed (Redis)</td>
+<td>Write-Through</td>
+<td>Volatile-TTL</td>
+<td>1–24 hrs</td>
+</tr>
+<tr>
+<td>Product catalog</td>
+<td>CDN + Distributed</td>
+<td>Read-Through</td>
+<td>LFU</td>
+<td>5–15 min</td>
+</tr>
+<tr>
+<td>Real-time leaderboard</td>
+<td>Distributed (Redis Sorted Set)</td>
+<td>Write-Behind</td>
+<td>LFU</td>
+<td>No TTL</td>
+</tr>
+<tr>
+<td>Feature flags / config</td>
+<td>In-Process + Distributed</td>
+<td>Refresh-Ahead</td>
+<td>LRU</td>
+<td>1–5 min</td>
+</tr>
+<tr>
+<td>Search results</td>
+<td>Distributed (Redis)</td>
+<td>Cache-Aside</td>
+<td>LRU</td>
+<td>1–5 min</td>
+</tr>
+<tr>
+<td>Rate limiting</td>
+<td>Distributed (Redis)</td>
+<td>Write-Through</td>
+<td>Volatile-TTL</td>
+<td>60 sec sliding</td>
+</tr>
+<tr>
+<td>DB hot rows</td>
+<td>DB Buffer Pool</td>
+<td>Automatic</td>
+<td>LRU (buffer pool)</td>
+<td>Automatic</td>
+</tr>
+<tr>
+<td>API aggregation</td>
+<td>Distributed (Redis)</td>
+<td>Cache-Aside</td>
+<td>LRU</td>
+<td>30–60 sec</td>
+</tr>
+<tr>
+<td>ML model output</td>
+<td>In-Process + Distributed</td>
+<td>Cache-Aside</td>
+<td>LFU</td>
+<td>1–24 hrs</td>
+</tr>
+<tr>
+<td>Location data (Uber)</td>
+<td>Distributed (Redis Geo)</td>
+<td>Write-Behind</td>
+<td>LRU</td>
+<td>30 sec</td>
+</tr>
+<tr>
+<td>Like / view counts</td>
+<td>Distributed (Redis Counter)</td>
+<td>Write-Behind</td>
+<td>LFU</td>
+<td>No TTL</td>
+</tr>
+<tr>
+<td>News feed / timeline</td>
+<td>Distributed (Redis)</td>
+<td>Refresh-Ahead</td>
+<td>LRU</td>
+<td>30–60 sec</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>10. Cache Anti-Patterns &amp; Failure Modes</h2>
+<h3>10.1 Cache Penetration</h3>
+<div class="warning">
+
+<p>Querying a key that doesn&#39;t exist in cache OR database — bypasses cache every time.</p>
+</div>
+
+
+<pre class="mermaid">
+sequenceDiagram
+    participant ATK as Attacker / Bug
+    participant C as Cache
+    participant DB as Database
+
+    loop Millions of requests
+        ATK->>C: GET user:99999999 (doesn't exist)
+        C-->>ATK: MISS (null)
+        ATK->>DB: SELECT WHERE id=99999999
+        DB-->>ATK: null (not found)
+        Note over DB: 💥 DB hit on every request!
+    end
+</pre>
+<p><strong>Solutions:</strong></p>
+<ul>
+<li><strong>Cache null values:</strong> Store <code>null</code> or <code>&quot;NOT_FOUND&quot;</code> in cache with short TTL (30–60s)</li>
+<li><strong>Bloom Filter:</strong> Probabilistic structure to check if key <em>might</em> exist before querying DB</li>
+</ul>
+<pre><code class="language-python"># Cache null solution
+def get_user(user_id: int):
+    cached = redis.get(f&quot;user:{user_id}&quot;)
+
+    if cached == &quot;NULL&quot;:           # Cached null sentinel
+        return None
+
+    if cached is not None:
+        return deserialize(cached)
+
+    user = db.query(user_id)
+
+    if user is None:
+        redis.setex(f&quot;user:{user_id}&quot;, 60, &quot;NULL&quot;)  # Cache the miss!
+        return None
+
+    redis.setex(f&quot;user:{user_id}&quot;, 3600, serialize(user))
+    return user
+</code></pre>
+<hr>
+<h3>10.2 Cache Avalanche</h3>
+<div class="warning">
+
+<p>Many cache keys expire simultaneously → massive DB load spike.</p>
+</div>
+
+
+<pre class="mermaid">
+graph TD
+    subgraph Avalanche["❌ Cache Avalanche Scenario"]
+        T0["t=0: 10,000 keys cached\nAll with TTL = 3600s"]
+        T1["t=3600: All 10,000 keys expire\nat exactly the same time"]
+        T2["t=3600+: All 10,000 requests\nhit database simultaneously"]
+        T3["💥 DB overwhelmed\nCascading failure"]
+        T0 --> T1 --> T2 --> T3
+    end
+
+    subgraph Fix["✅ Solutions"]
+        F1["① TTL Jitter\nTTL = base ± random(0, 600)"]
+        F2["② Staggered pre-warming\nPre-load cache before expiry"]
+        F3["③ Circuit breaker\nFail fast if DB is overloaded"]
+        F4["④ Refresh-Ahead\nProactively refresh hot keys"]
+    end
+</pre>
+<hr>
+<h3>10.3 Hot Key Problem</h3>
+<div class="warning">
+
+<p>One key receives disproportionate traffic — single Redis node becomes bottleneck.</p>
+</div>
+
+
+<p><strong>Detection:</strong></p>
+<pre><code class="language-bash"># Redis built-in hot key detection
+redis-cli --hotkeys
+
+# Or enable keyspace notifications and monitor
+redis-cli CONFIG SET notify-keyspace-events KEA
+</code></pre>
+<p><strong>Solutions:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Solution</th>
+<th>How</th>
+<th>Trade-off</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Local cache</strong></td>
+<td>Cache hot key in app memory</td>
+<td>Stale per server, eventual consistency</td>
+</tr>
+<tr>
+<td><strong>Key replication</strong></td>
+<td>Store as <code>key:shard:0..N</code>, read random shard</td>
+<td>More memory, coordination needed</td>
+</tr>
+<tr>
+<td><strong>Read replicas</strong></td>
+<td>Route reads to replicas</td>
+<td>Replication lag</td>
+</tr>
+<tr>
+<td><strong>Request coalescing</strong></td>
+<td>Batch identical in-flight requests</td>
+<td>Added complexity</td>
+</tr>
+</tbody></table>
+<pre><code class="language-python"># Key sharding for hot keys
+import random
+
+NUM_SHARDS = 10
+
+def get_hot_key(key: str) -&gt; Any:
+    shard = random.randint(0, NUM_SHARDS - 1)
+    sharded_key = f&quot;{key}:shard:{shard}&quot;
+
+    result = redis.get(sharded_key)
+    if result:
+        return deserialize(result)
+
+    # Miss: fetch and populate all shards
+    data = db.fetch(key)
+    for i in range(NUM_SHARDS):
+        redis.setex(f&quot;{key}:shard:{i}&quot;, 3600, serialize(data))
+    return data
+</code></pre>
+<hr>
+<h3>10.4 Anti-Pattern Summary</h3>
+<table>
+<thead>
+<tr>
+<th>Anti-Pattern</th>
+<th>Problem</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Cache Penetration</strong></td>
+<td>Non-existent keys bypass cache</td>
+<td>Cache null values + Bloom Filter</td>
+</tr>
+<tr>
+<td><strong>Cache Avalanche</strong></td>
+<td>Mass expiry = DB flood</td>
+<td>TTL jitter + refresh-ahead</td>
+</tr>
+<tr>
+<td><strong>Cache Stampede</strong></td>
+<td>Popular key expiry = race to DB</td>
+<td>Mutex + stale-while-revalidate</td>
+</tr>
+<tr>
+<td><strong>Hot Key</strong></td>
+<td>Single key overloads one node</td>
+<td>Local cache + key sharding</td>
+</tr>
+<tr>
+<td><strong>Over-caching</strong></td>
+<td>Caching everything wastes memory</td>
+<td>Cache only hot, expensive reads</td>
+</tr>
+<tr>
+<td><strong>Missing Invalidation</strong></td>
+<td>Stale data served indefinitely</td>
+<td>Write-invalidate pattern + TTL</td>
+</tr>
+<tr>
+<td><strong>No TTL set</strong></td>
+<td>Memory fills up permanently</td>
+<td>Always set TTL or eviction policy</td>
+</tr>
+<tr>
+<td><strong>Large values</strong></td>
+<td>Serializing huge objects</td>
+<td>Normalize — cache partial objects</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>11. Real-World System Examples</h2>
+<h3>Twitter / X — Timeline Cache</h3>
+<pre><code>Problem: Reading a user&#39;s timeline requires aggregating tweets
+         from all accounts they follow — expensive JOIN.
+
+Solution: Pre-computed timeline cache (fan-out on write)
+
+Architecture:
+  Write path: New tweet → fan-out to followers&#39; Redis lists
+  Read path:  GET timeline:{userId} → O(1) Redis list read
+
+Redis structure:
+  Key: timeline:{userId}
+  Type: List
+  Value: [tweetId1, tweetId2, ... tweetId800]  (latest 800)
+  TTL: 7 days (inactive users&#39; timelines not pre-computed)
+
+Trade-off:
+  Users with 10M followers need 10M list inserts on write
+  → Exception: celebrity tweets are pulled at read time (hybrid)
+</code></pre>
+<hr>
+<h3>Uber — Driver Location Cache</h3>
+<pre><code>Problem: 1M drivers update GPS every 4 seconds.
+         Riders search for nearby drivers in real-time.
+
+Solution: Redis Geo + in-memory ring buffer per city
+
+Architecture:
+  Write: Driver app → GEOADD drivers:city lat lng driverId EX 35s
+  Read:  GEORADIUS drivers:city lat lng 5 km → nearby driver IDs
+
+Key insight: Location data is ephemeral — 35s TTL.
+             No need for persistent storage of current location.
+             Historical trips stored separately in DB.
+
+Scale numbers:
+  250,000 GEOADD ops/sec (1M drivers ÷ 4s)
+  Redis Geo can handle 100K+ ops/sec per shard
+  → Partition by city or geohash cell
+</code></pre>
+<hr>
+<h3>Facebook — Social Graph Cache</h3>
+<pre><code>Problem: Checking &quot;mutual friends&quot; or &quot;is this person my friend?&quot;
+         requires graph traversal — extremely expensive at scale.
+
+Solution: TAO (The Associations and Objects) — Facebook&#39;s custom
+          distributed graph cache built on top of MySQL
+
+Architecture:
+  Objects: Users, Posts, Events → cached as key-value
+  Associations: Friendships, Likes, Comments → cached as lists
+
+  Write: Invalidate cache on relationship change
+  Read: Check TAO cache first → MySQL only on cache miss
+
+Cache hit rate: &gt; 99% for social graph lookups
+</code></pre>
+<hr>
+<h2>12. Interview Cheat Sheet</h2>
+<h3>Key Numbers</h3>
+<table>
+<thead>
+<tr>
+<th>Cache</th>
+<th>Latency</th>
+<th>Throughput</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>L1 CPU Cache</td>
+<td>1 ns</td>
+<td>Tens of GB/s</td>
+</tr>
+<tr>
+<td>RAM / In-Process</td>
+<td>100 ns – 0.1ms</td>
+<td>GB/s</td>
+</tr>
+<tr>
+<td>Redis (local)</td>
+<td>~0.5ms</td>
+<td>100K – 1M ops/sec</td>
+</tr>
+<tr>
+<td>Redis (remote)</td>
+<td>1–5ms</td>
+<td>100K+ ops/sec</td>
+</tr>
+<tr>
+<td>CDN Edge</td>
+<td>1–10ms</td>
+<td>Effectively unlimited</td>
+</tr>
+<tr>
+<td>DB (cached)</td>
+<td>1–5ms</td>
+<td>10K–50K QPS</td>
+</tr>
+<tr>
+<td>DB (disk)</td>
+<td>5–50ms</td>
+<td>1K–10K QPS</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>Cache Interview One-Liners</h3>
+<pre><code>&quot;I&#39;d use Cache-Aside here because the read:write ratio is 10:1
+ and we can tolerate TTL-bounded staleness.&quot;
+
+&quot;For the session store I&#39;d use Redis with volatile-lru eviction
+ and a 24-hour TTL matching the auth token lifetime.&quot;
+
+&quot;To prevent cache stampede on the trending feed, I&#39;d use
+ TTL jitter and stale-while-revalidate.&quot;
+
+&quot;Static assets go to CDN with immutable Cache-Control headers —
+ this offloads 90%+ of our bandwidth from origin servers.&quot;
+
+&quot;For the leaderboard I&#39;d use a Redis Sorted Set with ZADD/ZREVRANGE
+ — O(log N) updates and O(log N + K) range queries.&quot;
+
+&quot;Hot key issue with celebrity profiles — I&#39;d shard the key
+ across 10 Redis replicas and read from a random shard.&quot;
+</code></pre>
+<hr>
+<h3>The Cache Decision in 30 Seconds</h3>
+<pre class="mermaid">
+graph LR
+    A["Is it static?"] -->|Yes| B["CDN"]
+    A -->|No| C["Is it user-specific?"]
+    C -->|Yes| D["Redis + TTL"]
+    C -->|No| E["Is it shared state?"]
+    E -->|Yes| F["Redis Cluster"]
+    E -->|No| G["In-Process Cache"]
+</pre>
+<hr>
+<p><em>Caching Deep Dive — Staff Engineer System Design Interview Preparation</em>
+<em>Covers: Cache types, strategies, invalidation, Redis internals, anti-patterns, real-world systems</em></p>
+
+</body>
+</html>

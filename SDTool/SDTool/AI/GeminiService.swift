@@ -206,6 +206,38 @@ actor GeminiService {
         return result
     }
 
+    // MARK: - Node name validation
+
+    /// Checks if user-assigned node names make sense for the given problem.
+    /// Returns a dictionary of label → warning reason for suspicious names.
+    /// Returns empty dict if all names look fine or AI call fails.
+    func validateNodeNames(labels: [String], problemTitle: String) async throws -> [String: String] {
+        guard !labels.isEmpty else { return [:] }
+        let labelsList = labels.joined(separator: ", ")
+        let prompt = """
+        You are a system design reviewer. The user is designing: "\(problemTitle)".
+        These are the component names they assigned to their design blocks: \(labelsList)
+
+        For each name that seems wrong, irrelevant, or misleading for this specific system, return a JSON object where the key is the label and the value is a brief reason.
+        Only flag names that are clearly wrong for this system. Acceptable names that are just different from the "standard" should NOT be flagged.
+        If all names are appropriate, return an empty JSON object {}.
+
+        Return ONLY a valid JSON object with no prose, no markdown code fences.
+        """
+        let raw = try await generate(prompt)
+        // Strip markdown code fences if present
+        let cleaned = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = cleaned.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
+            return [:]
+        }
+        return parsed
+    }
+
     // MARK: - Private helpers
 
     @MainActor

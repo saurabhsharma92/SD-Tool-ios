@@ -1,6 +1,7 @@
 # ⚡ Caching — Complete System Design Reference
 ### Staff Engineer Interview Preparation Guide
 
+> [!TIP]
 > **Why caching matters in interviews:** Every large-scale system design question eventually comes down to caching. Interviewers expect you to know *which* cache type to use, *why*, and *what the tradeoffs are* — not just "add Redis."
 
 ---
@@ -409,6 +410,7 @@ sequenceDiagram
 
 ### 4.1 Cache-Aside (Lazy Loading)
 
+> [!TIP]
 > The most common pattern. Application code manages the cache explicitly.
 
 ```mermaid
@@ -459,6 +461,7 @@ def get_user(user_id: int) -> User:
 
 ### 4.2 Read-Through Cache
 
+> [!TIP]
 > Cache sits in front of DB. Application never talks to DB directly.
 
 ```mermaid
@@ -483,6 +486,7 @@ graph LR
 
 ### 4.3 Write-Through Cache
 
+> [!TIP]
 > Every write goes to cache AND database synchronously.
 
 ```mermaid
@@ -511,6 +515,7 @@ sequenceDiagram
 
 ### 4.4 Write-Behind (Write-Back) Cache
 
+> [!TIP]
 > Writes go to cache first. DB write happens asynchronously later.
 
 ```mermaid
@@ -544,6 +549,7 @@ sequenceDiagram
 
 ### 4.5 Refresh-Ahead (Predictive Cache)
 
+> [!TIP]
 > Cache proactively refreshes before TTL expires, based on access patterns.
 
 ```mermaid
@@ -600,6 +606,7 @@ flowchart TD
 
 ## 6. Cache Eviction Policies
 
+> [!TIP]
 > When the cache is full, which key gets removed?
 
 ```mermaid
@@ -696,6 +703,7 @@ flowchart LR
 
 ### 7.4 The Cache Stampede Problem
 
+> [!WARNING]
 > When a popular cache key expires, thousands of simultaneous requests all hit the DB at once.
 
 ```mermaid
@@ -927,6 +935,7 @@ flowchart TD
 
 ### 10.1 Cache Penetration
 
+> [!WARNING]
 > Querying a key that doesn't exist in cache OR database — bypasses cache every time.
 
 ```mermaid
@@ -973,6 +982,7 @@ def get_user(user_id: int):
 
 ### 10.2 Cache Avalanche
 
+> [!WARNING]
 > Many cache keys expire simultaneously → massive DB load spike.
 
 ```mermaid
@@ -997,6 +1007,7 @@ graph TD
 
 ### 10.3 Hot Key Problem
 
+> [!WARNING]
 > One key receives disproportionate traffic — single Redis node becomes bottleneck.
 
 **Detection:**

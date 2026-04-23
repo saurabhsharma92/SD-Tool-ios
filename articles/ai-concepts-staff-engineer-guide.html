@@ -1,0 +1,2079 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI & LLM Concepts — Complete Staff Engineer Reference</title>
+</head>
+<body>
+
+<h1>🧠 AI &amp; LLM Concepts — Complete Staff Engineer Reference</h1>
+<h3>Explained in Plain English with Diagrams</h3>
+<div class="tip">
+
+<p><strong>Who this is for:</strong> Staff AI Engineers preparing for system design and concept interviews at FANG companies. Every concept is explained from first principles, then connected to real systems.</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Concept</th>
+<th>One-Line Summary</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td><a href="#1-large-language-model-llm">Large Language Model (LLM)</a></td>
+<td>A giant text predictor trained on the internet</td>
+</tr>
+<tr>
+<td>2</td>
+<td><a href="#2-tokenization">Tokenization</a></td>
+<td>How text gets chopped into pieces a model can digest</td>
+</tr>
+<tr>
+<td>3</td>
+<td><a href="#3-vectorization-embeddings">Vectorization (Embeddings)</a></td>
+<td>Turning words into coordinates in meaning-space</td>
+</tr>
+<tr>
+<td>4</td>
+<td><a href="#4-attention-mechanism">Attention Mechanism</a></td>
+<td>How the model decides what to focus on</td>
+</tr>
+<tr>
+<td>5</td>
+<td><a href="#5-self-supervised-learning">Self-Supervised Learning</a></td>
+<td>Learning without human labels</td>
+</tr>
+<tr>
+<td>6</td>
+<td><a href="#6-transformer-architecture">Transformer Architecture</a></td>
+<td>The engine powering every modern LLM</td>
+</tr>
+<tr>
+<td>7</td>
+<td><a href="#7-fine-tuning">Fine-Tuning</a></td>
+<td>Teaching an existing model new tricks</td>
+</tr>
+<tr>
+<td>8</td>
+<td><a href="#8-few-shot-prompting">Few-Shot Prompting</a></td>
+<td>Showing examples instead of writing instructions</td>
+</tr>
+<tr>
+<td>9</td>
+<td><a href="#9-retrieval-augmented-generation-rag">Retrieval Augmented Generation (RAG)</a></td>
+<td>Giving the model a live reference book</td>
+</tr>
+<tr>
+<td>10</td>
+<td><a href="#10-vector-database">Vector Database</a></td>
+<td>A database that understands meaning, not just exact matches</td>
+</tr>
+<tr>
+<td>11</td>
+<td><a href="#11-model-context-protocol-mcp">Model Context Protocol (MCP)</a></td>
+<td>A universal plug for connecting AI to tools</td>
+</tr>
+<tr>
+<td>12</td>
+<td><a href="#12-a2a-protocol-agent-to-agent">A2A Protocol</a></td>
+<td>How AI agents talk to each other</td>
+</tr>
+<tr>
+<td>13</td>
+<td><a href="#13-context-engineering">Context Engineering</a></td>
+<td>The art of filling the model&#39;s working memory optimally</td>
+</tr>
+<tr>
+<td>14</td>
+<td><a href="#14-ai-agents">AI Agents</a></td>
+<td>LLMs that take actions, not just answer questions</td>
+</tr>
+<tr>
+<td>15</td>
+<td><a href="#15-reinforcement-learning-rl--rlhf">Reinforcement Learning (RL &amp; RLHF)</a></td>
+<td>Training via reward and punishment</td>
+</tr>
+<tr>
+<td>16</td>
+<td><a href="#16-chain-of-thought-cot">Chain of Thought (CoT)</a></td>
+<td>Making the model show its work</td>
+</tr>
+<tr>
+<td>17</td>
+<td><a href="#17-reasoning-models">Reasoning Models</a></td>
+<td>Models that think before they answer</td>
+</tr>
+<tr>
+<td>18</td>
+<td><a href="#18-multimodal-language-models">Multimodal Language Models</a></td>
+<td>Models that see, hear, and read</td>
+</tr>
+<tr>
+<td>19</td>
+<td><a href="#19-small-language-models-slm">Small Language Models (SLM)</a></td>
+<td>Powerful models that fit on your phone</td>
+</tr>
+<tr>
+<td>20</td>
+<td><a href="#20-distillation">Distillation</a></td>
+<td>Compressing a large model&#39;s knowledge into a smaller one</td>
+</tr>
+<tr>
+<td>21</td>
+<td><a href="#21-quantization">Quantization</a></td>
+<td>Making models faster and smaller by lowering precision</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>1. Large Language Model (LLM)</h2>
+<h3>What it is — Plain English</h3>
+<p>Imagine reading every book, website, Wikipedia article, and code repository ever written. You&#39;ve absorbed so much language that you can predict what word comes next in almost any sentence, with uncanny accuracy. That&#39;s what an LLM is — a system so deeply trained on human language that it can generate coherent, contextually relevant text.</p>
+<div class="note">
+
+<p><strong>The core task:</strong> Given a sequence of words, predict the next most likely word. Repeated millions of times = fluent language generation.</p>
+</div>
+
+
+<h3>Anatomy of an LLM</h3>
+<pre class="mermaid">
+graph TD
+    subgraph Training["🏋️ Training Phase (Done Once, Expensive)"]
+        DATA["Massive Text Dataset\n~Trillions of tokens\n(Internet, books, code)"]
+        TRAIN["Training Loop\nAdjust 100B+ parameters\nto minimize prediction error"]
+        WEIGHTS["Model Weights File\ne.g. 140 GB for LLaMA 70B"]
+    end
+
+    subgraph Inference["⚡ Inference Phase (Every Request)"]
+        PROMPT["User Prompt\n'Explain quantum physics'"]
+        CONTEXT["Context Window\nHolds prompt + history\ne.g. 128K tokens"]
+        FORWARD["Forward Pass\nThrough transformer layers\n~milliseconds"]
+        OUTPUT["Generated Response\nToken by token"]
+    end
+
+    DATA --> TRAIN --> WEIGHTS
+    WEIGHTS --> FORWARD
+    PROMPT --> CONTEXT --> FORWARD --> OUTPUT
+</pre>
+<h3>Scale Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Parameters</th>
+<th>Context Window</th>
+<th>Training Tokens</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GPT-2 (2019)</td>
+<td>1.5B</td>
+<td>1,024</td>
+<td>~40B</td>
+<td>Historical baseline</td>
+</tr>
+<tr>
+<td>LLaMA 3 8B</td>
+<td>8B</td>
+<td>128K</td>
+<td>~15T</td>
+<td>Local / edge deployment</td>
+</tr>
+<tr>
+<td>GPT-4 (est.)</td>
+<td>~1.8T (MoE)</td>
+<td>128K</td>
+<td>~13T</td>
+<td>General purpose</td>
+</tr>
+<tr>
+<td>Claude Sonnet</td>
+<td>~70B (est.)</td>
+<td>200K</td>
+<td>Undisclosed</td>
+<td>Long-context tasks</td>
+</tr>
+<tr>
+<td>Gemini Ultra</td>
+<td>~1T (est.)</td>
+<td>1M</td>
+<td>Undisclosed</td>
+<td>Multimodal</td>
+</tr>
+</tbody></table>
+<h3>Key Insight for Interviews</h3>
+<div class="important">
+
+<p>LLMs are <strong>stateless</strong> — they don&#39;t &quot;remember&quot; between conversations unless you explicitly put previous conversation in the context. Every call is independent. This drives architecture decisions around memory, sessions, and RAG.</p>
+</div>
+
+
+<hr>
+<h2>2. Tokenization</h2>
+<h3>What it is — Plain English</h3>
+<p>Computers only understand numbers. Tokenization is the process of converting raw text into numbers (tokens) that a model can process. Think of tokens as the model&#39;s &quot;vocabulary units&quot; — not quite words, not quite characters. They&#39;re chunks of text that commonly appear together.</p>
+<h3>How It Works</h3>
+<pre><code>Input text:   &quot;ChatGPT is amazing!&quot;
+
+Tokenized:    [&quot;Chat&quot;, &quot;G&quot;, &quot;PT&quot;, &quot; is&quot;, &quot; amaz&quot;, &quot;ing&quot;, &quot;!&quot;]
+Token IDs:    [   9459,   38,  2898,  374,  15007,  287,  0  ]
+
+→ 7 tokens for 21 characters
+</code></pre>
+<pre class="mermaid">
+graph LR
+    subgraph Tokenization["Tokenization Pipeline"]
+        RAW["Raw Text\n'Hello, world!'"]
+        NORM["Normalization\nLowercase, unicode fix"]
+        PRE["Pre-tokenization\nSplit on spaces/punctuation"]
+        BPE["BPE / WordPiece\nMerge common pairs\ninto single tokens"]
+        IDS["Token IDs\n[15496, 11, 995, 0]"]
+        EMB["Embedding Lookup\nConvert IDs → vectors"]
+    end
+
+    RAW --> NORM --> PRE --> BPE --> IDS --> EMB
+</pre>
+<h3>Tokenization Algorithms</h3>
+<table>
+<thead>
+<tr>
+<th>Algorithm</th>
+<th>Used By</th>
+<th>How It Works</th>
+<th>Strength</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>BPE</strong> (Byte Pair Encoding)</td>
+<td>GPT series, LLaMA</td>
+<td>Start with characters, merge most frequent pairs iteratively</td>
+<td>Compact vocabulary</td>
+</tr>
+<tr>
+<td><strong>WordPiece</strong></td>
+<td>BERT, DistilBERT</td>
+<td>Similar to BPE but maximizes likelihood</td>
+<td>Good for NLU</td>
+</tr>
+<tr>
+<td><strong>SentencePiece</strong></td>
+<td>T5, Gemma</td>
+<td>Language-agnostic, treats text as raw bytes</td>
+<td>Works for any language</td>
+</tr>
+<tr>
+<td><strong>Tiktoken</strong></td>
+<td>OpenAI GPT-4</td>
+<td>BPE with optimized encoding</td>
+<td>Fast, deterministic</td>
+</tr>
+</tbody></table>
+<h3>Why Tokenization Matters for System Design</h3>
+<pre><code>Token counting = cost + latency + context limit
+
+GPT-4 pricing:   $30 / 1M input tokens
+Claude Sonnet:   $3  / 1M input tokens
+
+A 10-page document ≈ 3,000 words ≈ 4,000 tokens
+
+Cost of processing 1M documents:
+  = 1M × 4,000 tokens = 4 Billion tokens
+  = $120,000 at GPT-4 pricing
+  = $12,000 at Claude Sonnet pricing
+
+→ Token efficiency is a real infrastructure cost concern
+</code></pre>
+<h3>Token Rule of Thumb</h3>
+<pre><code>1 token ≈ 4 characters of English text
+1 token ≈ 0.75 words
+100 tokens ≈ 75 words ≈ 1 short paragraph
+1,000 tokens ≈ 750 words ≈ 1.5 pages
+</code></pre>
+<hr>
+<h2>3. Vectorization (Embeddings)</h2>
+<h3>What it is — Plain English</h3>
+<p>Imagine placing every word in a giant 3D space. Words that mean similar things are placed <em>close together</em>. &quot;King&quot; and &quot;Queen&quot; are nearby. &quot;Dog&quot; and &quot;Cat&quot; are nearby. &quot;Dog&quot; and &quot;Democracy&quot; are far apart. Vectorization converts text into coordinates in this meaning-space — we call these coordinates <strong>embeddings</strong>.</p>
+<div class="important">
+
+<p><strong>Key insight:</strong> Similarity in vector space = similarity in meaning. This is the foundation of semantic search, RAG, and recommendation systems.</p>
+</div>
+
+
+<h3>The Famous Word2Vec Example</h3>
+<pre class="mermaid">
+graph LR
+    subgraph VectorSpace["📐 Embedding Space (simplified to 2D)"]
+        KING["👑 King\n[0.9, 0.8]"]
+        QUEEN["👸 Queen\n[0.9, 0.2]"]
+        MAN["👨 Man\n[0.1, 0.8]"]
+        WOMAN["👩 Woman\n[0.1, 0.2]"]
+        DOG["🐶 Dog\n[-0.8, -0.1]"]
+        CAT["🐱 Cat\n[-0.7, -0.2]"]
+    end
+
+    KING --- QUEEN
+    KING --- MAN
+    QUEEN --- WOMAN
+    MAN --- WOMAN
+    DOG --- CAT
+
+    NOTE["King - Man + Woman ≈ Queen\n(Vector arithmetic encodes relationships!)"]
+</pre>
+<h3>Embedding Dimensions in Practice</h3>
+<pre><code>Word2Vec (2013):     100–300 dimensions
+BERT-base:           768 dimensions
+OpenAI text-ada-002: 1,536 dimensions
+text-embedding-3-large: 3,072 dimensions
+
+Real embedding for the word &quot;bank&quot; (simplified to 6 dims):
+  [0.23, -0.87, 0.45, 0.12, -0.34, 0.78]
+
+Same word, different context:
+  &quot;river bank&quot; → [0.91, -0.12, 0.23, -0.45, 0.67, 0.34]  ← near &quot;water&quot;, &quot;shore&quot;
+  &quot;savings bank&quot; → [0.12, 0.78, -0.34, 0.89, -0.23, 0.45] ← near &quot;money&quot;, &quot;finance&quot;
+</code></pre>
+<h3>Types of Embeddings</h3>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Input</th>
+<th>Dimensions</th>
+<th>Best For</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Word Embeddings</strong></td>
+<td>Single word</td>
+<td>100–300</td>
+<td>Basic NLP tasks</td>
+</tr>
+<tr>
+<td><strong>Sentence Embeddings</strong></td>
+<td>Full sentence</td>
+<td>384–1536</td>
+<td>Semantic search</td>
+</tr>
+<tr>
+<td><strong>Document Embeddings</strong></td>
+<td>Long text</td>
+<td>768–3072</td>
+<td>RAG, clustering</td>
+</tr>
+<tr>
+<td><strong>Image Embeddings</strong></td>
+<td>Image pixels</td>
+<td>512–2048</td>
+<td>Image search, multimodal</td>
+</tr>
+<tr>
+<td><strong>Code Embeddings</strong></td>
+<td>Code snippets</td>
+<td>768–1536</td>
+<td>Code search</td>
+</tr>
+<tr>
+<td><strong>Multimodal Embeddings</strong></td>
+<td>Text + Image</td>
+<td>512–1536</td>
+<td>Cross-modal search</td>
+</tr>
+</tbody></table>
+<h3>System Design Role</h3>
+<pre class="mermaid">
+flowchart LR
+    TEXT["'How do I reset my password?'"] --> ENC["Embedding Model\n(e.g. text-embedding-3)"]
+    ENC --> VEC["[0.23, -0.87, 0.45, ...]"]
+    VEC --> VDBQ["Vector DB Query\nFind nearest neighbors"]
+    VDBQ --> RESULTS["Similar documents:\n1. 'Password reset instructions'\n2. 'Account recovery guide'\n3. 'Login troubleshooting'"]
+</pre>
+<hr>
+<h2>4. Attention Mechanism</h2>
+<h3>What it is — Plain English</h3>
+<p>When you read the sentence <em>&quot;The animal didn&#39;t cross the street because it was too tired&quot;</em> — how do you know what &quot;it&quot; refers to? You pay <strong>attention</strong> to earlier parts of the sentence and connect &quot;it&quot; back to &quot;animal.&quot; The attention mechanism gives neural networks this same ability: for every word being processed, look back at all other words and decide which ones are most relevant.</p>
+<h3>The Analogy — A Search Engine Inside the Model</h3>
+<pre class="mermaid">
+graph TD
+    subgraph Attention["🔍 Attention = Internal Search"]
+        QUERY["Query (Q)\n'What is this word about?'\ne.g. processing word 'it'"]
+        KEY["Keys (K)\nIndex of all other words\n['The','animal','street','tired'...]"]
+        VALUE["Values (V)\nActual content of each word\n(richer representation)"]
+
+        QUERY -->|"Compare with"| KEY
+        KEY -->|"Score similarity\nSoftmax → weights"| SCORES["Attention Scores\nanimal: 0.72 ← HIGH\nstreet: 0.05\ntired: 0.18\nThe: 0.05"]
+        SCORES -->|"Weighted sum of"| VALUE
+        VALUE --> OUT["Output: enriched\nrepresentation of 'it'\nnow knows it = animal"]
+    end
+</pre>
+<h3>Multi-Head Attention</h3>
+<p>Instead of one attention computation, the Transformer runs <strong>multiple attention heads in parallel</strong> — each learning to focus on different types of relationships.</p>
+<pre class="mermaid">
+graph TB
+    INPUT["Input Token Embeddings"]
+
+    subgraph MHA["Multi-Head Attention (8 heads shown)"]
+        H1["Head 1\nFocuses on:\nSubject-verb agreement"]
+        H2["Head 2\nFocuses on:\nPronoun references"]
+        H3["Head 3\nFocuses on:\nNearby words (local context)"]
+        H4["Head 4\nFocuses on:\nSentiment relationships"]
+        H5["Head 5\nFocuses on:\nNegation patterns"]
+        H6["Head 6\nFocuses on:\nEntity co-references"]
+        H7["Head 7\nFocuses on:\nTemporal relationships"]
+        H8["Head 8\nFocuses on:\nSyntactic dependencies"]
+    end
+
+    CONCAT["Concatenate all head outputs"]
+    LINEAR["Linear projection → output size"]
+
+    INPUT --> H1 & H2 & H3 & H4 & H5 & H6 & H7 & H8
+    H1 & H2 & H3 & H4 & H5 & H6 & H7 & H8 --> CONCAT --> LINEAR
+</pre>
+<h3>Attention Complexity — The Scaling Problem</h3>
+<pre><code>Attention complexity = O(n²) where n = sequence length
+
+n = 1,000 tokens → 1M computations
+n = 10,000 tokens → 100M computations
+n = 100,000 tokens → 10 Billion computations  ← expensive!
+
+This is why long context windows (128K, 1M tokens) require:
+  - Flash Attention (memory-efficient attention)
+  - Sliding window attention (Mistral)
+  - Linear attention approximations
+</code></pre>
+<hr>
+<h2>5. Self-Supervised Learning</h2>
+<h3>What it is — Plain English</h3>
+<p>Traditional machine learning needs humans to label data — &quot;this photo is a cat,&quot; &quot;this email is spam.&quot; Self-supervised learning skips the human label step. It <em>creates its own labels</em> from the raw data structure. For text, the most common trick: hide some words and ask the model to predict what they were.</p>
+<pre class="mermaid">
+graph TD
+    subgraph Supervised["❌ Traditional Supervised Learning (Expensive)"]
+        DATA1["1M images"]
+        HUMANS["👥 1,000 human annotators\nlabeling each image\n⏱️ 6 months, 💰 $500K"]
+        LABELS["Labeled dataset\n'cat', 'dog', 'car'..."]
+        DATA1 --> HUMANS --> LABELS
+    end
+
+    subgraph SelfSup["✅ Self-Supervised Learning (Free Labels)"]
+        TEXT["Trillion tokens of raw text\n(no labels needed!)"]
+        MASK["Create task automatically:\nMask 15% of words\n→ Predict masked words\nOR\nPredict next token"]
+        LEARN["Model learns rich language\nrepresentations from\nthe task structure itself"]
+        TEXT --> MASK --> LEARN
+    end
+</pre>
+<h3>Two Main Flavors</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Technique</th>
+<th>Used By</th>
+<th>Key Idea</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Masked Language Modeling (MLM)</strong></td>
+<td>Hide random words, predict them</td>
+<td>BERT, RoBERTa</td>
+<td>Bidirectional context</td>
+</tr>
+<tr>
+<td><strong>Causal Language Modeling (CLM)</strong></td>
+<td>Predict the next word</td>
+<td>GPT series, LLaMA, Claude</td>
+<td>Left-to-right generation</td>
+</tr>
+<tr>
+<td><strong>Contrastive Learning</strong></td>
+<td>Pull similar examples together, push dissimilar apart</td>
+<td>CLIP, SimCLR</td>
+<td>Representation learning</td>
+</tr>
+<tr>
+<td><strong>Span Prediction</strong></td>
+<td>Mask entire spans of text</td>
+<td>T5, BART</td>
+<td>Text-to-text tasks</td>
+</tr>
+</tbody></table>
+<h3>Why It Matters</h3>
+<pre><code>Before self-supervised learning (pre-2018):
+  Training a good NLP model needed 100K+ labeled examples.
+  Labeling 100K examples = expensive and slow.
+
+After BERT/GPT (2018+):
+  Pre-train on 1 Trillion unlabeled tokens (free from internet).
+  Fine-tune on just 1,000 labeled examples.
+  Performance = better than old approach with 100K labels.
+
+→ This is why LLMs could scale: data became essentially free.
+</code></pre>
+<hr>
+<h2>6. Transformer Architecture</h2>
+<h3>What it is — Plain English</h3>
+<p>The Transformer (introduced in the 2017 paper <em>&quot;Attention Is All You Need&quot;</em>) is the architectural foundation of every modern LLM. Before it, models processed text sequentially — one word at a time. The Transformer processes the <em>entire sequence at once</em> in parallel using attention, making it dramatically faster to train on modern hardware.</p>
+<h3>The Full Architecture</h3>
+<pre class="mermaid">
+graph TD
+    subgraph Input["📥 Input Processing"]
+        TOKENS["Input Tokens\n['Hello', ',', 'world']"]
+        EMB["Token Embeddings\nConvert IDs → vectors"]
+        POS["Positional Encoding\nAdd position info\n(tokens have no inherent order)"]
+        SUM["Combined Input\nEmbedding + Position"]
+    end
+
+    subgraph Encoder["🔄 Transformer Block (×N layers)"]
+        MHA["Multi-Head Self-Attention\nEvery token attends to every other"]
+        ADD1["Add & Layer Norm"]
+        FFN["Feed-Forward Network\nTwo linear layers + ReLU\nPer-token transformation"]
+        ADD2["Add & Layer Norm"]
+    end
+
+    subgraph Output["📤 Output"]
+        LOGITS["Logits\n(score for each vocabulary token)"]
+        SOFTMAX["Softmax\nConvert to probabilities"]
+        SAMPLE["Sample / Greedy select\nNext token"]
+    end
+
+    TOKENS --> EMB --> POS --> SUM
+    SUM --> MHA --> ADD1 --> FFN --> ADD2
+    ADD2 -->|"Repeat N times\n(GPT-4: ~96 layers)"| MHA
+    ADD2 --> LOGITS --> SOFTMAX --> SAMPLE
+</pre>
+<h3>Encoder vs. Decoder vs. Encoder-Decoder</h3>
+<pre class="mermaid">
+graph LR
+    subgraph ENC["Encoder-Only\n(e.g. BERT)"]
+        E1["Bidirectional attention\nSees full context\n✅ Best for: Classification,\nNER, embeddings"]
+    end
+
+    subgraph DEC["Decoder-Only\n(e.g. GPT, Claude, LLaMA)"]
+        D1["Causal attention\nOnly sees past tokens\n✅ Best for: Text generation,\nchat, code"]
+    end
+
+    subgraph ENCDEC["Encoder-Decoder\n(e.g. T5, BART)"]
+        ED1["Encoder reads input\nDecoder generates output\n✅ Best for: Translation,\nsummarization, Q&A"]
+    end
+</pre>
+<h3>Key Transformer Components Explained Simply</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Analogy</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Token Embedding</strong></td>
+<td>Dictionary lookup</td>
+<td>Converts token ID to a dense vector</td>
+</tr>
+<tr>
+<td><strong>Positional Encoding</strong></td>
+<td>Page numbers in a book</td>
+<td>Tells model where each token sits in sequence</td>
+</tr>
+<tr>
+<td><strong>Self-Attention</strong></td>
+<td>Highlighting related words</td>
+<td>Lets tokens look at and learn from each other</td>
+</tr>
+<tr>
+<td><strong>Feed-Forward Network</strong></td>
+<td>Feature transformation</td>
+<td>Per-token computation after attention</td>
+</tr>
+<tr>
+<td><strong>Layer Norm</strong></td>
+<td>Calibration step</td>
+<td>Keeps activations in healthy range</td>
+</tr>
+<tr>
+<td><strong>Residual Connection</strong></td>
+<td>Shortcut highway</td>
+<td>Passes original input alongside transformed signal</td>
+</tr>
+<tr>
+<td><strong>Softmax</strong></td>
+<td>Voting machine</td>
+<td>Converts raw scores to probabilities</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>7. Fine-Tuning</h2>
+<h3>What it is — Plain English</h3>
+<p>A pre-trained LLM knows a lot about language in general, but it doesn&#39;t know <em>your company&#39;s</em> writing style, <em>your domain&#39;s</em> terminology, or how to behave as a helpful assistant vs. a neutral text predictor. Fine-tuning takes this general-purpose model and gives it specialized training on a smaller, curated dataset — reshaping its behavior for a specific purpose.</p>
+<pre class="mermaid">
+graph LR
+    subgraph Pretrain["🌍 Pre-Training"]
+        BIG["Massive general dataset\n(Common Crawl, Wikipedia,\nBooks, Code)\n~100B–15T tokens"]
+        BASE["Base Model\n'Foundation Model'\nKnows language, facts,\nreasoning — but raw"]
+    end
+
+    subgraph Finetune["🎯 Fine-Tuning"]
+        SMALL["Small curated dataset\n(1K–1M examples)\nTask-specific + high quality"]
+        FT["Fine-Tuned Model\nSpecialized behavior,\ndomain knowledge,\ndesired tone/format"]
+    end
+
+    BIG --> BASE
+    BASE --> SMALL --> FT
+</pre>
+<h3>Types of Fine-Tuning</h3>
+<pre class="mermaid">
+graph TD
+    subgraph FullFT["Full Fine-Tuning"]
+        FF["Update ALL model weights\nMost powerful\n💰 Very expensive (100s of GPUs)\n⚠️ Risk of catastrophic forgetting"]
+    end
+
+    subgraph PEFT["Parameter-Efficient Fine-Tuning (PEFT)"]
+        LORA["LoRA (Low-Rank Adaptation)\nFreeze base model\nAdd tiny trainable matrices\n✅ 10,000× fewer parameters\n✅ Runs on 1–2 GPUs\n✅ Most popular approach"]
+        PREFIX["Prefix Tuning\nLearn soft prompts prepended\nto every input layer"]
+        ADAPTER["Adapter Layers\nInsert small trainable modules\nbetween frozen layers"]
+    end
+
+    subgraph RLHF["Alignment Fine-Tuning"]
+        SFT["SFT (Supervised Fine-Tuning)\nTrain on human-written\nideal responses"]
+        RW["Reward Model Training\nHumans rank responses\nModel learns what's preferred"]
+        PPO["PPO / DPO\nTrain base model to maximize\nreward model score"]
+        SFT --> RW --> PPO
+    end
+</pre>
+<h3>LoRA — The Workhorse of Fine-Tuning</h3>
+<pre><code>Problem: A 70B model has 70 Billion parameters.
+         Updating all of them = massive compute + memory.
+
+LoRA Insight:
+  The &quot;update&quot; you need is low-rank.
+  Instead of updating full weight matrix W (huge),
+  learn two small matrices A and B where A×B ≈ the update.
+
+Original: W is (4096 × 4096) = 16.7M parameters
+LoRA:     A is (4096 × 16), B is (16 × 4096) = 131K parameters
+          That&#39;s 128× fewer parameters to train!
+
+Result: Fine-tune a 70B model on a single A100 GPU.
+</code></pre>
+<h3>When to Fine-Tune vs. Prompt Engineer</h3>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Approach</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>New writing style/tone</td>
+<td>Fine-tune</td>
+<td>Style is hard to describe in words</td>
+</tr>
+<tr>
+<td>Domain-specific vocabulary</td>
+<td>Fine-tune</td>
+<td>Model may not know your terms</td>
+</tr>
+<tr>
+<td>Consistent structured output</td>
+<td>Fine-tune</td>
+<td>Format needs to be rock-solid</td>
+</tr>
+<tr>
+<td>New task with examples</td>
+<td>Few-shot prompting first</td>
+<td>Cheaper, faster to iterate</td>
+</tr>
+<tr>
+<td>Behavior across all inputs</td>
+<td>Fine-tune</td>
+<td>Prompting is per-request</td>
+</tr>
+<tr>
+<td>Just need current info</td>
+<td>RAG</td>
+<td>Fine-tuning doesn&#39;t update knowledge easily</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>8. Few-Shot Prompting</h2>
+<h3>What it is — Plain English</h3>
+<p>Instead of writing a long instruction manual, you just show the model a few examples of what you want. Like showing a new employee 3 example emails and saying &quot;write like this&quot; — the model figures out the pattern from the examples.</p>
+<pre class="mermaid">
+graph TD
+    subgraph ZeroShot["0-Shot: Just ask"]
+        Z1["Prompt: 'Classify sentiment: I love this product!'"]
+        Z2["Model: Positive"]
+    end
+
+    subgraph OneShot["1-Shot: One example"]
+        O1["Example:\nInput: 'This is terrible' → Negative\n\nNew input: 'Absolutely fantastic!'"]
+        O2["Model: Positive (more reliably)"]
+    end
+
+    subgraph FewShot["Few-Shot: Multiple examples"]
+        F1["Example 1: 'I hate waiting' → Negative\nExample 2: 'Best day ever!' → Positive\nExample 3: 'It was okay' → Neutral\n\nNew: 'Meh, nothing special'"]
+        F2["Model: Neutral (high confidence)"]
+    end
+
+    subgraph ChainOfThought["CoT Few-Shot: Show reasoning too"]
+        C1["Example:\nQ: 'Roger has 5 balls. Buys 2 cans of 3 balls each. How many?'\nA: Roger starts with 5. Each can has 3 balls, 2 cans = 6.\n5 + 6 = 11. Answer: 11\n\nQ: [new math problem]"]
+        C2["Model: Reasons step by step → Correct answer"]
+    end
+</pre>
+<h3>Few-Shot Prompting Anatomy</h3>
+<pre><code>┌─────────────────────────────────────────────────┐
+│               FEW-SHOT PROMPT                   │
+├─────────────────────────────────────────────────┤
+│ SYSTEM CONTEXT (optional)                       │
+│ &quot;You are a customer support classifier.&quot;        │
+├─────────────────────────────────────────────────┤
+│ EXAMPLE 1 (demonstrates the pattern)            │
+│ Input:  &quot;My order hasn&#39;t arrived&quot;               │
+│ Output: {&quot;category&quot;: &quot;shipping&quot;, &quot;urgency&quot;: 3}  │
+├─────────────────────────────────────────────────┤
+│ EXAMPLE 2                                       │
+│ Input:  &quot;I want a refund&quot;                       │
+│ Output: {&quot;category&quot;: &quot;billing&quot;, &quot;urgency&quot;: 2}   │
+├─────────────────────────────────────────────────┤
+│ EXAMPLE 3                                       │
+│ Input:  &quot;App keeps crashing&quot;                    │
+│ Output: {&quot;category&quot;: &quot;technical&quot;, &quot;urgency&quot;: 4} │
+├─────────────────────────────────────────────────┤
+│ NEW INPUT (the actual query)                    │
+│ Input:  &quot;Can&#39;t log into my account&quot;             │
+│ Output: ???  ← Model fills this in              │
+└─────────────────────────────────────────────────┘
+</code></pre>
+<h3>Prompting Strategy Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Examples Needed</th>
+<th>Cost</th>
+<th>Best For</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Zero-shot</strong></td>
+<td>0</td>
+<td>Lowest</td>
+<td>Well-known tasks</td>
+</tr>
+<tr>
+<td><strong>One-shot</strong></td>
+<td>1</td>
+<td>Low</td>
+<td>Simple format demos</td>
+</tr>
+<tr>
+<td><strong>Few-shot</strong></td>
+<td>3–10</td>
+<td>Medium</td>
+<td>Complex format, edge cases</td>
+</tr>
+<tr>
+<td><strong>Many-shot</strong></td>
+<td>10–100</td>
+<td>Higher</td>
+<td>Rare tasks, nuanced behavior</td>
+</tr>
+<tr>
+<td><strong>Fine-tuning</strong></td>
+<td>1K–1M</td>
+<td>Highest</td>
+<td>Consistent behavior at scale</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>9. Retrieval Augmented Generation (RAG)</h2>
+<h3>What it is — Plain English</h3>
+<p>LLMs have a knowledge cutoff — they don&#39;t know what happened last week. And they can&#39;t know <em>your</em> company&#39;s internal documents, your product specs, or your customer database. RAG solves this by giving the model a search engine: before answering, the system <em>retrieves</em> relevant documents from your data, then <em>augments</em> the prompt with those documents, so the model can <em>generate</em> an informed answer.</p>
+<div class="tip">
+
+<p><strong>Analogy:</strong> Open-book exam vs. closed-book. RAG = open book. The model can look things up before answering.</p>
+</div>
+
+
+<h3>RAG Architecture</h3>
+<pre class="mermaid">
+graph TD
+    subgraph Indexing["📚 Offline: Build the Index (One Time)"]
+        DOCS["Your Documents\n(PDFs, wikis, DBs, emails)"]
+        CHUNK["Chunker\nSplit into ~500 token pieces"]
+        EMBED["Embedding Model\nConvert each chunk to vector"]
+        STORE["Vector Database\n(Pinecone, Weaviate, pgvector)\nStore vectors + text"]
+
+        DOCS --> CHUNK --> EMBED --> STORE
+    end
+
+    subgraph Retrieval["🔍 Online: Answer a Question (Per Request)"]
+        Q["User Question\n'What is our refund policy?'"]
+        QE["Embed the question\nusing same embedding model"]
+        SEARCH["Vector Search\nFind top-K most similar chunks"]
+        CHUNKS["Retrieved Chunks\n1. 'Returns within 30 days...'\n2. 'Eligible items include...'\n3. 'Contact support to...'"]
+
+        Q --> QE --> SEARCH --> CHUNKS
+    end
+
+    subgraph Generation["💬 Generate the Answer"]
+        PROMPT["Augmented Prompt =\nSystem instruction +\nRetrieved chunks +\nUser question"]
+        LLM["LLM\n(GPT-4, Claude, etc.)"]
+        ANS["Grounded Answer\n'Our refund policy allows returns\nwithin 30 days for eligible items...'"]
+
+        CHUNKS --> PROMPT
+        Q --> PROMPT
+        PROMPT --> LLM --> ANS
+    end
+
+    STORE --> SEARCH
+</pre>
+<h3>RAG vs. Fine-Tuning</h3>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>RAG</th>
+<th>Fine-Tuning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Knowledge updates</strong></td>
+<td>Real-time (just re-index)</td>
+<td>Requires re-training</td>
+</tr>
+<tr>
+<td><strong>Data privacy</strong></td>
+<td>Data stays in your VectorDB</td>
+<td>Data is baked into weights</td>
+</tr>
+<tr>
+<td><strong>Hallucination</strong></td>
+<td>Lower (grounded in retrieved docs)</td>
+<td>Can still hallucinate</td>
+</tr>
+<tr>
+<td><strong>Cost</strong></td>
+<td>Per-query retrieval cost</td>
+<td>One-time training cost</td>
+</tr>
+<tr>
+<td><strong>Latency</strong></td>
+<td>Adds retrieval step (~50–200ms)</td>
+<td>No extra latency</td>
+</tr>
+<tr>
+<td><strong>Best for</strong></td>
+<td>Dynamic, changing knowledge</td>
+<td>Style, format, behavior</td>
+</tr>
+</tbody></table>
+<h3>Advanced RAG Patterns</h3>
+<pre class="mermaid">
+graph LR
+    subgraph NaiveRAG["Basic RAG\nEmbed → Retrieve → Generate"]
+        NR["Simple but can retrieve\nirrelevant chunks"]
+    end
+
+    subgraph AdvancedRAG["Advanced RAG Techniques"]
+        HYD["HyDE\nGenerate hypothetical answer\nfirst, then search with it"]
+        RERANK["Re-Ranking\nRetrieve 20 chunks,\nre-rank with cross-encoder,\nkeep top 5"]
+        MMRAG["Multi-Modal RAG\nSearch images + text together"]
+        GRAPH["GraphRAG (Microsoft)\nBuild knowledge graph\nfrom documents,\nnavigate relationships"]
+        HYBRID["Hybrid Search\nVector + keyword (BM25)\ncombined score"]
+    end
+
+    NaiveRAG --> AdvancedRAG
+</pre>
+<hr>
+<h2>10. Vector Database</h2>
+<h3>What it is — Plain English</h3>
+<p>A regular database answers the question &quot;find me the row where <code>id = 42</code>&quot; — exact match. A vector database answers the question &quot;find me the 10 most <em>similar</em> items to this&quot; — approximate nearest neighbor search. It&#39;s a database optimized for finding meaning-neighbors in a high-dimensional embedding space.</p>
+<h3>Regular DB vs. Vector DB</h3>
+<pre class="mermaid">
+graph LR
+    subgraph Regular["🗄️ Regular Database\n(PostgreSQL, MySQL)"]
+        R1["Query: WHERE name = 'apple'"]
+        R2["Finds exact match only"]
+        R3["'Apple' ≠ 'fruit' ≠ 'iPhone'"]
+    end
+
+    subgraph Vector["🧲 Vector Database\n(Pinecone, Weaviate)"]
+        V1["Query: Similar to vector of 'apple'"]
+        V2["Finds semantic neighbors"]
+        V3["Returns: fruit, iPhone, orchard, cider"]
+    end
+</pre>
+<h3>How Vector Search Works (HNSW Algorithm)</h3>
+<pre class="mermaid">
+graph TD
+    subgraph HNSW["Hierarchical Navigable Small World (HNSW)"]
+        L2["Layer 2 (coarse)\nFew nodes, long-range links\nNavigate quickly to region"]
+        L1["Layer 1 (medium)\nMore nodes, medium links\nNarrow to neighborhood"]
+        L0["Layer 0 (fine)\nAll nodes, short links\nFind exact nearest neighbors"]
+
+        L2 -->|"Zoom in"| L1 -->|"Zoom in"| L0
+    end
+
+    NOTE["Think of it like:\nWorld map → Country map → City map\nNavigate from coarse to fine\nO(log n) search complexity"]
+</pre>
+<h3>Vector DB Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Database</th>
+<th>Type</th>
+<th>Hosted</th>
+<th>Strengths</th>
+<th>Weaknesses</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Pinecone</strong></td>
+<td>Purpose-built</td>
+<td>Cloud-only</td>
+<td>Simplest API, managed</td>
+<td>Expensive, no self-host</td>
+</tr>
+<tr>
+<td><strong>Weaviate</strong></td>
+<td>Purpose-built</td>
+<td>Both</td>
+<td>GraphQL, hybrid search</td>
+<td>Complex setup</td>
+</tr>
+<tr>
+<td><strong>Qdrant</strong></td>
+<td>Purpose-built</td>
+<td>Both</td>
+<td>Fast, Rust-based</td>
+<td>Smaller ecosystem</td>
+</tr>
+<tr>
+<td><strong>Chroma</strong></td>
+<td>Purpose-built</td>
+<td>Self-host</td>
+<td>Great for dev/prototyping</td>
+<td>Not production-scale</td>
+</tr>
+<tr>
+<td><strong>pgvector</strong></td>
+<td>PostgreSQL extension</td>
+<td>Self-host</td>
+<td>Already have Postgres?</td>
+<td>Slower than purpose-built</td>
+</tr>
+<tr>
+<td><strong>Redis</strong></td>
+<td>Extension</td>
+<td>Both</td>
+<td>Already using Redis?</td>
+<td>Not optimized for vectors</td>
+</tr>
+<tr>
+<td><strong>Milvus</strong></td>
+<td>Purpose-built</td>
+<td>Both</td>
+<td>High scale, open source</td>
+<td>Complex operations</td>
+</tr>
+</tbody></table>
+<h3>Key Metrics</h3>
+<pre><code>Recall@K: Of the true K nearest neighbors, what % did we find?
+  → Good system: 95%+ recall
+
+Latency: How fast is a single query?
+  → Target: &lt; 50ms at p99
+
+QPS: How many queries per second?
+  → Pinecone: ~1,000 QPS per pod
+  → Weaviate: ~5,000 QPS on good hardware
+
+Dimensionality: How many dimensions per vector?
+  → 768 (BERT), 1536 (OpenAI), 3072 (large models)
+</code></pre>
+<hr>
+<h2>11. Model Context Protocol (MCP)</h2>
+<h3>What it is — Plain English</h3>
+<p>Imagine every AI tool (GitHub Copilot, Claude, ChatGPT) needing a custom integration with every data source (Google Drive, Slack, Jira, Postgres). That&#39;s N×M integrations — a nightmare. MCP (introduced by Anthropic in 2024) is a <strong>universal standard</strong> so any AI can talk to any tool through one consistent interface. Like USB-C for AI tool connections.</p>
+<pre class="mermaid">
+graph TD
+    subgraph Before["❌ Before MCP: N×M Custom Integrations"]
+        A1["Claude"] -->|"custom"| T1["GitHub"]
+        A1 -->|"custom"| T2["Slack"]
+        A1 -->|"custom"| T3["Postgres"]
+        A2["GPT-4"] -->|"custom"| T1
+        A2 -->|"custom"| T2
+        A2 -->|"custom"| T3
+    end
+
+    subgraph After["✅ After MCP: 1 Standard Protocol"]
+        AI1["Claude"]
+        AI2["GPT-4"]
+        AI3["Any AI"]
+        MCP_STD["MCP Standard\nProtocol Layer"]
+        S1["MCP Server:\nGitHub"]
+        S2["MCP Server:\nSlack"]
+        S3["MCP Server:\nPostgres"]
+
+        AI1 & AI2 & AI3 --> MCP_STD
+        MCP_STD --> S1 & S2 & S3
+    end
+</pre>
+<h3>MCP Architecture</h3>
+<pre class="mermaid">
+graph LR
+    subgraph Host["🖥️ MCP Host (AI Application)"]
+        LLM["LLM\n(Claude, GPT, etc.)"]
+        MCPC["MCP Client\nManages connections\nto servers"]
+    end
+
+    subgraph Servers["🔌 MCP Servers (Tools & Data)"]
+        FS["Filesystem Server\nRead/write local files"]
+        DB_S["Database Server\nQuery Postgres/SQLite"]
+        GH["GitHub Server\nPR reviews, code search"]
+        SLACK["Slack Server\nRead messages, post"]
+        CUSTOM["Your Custom Server\n(any internal API)"]
+    end
+
+    LLM <-->|"Tool calls\nvia MCP Client"| MCPC
+    MCPC <-->|"JSON-RPC over\nstdio / HTTP SSE"| FS & DB_S & GH & SLACK & CUSTOM
+</pre>
+<h3>MCP Primitives</h3>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>What It Is</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Tools</strong></td>
+<td>Functions the LLM can call</td>
+<td><code>search_github(query)</code>, <code>query_db(sql)</code></td>
+</tr>
+<tr>
+<td><strong>Resources</strong></td>
+<td>Data the LLM can read</td>
+<td><code>/documents/policy.pdf</code>, database schema</td>
+</tr>
+<tr>
+<td><strong>Prompts</strong></td>
+<td>Reusable prompt templates</td>
+<td>&quot;Summarize this PR in 3 bullet points&quot;</td>
+</tr>
+<tr>
+<td><strong>Sampling</strong></td>
+<td>Server requests LLM completion</td>
+<td>Nested AI calls from within a server</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>12. A2A Protocol (Agent-to-Agent)</h2>
+<h3>What it is — Plain English</h3>
+<p>As AI systems grow more complex, you often need multiple specialized AI agents working together — one agent researches, another writes, another reviews. The A2A (Agent-to-Agent) protocol (introduced by Google, 2025) is a standard for how AI agents <strong>discover, communicate with, and delegate tasks to each other</strong> — even across different vendors and frameworks.</p>
+<pre class="mermaid">
+graph TD
+    subgraph OrchestratorAgent["🎯 Orchestrator Agent\n(Claude / Gemini)"]
+        PLAN["Receives task:\n'Write a market analysis report'"]
+        DECOMP["Decomposes into subtasks"]
+    end
+
+    subgraph SubAgents["🤖 Specialist Sub-Agents (via A2A)"]
+        RA["Research Agent\nSearches web, summarizes sources"]
+        DA["Data Agent\nPulls market data from APIs"]
+        WA["Writing Agent\nDrafts the report"]
+        QA["QA Agent\nFact-checks and reviews"]
+    end
+
+    subgraph AgentCard["📋 Agent Discovery"]
+        AC["Agent Card (.well-known/agent.json)\nPublished by each agent:\n- Name & description\n- Capabilities\n- Input/output schemas\n- Authentication"]
+    end
+
+    PLAN --> DECOMP
+    DECOMP -->|"A2A Task delegation"| RA & DA
+    RA & DA -->|"A2A Results"| WA
+    WA -->|"A2A Review request"| QA
+    QA -->|"A2A Approved"| OrchestratorAgent
+    AC -->|"Discovery"| OrchestratorAgent
+</pre>
+<h3>MCP vs. A2A — Know the Difference</h3>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>MCP</th>
+<th>A2A</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Purpose</strong></td>
+<td>Connect AI to tools/data</td>
+<td>Connect AI agents to each other</td>
+</tr>
+<tr>
+<td><strong>Direction</strong></td>
+<td>LLM → Tools</td>
+<td>Agent → Agent</td>
+</tr>
+<tr>
+<td><strong>Analogy</strong></td>
+<td>USB-C for tools</td>
+<td>REST API for agents</td>
+</tr>
+<tr>
+<td><strong>Initiated by</strong></td>
+<td>Anthropic (2024)</td>
+<td>Google (2025)</td>
+</tr>
+<tr>
+<td><strong>Transport</strong></td>
+<td>JSON-RPC, stdio, SSE</td>
+<td>HTTP, JSON</td>
+</tr>
+<tr>
+<td><strong>Use case</strong></td>
+<td>&quot;Query this database&quot;</td>
+<td>&quot;Delegate this subtask to a specialist&quot;</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>13. Context Engineering</h2>
+<h3>What it is — Plain English</h3>
+<p>The context window is the model&#39;s working memory — everything it can &quot;see&quot; at once. Context engineering is the discipline of deciding <strong>what goes into that window</strong> to maximize the quality of the output. It&#39;s like deciding what papers to put on a consultant&#39;s desk before they write a report — you want exactly the right information, in the right order, with no noise.</p>
+<blockquote>
+<p><em>&quot;Context engineering is the delicate art and science of filling the context window with exactly the right information at the right time.&quot;</em> — Andrej Karpathy</p>
+</blockquote>
+<pre class="mermaid">
+graph TD
+    subgraph ContextWindow["🧠 Context Window (e.g. 128K tokens)"]
+        SYS["System Prompt\n'You are an expert engineer. Be concise. Always cite sources.'"]
+        MEM["Persistent Memory\n(Key facts about user, preferences)"]
+        HIST["Conversation History\n(Last N turns)"]
+        RAG_CTX["Retrieved Documents\n(From RAG system)"]
+        TOOLS["Tool Outputs\n(Results from function calls)"]
+        SCRATCHPAD["Agent Scratchpad\n(Intermediate reasoning steps)"]
+        USER["Current User Message\n'How do I fix this bug?'"]
+    end
+
+    BUDGET["Total: 128K tokens\nEach section competes\nfor this budget"]
+
+    SYS & MEM & HIST & RAG_CTX & TOOLS & SCRATCHPAD & USER --> BUDGET
+</pre>
+<h3>Context Engineering Techniques</h3>
+<table>
+<thead>
+<tr>
+<th>Technique</th>
+<th>What It Does</th>
+<th>When to Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Prompt compression</strong></td>
+<td>Summarize old conversation turns</td>
+<td>Long multi-turn sessions</td>
+</tr>
+<tr>
+<td><strong>Selective retrieval</strong></td>
+<td>Only fetch top-K relevant chunks</td>
+<td>RAG systems</td>
+</tr>
+<tr>
+<td><strong>Instruction distillation</strong></td>
+<td>Shorten system prompt without losing intent</td>
+<td>Cost reduction</td>
+</tr>
+<tr>
+<td><strong>Memory summarization</strong></td>
+<td>Compress old context into key facts</td>
+<td>Persistent agents</td>
+</tr>
+<tr>
+<td><strong>Tool output truncation</strong></td>
+<td>Trim verbose API responses</td>
+<td>Tool-using agents</td>
+</tr>
+<tr>
+<td><strong>Context ordering</strong></td>
+<td>Put most critical info first and last</td>
+<td>Attention is strongest at boundaries</td>
+</tr>
+<tr>
+<td><strong>Few-shot placement</strong></td>
+<td>Examples near the end outperform start</td>
+<td>Better in-context learning</td>
+</tr>
+</tbody></table>
+<h3>The Lost in the Middle Problem</h3>
+<pre><code>Research finding: LLMs are better at using information
+placed at the START or END of context.
+Information in the MIDDLE of long contexts is often &quot;lost.&quot;
+
+Implication for context engineering:
+  ✅ Put the most important instructions at the TOP of system prompt
+  ✅ Put the most relevant retrieved chunk closest to the question
+  ✅ Summarize and compress the middle section
+  ✅ Repeat critical constraints at the end
+
+Context window budget allocation (typical RAG chatbot):
+  System prompt:         ~1,000 tokens (0.8%)
+  Retrieved docs:        ~8,000 tokens (6.2%)
+  Conversation history:  ~4,000 tokens (3.1%)
+  User message:          ~500 tokens (0.4%)
+  ─────────────────────────────────────────
+  Total used:            ~13,500 / 128,000 tokens
+  Output budget:         up to ~4,096 tokens
+</code></pre>
+<hr>
+<h2>14. AI Agents</h2>
+<h3>What it is — Plain English</h3>
+<p>A regular LLM answers questions. An <strong>AI Agent</strong> takes <em>actions</em> in the world — it can search the web, run code, query databases, send emails, click on web pages, and call APIs. More importantly, it can do this in a <strong>loop</strong> — observe the result, decide the next action, act, observe again — until a goal is reached.</p>
+<div class="tip">
+
+<p><strong>Analogy:</strong> LLM = a brilliant advisor sitting in a room answering questions. Agent = that same advisor, but with a computer, phone, and ability to leave the room and do things.</p>
+</div>
+
+
+<h3>The Agent Loop</h3>
+<pre class="mermaid">
+graph TD
+    subgraph AgentLoop["🔄 The ReAct Agent Loop"]
+        GOAL["User Goal\n'Book me the cheapest flight to NYC next Friday'"]
+        THINK["THINK / REASON\nWhat do I need to do next?\n'I should search for flights'"]
+        ACT["ACT\nCall tool: search_flights(dest='NYC', date='next Friday')"]
+        OBS["OBSERVE\nTool returns: [flight1: $320, flight2: $410...]"]
+        DECIDE{"Goal\nAchieved?"}
+        NEXT["THINK again\n'I need to check baggage fees for flight1'"]
+        DONE["DONE\n'The cheapest option is Delta for $320.\nShall I book it?'"]
+    end
+
+    GOAL --> THINK --> ACT --> OBS --> DECIDE
+    DECIDE -->|"No"| NEXT --> THINK
+    DECIDE -->|"Yes"| DONE
+</pre>
+<h3>Agent Components</h3>
+<pre class="mermaid">
+graph TD
+    subgraph AgentArch["🤖 AI Agent Architecture"]
+        LLM_CORE["LLM Core\n(Reasoning engine)"]
+
+        subgraph Memory["💾 Memory Systems"]
+            STM["Short-term (context window)\nCurrent task state"]
+            LTM["Long-term (vector DB)\nPast experiences, facts"]
+            EPI["Episodic (logs)\nHistory of actions taken"]
+        end
+
+        subgraph Tools["🔧 Tool Belt"]
+            SEARCH["Web Search\n(Brave, Perplexity)"]
+            CODE["Code Interpreter\n(Run Python, JS)"]
+            BROWSER["Browser Automation\n(Playwright)"]
+            APIS["External APIs\n(Slack, GitHub, Stripe)"]
+            FILES["File System\n(Read/write)"]
+        end
+
+        PLAN["Planning Module\nDecompose complex tasks\ninto subtasks"]
+        REFLECT["Self-Reflection\nCritique own outputs\nCorrect mistakes"]
+    end
+
+    LLM_CORE <--> Memory
+    LLM_CORE <--> Tools
+    LLM_CORE <--> PLAN
+    LLM_CORE <--> REFLECT
+</pre>
+<h3>Agent Patterns</h3>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Description</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>ReAct</strong></td>
+<td>Reason + Act interleaved</td>
+<td>General-purpose agent loops</td>
+</tr>
+<tr>
+<td><strong>Plan &amp; Execute</strong></td>
+<td>Plan all steps first, then execute</td>
+<td>Long, structured workflows</td>
+</tr>
+<tr>
+<td><strong>Reflexion</strong></td>
+<td>Reflect on failures, retry with insight</td>
+<td>Code generation with self-correction</td>
+</tr>
+<tr>
+<td><strong>Multi-Agent</strong></td>
+<td>Orchestrator + specialist agents</td>
+<td>Research → Write → Review pipeline</td>
+</tr>
+<tr>
+<td><strong>Tree of Thoughts</strong></td>
+<td>Explore multiple reasoning branches</td>
+<td>Complex problem solving</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>15. Reinforcement Learning (RL &amp; RLHF)</h2>
+<h3>What it is — Plain English</h3>
+<p>In reinforcement learning, an agent learns by trying things and getting <strong>feedback</strong> — reward for good actions, penalty for bad ones. Applied to LLMs (RLHF — Reinforcement Learning from Human Feedback), this is how models learn to be <em>helpful, harmless, and honest</em> — not just to predict the next token, but to generate responses that <em>humans actually prefer</em>.</p>
+<pre class="mermaid">
+graph TD
+    subgraph RLHF["RLHF Pipeline"]
+        subgraph Step1["Step 1: SFT — Supervised Fine-Tuning"]
+            S1A["Collect human-written\nideal responses\n(~10K–100K examples)"]
+            S1B["Fine-tune base model\non this data"]
+            S1C["SFT Model:\nKnows how to be helpful\nbut not how to rank quality"]
+        end
+
+        subgraph Step2["Step 2: Train Reward Model"]
+            S2A["Collect preference data:\nShow humans 2 model responses\nThey pick the better one"]
+            S2B["Train Reward Model (RM)\nPredicts human preference score\nfor any response"]
+        end
+
+        subgraph Step3["Step 3: RL Fine-Tuning (PPO)"]
+            S3A["Generate responses with SFT model"]
+            S3B["Score each response\nwith Reward Model"]
+            S3C["PPO updates model weights\nto maximize reward score\n(while staying close to SFT model)"]
+            S3A --> S3B --> S3C --> S3A
+        end
+
+        Step1 --> Step2 --> Step3
+    end
+</pre>
+<h3>RLHF → DPO: The Simpler Successor</h3>
+<pre><code>RLHF Problem:
+  Needs 3 separate models: SFT + Reward Model + PPO Policy
+  Training is unstable and complex
+  Reward model can be &quot;hacked&quot; (reward hacking)
+
+DPO (Direct Preference Optimization) — 2023:
+  Skips the reward model entirely!
+  Directly fine-tunes on preference pairs
+  (chosen response vs. rejected response)
+  Simpler, more stable, widely adopted
+
+GRPO (Group Relative Policy Optimization) — DeepSeek:
+  Used for math/reasoning tasks
+  Groups multiple responses, ranks them
+  No separate reward model needed
+</code></pre>
+<h3>RL in Modern LLMs</h3>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>RL Method</th>
+<th>Key Outcome</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>ChatGPT (GPT-3.5)</td>
+<td>RLHF + PPO</td>
+<td>Conversational helpfulness</td>
+</tr>
+<tr>
+<td>Claude 3</td>
+<td>Constitutional AI + RLHF</td>
+<td>Harmlessness + helpfulness</td>
+</tr>
+<tr>
+<td>DeepSeek-R1</td>
+<td>GRPO (pure RL)</td>
+<td>Mathematical reasoning</td>
+</tr>
+<tr>
+<td>Llama 3 (Instruct)</td>
+<td>DPO</td>
+<td>Instruction following</td>
+</tr>
+<tr>
+<td>Gemini</td>
+<td>RLHF variants</td>
+<td>Multimodal alignment</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>16. Chain of Thought (CoT)</h2>
+<h3>What it is — Plain English</h3>
+<p>Ask a model &quot;What is 17 × 24?&quot; — it may blurt a wrong answer. Ask it &quot;Think step by step: What is 17 × 24?&quot; — it breaks it down, does each step, and gets it right. Chain of Thought prompting forces the model to <strong>externalize its reasoning</strong> before giving a final answer, dramatically improving accuracy on complex tasks.</p>
+<pre class="mermaid">
+graph LR
+    subgraph WithoutCoT["❌ Without Chain of Thought"]
+        Q1["Q: Alice has 3 brothers. Each brother has 2 sisters. How many sisters does Alice have?"]
+        A1["Model: 6 ❌\n(just multiplied 3×2)"]
+    end
+
+    subgraph WithCoT["✅ With Chain of Thought"]
+        Q2["Q: Alice has 3 brothers. Each brother has 2 sisters. How many sisters does Alice have?\nLet's think step by step."]
+        REASON["Model reasons:\n- Alice is female, so she is one of the sisters.\n- Each of Alice's 3 brothers has 2 sisters.\n- Those sisters are Alice + 1 other girl.\n- So Alice has 1 sister."]
+        A2["Answer: 1 ✅"]
+        Q2 --> REASON --> A2
+    end
+</pre>
+<h3>Variants of Chain of Thought</h3>
+<pre class="mermaid">
+graph TD
+    subgraph Variants["CoT Variants"]
+        ZS["Zero-Shot CoT\nJust add: 'Let's think step by step'\nWorks surprisingly well!"]
+        FS["Few-Shot CoT\nProvide examples with\nfull reasoning chains"]
+        AUTO["Auto-CoT\nAutomatically generate\nchain-of-thought examples"]
+        SC["Self-Consistency\nGenerate N reasoning chains\nVote on the majority answer"]
+        TOT["Tree of Thoughts\nExplore branching reasoning\npaths, backtrack if wrong"]
+        PROG["Program of Thought\nReason by writing code\nExecute for answer"]
+    end
+</pre>
+<h3>When CoT Helps Most</h3>
+<table>
+<thead>
+<tr>
+<th>Task Type</th>
+<th>CoT Benefit</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Multi-step math</td>
+<td>🚀 Huge</td>
+<td>Forces intermediate computation</td>
+</tr>
+<tr>
+<td>Logical deduction</td>
+<td>🚀 Huge</td>
+<td>Makes assumptions explicit</td>
+</tr>
+<tr>
+<td>Commonsense reasoning</td>
+<td>✅ Good</td>
+<td>Surfaces implicit knowledge</td>
+</tr>
+<tr>
+<td>Code debugging</td>
+<td>✅ Good</td>
+<td>Step-through logic</td>
+</tr>
+<tr>
+<td>Simple factual Q&amp;A</td>
+<td>❌ Little</td>
+<td>Answer is direct recall</td>
+</tr>
+<tr>
+<td>Classification</td>
+<td>❌ Little</td>
+<td>No reasoning chain needed</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>17. Reasoning Models</h2>
+<h3>What it is — Plain English</h3>
+<p>Standard LLMs generate output token-by-token immediately. Reasoning models have a <strong>hidden thinking phase</strong> before they respond — they spend time exploring the problem space, considering multiple approaches, self-correcting, and only then produce a final answer. It&#39;s the difference between blurting out the first thing that comes to mind vs. taking 5 minutes to think a problem through.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant STD as Standard LLM
+    participant RM as Reasoning Model
+
+    U->>STD: "Prove that √2 is irrational"
+    STD->>U: [immediate response, sometimes wrong]
+
+    U->>RM: "Prove that √2 is irrational"
+    Note over RM: 🤔 Hidden thinking (seconds to minutes)
+    Note over RM: "Assume √2 = p/q in lowest terms..."
+    Note over RM: "Then 2 = p²/q², so p² = 2q²..."
+    Note over RM: "Wait, that means p is even, let p = 2k..."
+    Note over RM: "Then 4k² = 2q², so q² = 2k²..."
+    Note over RM: "q must also be even... contradiction!"
+    Note over RM: "The proof works. Now write cleanly."
+    RM->>U: [polished, correct proof with clear steps]
+</pre>
+<h3>Standard LLM vs. Reasoning Model</h3>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>Standard LLM</th>
+<th>Reasoning Model</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Response time</strong></td>
+<td>Fast (&lt; 1s)</td>
+<td>Slower (5s–5min)</td>
+</tr>
+<tr>
+<td><strong>Thinking</strong></td>
+<td>Implicit in weights</td>
+<td>Explicit &quot;thinking&quot; tokens</td>
+</tr>
+<tr>
+<td><strong>Cost</strong></td>
+<td>Lower</td>
+<td>Higher (more tokens generated)</td>
+</tr>
+<tr>
+<td><strong>Math/logic</strong></td>
+<td>Good</td>
+<td>Excellent</td>
+</tr>
+<tr>
+<td><strong>Simple tasks</strong></td>
+<td>Great</td>
+<td>Overkill</td>
+</tr>
+<tr>
+<td><strong>Transparency</strong></td>
+<td>None</td>
+<td>Can see reasoning</td>
+</tr>
+<tr>
+<td><strong>Examples</strong></td>
+<td>GPT-4o, Claude Sonnet</td>
+<td>o1, o3, Claude 3.7 Sonnet, DeepSeek-R1</td>
+</tr>
+</tbody></table>
+<h3>How Reasoning Models Are Trained</h3>
+<pre class="mermaid">
+graph LR
+    BASE["Base LLM"] --> RL["Reinforcement Learning\non reasoning tasks\n(math, code, logic)"]
+    RL --> REWARD{"Reward Signal"}
+    REWARD -->|"Correct final answer"| POSITIVE["✅ Positive reward\nReinforce this reasoning path"]
+    REWARD -->|"Wrong answer"| NEGATIVE["❌ Negative reward\nDiscorage this path"]
+    POSITIVE & NEGATIVE --> POLICY["Updated Policy:\nModel learns to explore\nand self-correct"]
+    POLICY --> REASON["Reasoning Model\nSelf-discovers CoT,\nbacktracking, verification"]
+</pre>
+<div class="note">
+
+<p><strong>Key insight:</strong> DeepSeek-R1 showed that pure RL (without human-labeled reasoning chains) can teach a model to develop complex reasoning behaviors from scratch — including self-correction and &quot;aha moments.&quot;</p>
+</div>
+
+
+<hr>
+<h2>18. Multimodal Language Models</h2>
+<h3>What it is — Plain English</h3>
+<p>Early LLMs only understood text. Multimodal models understand <strong>multiple types of input</strong> — images, audio, video, documents, and code — and can reason <em>across</em> these modalities. Ask a multimodal model &quot;What&#39;s in this photo?&quot; or &quot;Describe what&#39;s happening in this video&quot; or &quot;Transcribe this audio&quot; — it handles all of these.</p>
+<pre class="mermaid">
+graph TD
+    subgraph Inputs["📥 Multiple Input Modalities"]
+        IMG["🖼️ Images\nPhotos, screenshots, charts"]
+        AUD["🎵 Audio\nSpeech, music, sounds"]
+        VID["🎬 Video\nClips, screen recordings"]
+        DOC["📄 Documents\nPDFs, spreadsheets"]
+        CODE["💻 Code\nPrograms, queries"]
+        TEXT["📝 Text\nQuestions, instructions"]
+    end
+
+    subgraph Encoders["🔄 Modality-Specific Encoders"]
+        VE["Vision Encoder\n(e.g. ViT — Vision Transformer)\nConverts image patches → embeddings"]
+        AE["Audio Encoder\n(e.g. Whisper)\nConverts spectrogram → embeddings"]
+        TE["Text Encoder\nTokenize → embeddings"]
+    end
+
+    subgraph Fusion["🔀 Cross-Modal Fusion"]
+        PROJ["Projection Layer\nAlign all embeddings\ninto shared vector space"]
+        UNILLM["Unified LLM\nAttention across ALL modalities\nReason over combined context"]
+    end
+
+    subgraph Output["📤 Outputs"]
+        TXT["Text generation"]
+        IMG_OUT["Image generation (DALL-E, Imagen)"]
+        AUDIO_OUT["Speech synthesis"]
+    end
+
+    IMG --> VE
+    AUD --> AE
+    TEXT --> TE
+    VE & AE & TE --> PROJ --> UNILLM
+    UNILLM --> TXT & IMG_OUT & AUDIO_OUT
+</pre>
+<h3>Multimodal Capabilities Matrix</h3>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Text</th>
+<th>Images</th>
+<th>Audio</th>
+<th>Video</th>
+<th>Code</th>
+<th>Documents</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>GPT-4o</strong></td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>Claude 3.5</strong></td>
+<td>✅</td>
+<td>✅</td>
+<td>❌</td>
+<td>❌</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>Gemini 1.5 Pro</strong></td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>LLaMA 3.2 Vision</strong></td>
+<td>✅</td>
+<td>✅</td>
+<td>❌</td>
+<td>❌</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>Whisper</strong></td>
+<td>✅</td>
+<td>❌</td>
+<td>✅</td>
+<td>❌</td>
+<td>❌</td>
+<td>❌</td>
+</tr>
+<tr>
+<td><strong>CLIP</strong></td>
+<td>✅</td>
+<td>✅</td>
+<td>❌</td>
+<td>❌</td>
+<td>❌</td>
+<td>❌</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>19. Small Language Models (SLM)</h2>
+<h3>What it is — Plain English</h3>
+<p>Bigger isn&#39;t always better. Small Language Models are compact, efficient models (1B–13B parameters) that can run on a laptop, phone, or edge device — without needing a data center. They trade some capability for massive gains in <strong>cost, speed, privacy, and deployability</strong>.</p>
+<pre class="mermaid">
+graph LR
+    subgraph BigLLM["🏔️ Large LLM (70B–1T params)"]
+        BL["GPT-4, Claude 3 Opus, Gemini Ultra"]
+        BR["✅ Most capable\n✅ Best reasoning\n❌ $0.01–0.06 per 1K tokens\n❌ 100–500ms latency\n❌ Data must leave device\n❌ Needs GPU cluster"]
+    end
+
+    subgraph SmallLLM["📱 Small LLM (1B–13B params)"]
+        SL["Phi-3 Mini, Gemma 2B,\nLLaMA 3.2 3B, Mistral 7B"]
+        SR["✅ Runs on iPhone / laptop\n✅ < 10ms latency on device\n✅ Fully private (no API)\n✅ Near-zero marginal cost\n❌ Less capable on complex tasks\n❌ Smaller knowledge base"]
+    end
+</pre>
+<h3>SLM Use Cases</h3>
+<table>
+<thead>
+<tr>
+<th>Use Case</th>
+<th>Why SLM Fits</th>
+<th>Example Model</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>On-device AI</strong> (phone/edge)</td>
+<td>No internet needed, private</td>
+<td>Phi-3 Mini (3.8B) on iPhone</td>
+</tr>
+<tr>
+<td><strong>Real-time autocomplete</strong></td>
+<td>Must be &lt; 20ms</td>
+<td>Gemma 2B</td>
+</tr>
+<tr>
+<td><strong>High-volume classification</strong></td>
+<td>Cost prohibitive with LLM APIs</td>
+<td>Distilbert (66M params)</td>
+</tr>
+<tr>
+<td><strong>Air-gapped environments</strong></td>
+<td>No cloud connectivity</td>
+<td>LLaMA 3.2 3B local</td>
+</tr>
+<tr>
+<td><strong>Embedded devices</strong></td>
+<td>IoT, wearables</td>
+<td>TinyLLM (&lt; 1B)</td>
+</tr>
+<tr>
+<td><strong>Specialized tasks</strong></td>
+<td>Fine-tuned SLM beats general LLM</td>
+<td>Medical SLM, legal SLM</td>
+</tr>
+</tbody></table>
+<h3>The SLM Sweet Spot</h3>
+<pre><code>Task complexity spectrum:
+
+Simple                                          Complex
+  │────────────────────────────────────────────│
+  │ Classify  │ Extract  │ Summarize │ Reason  │
+  │  email    │  dates   │  doc      │ deeply  │
+  ▲           ▲          ▲          ▲          ▲
+  SLM 3B    SLM 7B    SLM 13B   LLM 70B   LLM 1T+
+
+Key: Fine-tuned SLM often BEATS general LLM on narrow tasks.
+Phi-3-mini fine-tuned on medical data &gt; GPT-4 on medical QA
+</code></pre>
+<hr>
+<h2>20. Distillation</h2>
+<h3>What it is — Plain English</h3>
+<p>Training a large, expensive model and then &quot;teaching&quot; a small, cheap model to mimic it. The large model (Teacher) has learned rich internal representations. Instead of training the student from scratch, we use the teacher&#39;s <strong>soft predictions</strong> (confidence scores across all possibilities) as richer training signals — the student learns not just &quot;the answer is cat&quot; but &quot;it&#39;s 70% cat, 25% leopard, 5% other feline.&quot;</p>
+<div class="tip">
+
+<p><strong>Analogy:</strong> A senior engineer writes detailed code reviews with explanations. A junior engineer learns faster from those detailed reviews than from just reading &quot;approved&quot; or &quot;rejected.&quot;</p>
+</div>
+
+
+<pre class="mermaid">
+graph TD
+    subgraph Teacher["🧑‍🏫 Teacher Model (Large — e.g. GPT-4 70B)"]
+        T_INPUT["Input: 'What is the capital of France?'"]
+        T_LOGITS["Soft output probabilities:\n Paris: 98.2%\n Lyon: 0.9%\n Berlin: 0.5%\n London: 0.3%\n (full distribution, not just 'Paris')"]
+    end
+
+    subgraph Student["🎓 Student Model (Small — e.g. 7B)"]
+        S_INPUT["Same input"]
+        S_LOGITS["Student's output probabilities:\n Paris: 72%\n Lyon: 12%\n Berlin: 8%\n..."]
+        LOSS["KL Divergence Loss:\nMeasure how far student's distribution\nis from teacher's distribution"]
+        UPDATE["Update student weights\nto match teacher better"]
+        S_LOGITS --> LOSS --> UPDATE
+    end
+
+    T_LOGITS -->|"Knowledge transfer\n(not just labels)"| LOSS
+
+    subgraph Result["✅ Distilled Student Model"]
+        RES["7B model that performs\nclose to 70B model\non target tasks\n~10× faster, ~10× cheaper"]
+    end
+
+    UPDATE --> Result
+</pre>
+<h3>Distillation Techniques</h3>
+<table>
+<thead>
+<tr>
+<th>Technique</th>
+<th>What&#39;s Transferred</th>
+<th>When to Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Response Distillation</strong></td>
+<td>Final output tokens</td>
+<td>Simple tasks, easiest to implement</td>
+</tr>
+<tr>
+<td><strong>Logit Distillation</strong></td>
+<td>Full probability distribution</td>
+<td>Best knowledge transfer</td>
+</tr>
+<tr>
+<td><strong>Feature Distillation</strong></td>
+<td>Intermediate layer activations</td>
+<td>Deep architectural transfer</td>
+</tr>
+<tr>
+<td><strong>Attention Distillation</strong></td>
+<td>Attention pattern maps</td>
+<td>Transfer reasoning patterns</td>
+</tr>
+<tr>
+<td><strong>Data-free Distillation</strong></td>
+<td>Generate synthetic data with teacher</td>
+<td>When real data is scarce</td>
+</tr>
+</tbody></table>
+<h3>Real-World Examples</h3>
+<pre><code>DistilBERT (2019):
+  Teacher: BERT-base (110M params)
+  Student: DistilBERT (66M params)
+  Result: 40% smaller, 60% faster, 97% of BERT&#39;s performance
+
+DeepSeek-R1 Distillation (2025):
+  Teacher: DeepSeek-R1 (671B MoE)
+  Student: Qwen 7B / 14B
+  Result: 7B model beating GPT-4o on many benchmarks!
+
+Phi-3 (Microsoft, 2024):
+  3.8B model trained on &quot;textbook quality&quot; synthetic data
+  Generated by GPT-4 (distillation of knowledge, not weights)
+  Beats LLaMA 70B on coding benchmarks
+</code></pre>
+<hr>
+<h2>21. Quantization</h2>
+<h3>What it is — Plain English</h3>
+<p>By default, model weights are stored as 32-bit or 16-bit floating point numbers — very precise but very large. Quantization reduces the precision of these numbers — from 32-bit floats down to 8-bit integers, or even 4-bit — making the model dramatically smaller and faster with minimal quality loss. It&#39;s like converting a lossless WAV audio file to an MP3 — smaller file, nearly indistinguishable quality.</p>
+<pre class="mermaid">
+graph LR
+    subgraph Original["🔵 Original Float32 Weight"]
+        F32["Value: 0.34521876\nStorage: 32 bits (4 bytes)\nRange: ±3.4 × 10³⁸\nPrecision: Very high"]
+    end
+
+    subgraph Q8["🟢 INT8 Quantized"]
+        I8["Value: 88 (maps to ≈ 0.345)\nStorage: 8 bits (1 byte)\nRange: -128 to 127\n4× smaller, minimal quality loss"]
+    end
+
+    subgraph Q4["🟡 INT4 Quantized"]
+        I4["Value: 5 (maps to ≈ 0.34)\nStorage: 4 bits (0.5 byte)\nRange: -8 to 7\n8× smaller, small quality loss"]
+    end
+
+    subgraph Q2["🔴 INT2 Quantized (extreme)"]
+        I2["Value: 1 (maps to ≈ 0.3)\nStorage: 2 bits (0.25 byte)\nRange: -2 to 1\n16× smaller, noticeable quality loss"]
+    end
+
+    Original -->|"Quantize"| Q8 -->|"More aggressive"| Q4 -->|"Extreme"| Q2
+</pre>
+<h3>Model Size Comparison After Quantization</h3>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>FP16 Size</th>
+<th>INT8</th>
+<th>INT4</th>
+<th>Hardware Needed (INT4)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>LLaMA 3 8B</td>
+<td>16 GB</td>
+<td>8 GB</td>
+<td>4 GB</td>
+<td>Mac M2 with 8GB RAM</td>
+</tr>
+<tr>
+<td>LLaMA 3 70B</td>
+<td>140 GB</td>
+<td>70 GB</td>
+<td>35 GB</td>
+<td>Mac M2 Ultra / 2× A100</td>
+</tr>
+<tr>
+<td>Mistral 7B</td>
+<td>14 GB</td>
+<td>7 GB</td>
+<td>3.5 GB</td>
+<td>Laptop GPU (RTX 4070)</td>
+</tr>
+<tr>
+<td>GPT-4 (est.)</td>
+<td>~1.4 TB</td>
+<td>~700 GB</td>
+<td>~350 GB</td>
+<td>Still needs a cluster</td>
+</tr>
+</tbody></table>
+<h3>Quantization Methods</h3>
+<pre class="mermaid">
+graph TD
+    subgraph Methods["Quantization Methods"]
+        PTQ["Post-Training Quantization (PTQ)\nQuantize after training is done\n✅ Simple, no re-training needed\n❌ Some accuracy loss"]
+        QAT["Quantization-Aware Training (QAT)\nSimulate quantization during training\n✅ Best quality at low bits\n❌ Requires retraining"]
+        GGUF["GGUF Format (llama.cpp)\nMixed precision: different layers\nget different bit widths\n✅ Best quality/size tradeoff\n✅ Runs on CPU + GPU hybrid"]
+        GPTQ["GPTQ\nLayer-wise quantization\noptimizes per-layer\n✅ Good INT4 quality"]
+        AWQ["AWQ (Activation-aware)\nProtects weights that matter most\n✅ Better than GPTQ in practice"]
+    end
+</pre>
+<h3>Quantization Decision Guide</h3>
+<pre><code>Running inference where?           → Choose quantization level
+
+Cloud (A100/H100 GPUs available):  FP16 or BF16 — no need to quantize
+Consumer GPU (RTX 4090, 24GB):     INT8 for 7B models, INT4 for 13B–70B
+Mac Apple Silicon (M2/M3):         GGUF Q4_K_M or Q5_K_M via llama.cpp
+CPU only (powerful laptop):        GGUF Q4_0 (slower but runs)
+Mobile / edge device:              INT4 or INT2 with QAT
+
+Quality rule of thumb:
+  Q8 ≈ FP16 for most tasks (&lt; 1% degradation)
+  Q4 ≈ FP16 for simple tasks (1–3% degradation)
+  Q4 noticeably worse on complex reasoning
+  Q2 significant quality loss — avoid for production
+</code></pre>
+<hr>
+<h2>Concept Relationships — The Big Picture</h2>
+<pre class="mermaid">
+graph TD
+    subgraph Foundation["🏗️ Foundation"]
+        TOK["Tokenization"]
+        VEC["Vectorization\nEmbeddings"]
+        ATTN["Attention\nMechanism"]
+        SSL["Self-Supervised\nLearning"]
+    end
+
+    subgraph Core["⚙️ Core Architecture"]
+        TRANS["Transformer"]
+    end
+
+    subgraph Training["🏋️ Training & Alignment"]
+        FT["Fine-Tuning\n(LoRA, SFT)"]
+        RL["Reinforcement\nLearning (RLHF)"]
+        DIST["Distillation"]
+        QUANT["Quantization"]
+    end
+
+    subgraph Runtime["⚡ Runtime & Inference"]
+        FSP["Few-Shot\nPrompting"]
+        COT["Chain of\nThought"]
+        RAG["RAG"]
+        CE["Context\nEngineering"]
+        REASON["Reasoning\nModels"]
+    end
+
+    subgraph Systems["🔧 Systems & Deployment"]
+        VDBQ["Vector DB"]
+        AGENTS["AI Agents"]
+        MCP_N["MCP"]
+        A2A_N["A2A Protocol"]
+        SLM["Small Language\nModels"]
+        MM["Multimodal\nModels"]
+    end
+
+    TOK & VEC & ATTN & SSL --> TRANS
+    TRANS --> FT & RL & DIST & QUANT
+    TRANS --> FSP & COT & RAG & CE & REASON
+    VEC --> VDBQ
+    VDBQ --> RAG
+    RAG & COT & CE --> AGENTS
+    AGENTS --> MCP_N & A2A_N
+    DIST & QUANT --> SLM
+    SLM & MM --> Systems
+</pre>
+<hr>
+<h2>Interview Quick Reference</h2>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>10-Word Explanation</th>
+<th>Key Trade-off</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>LLM</td>
+<td>Predict next token, trained on internet-scale data</td>
+<td>Size vs. cost/speed</td>
+</tr>
+<tr>
+<td>Tokenization</td>
+<td>Convert text to numbers the model can process</td>
+<td>Vocabulary size vs. coverage</td>
+</tr>
+<tr>
+<td>Embeddings</td>
+<td>Words as coordinates; nearby = similar meaning</td>
+<td>Dimensions vs. compute cost</td>
+</tr>
+<tr>
+<td>Attention</td>
+<td>Token looks at all others; weights what matters</td>
+<td>O(n²) complexity</td>
+</tr>
+<tr>
+<td>Self-Supervised</td>
+<td>Create labels from data structure, no humans needed</td>
+<td>Scale vs. label quality</td>
+</tr>
+<tr>
+<td>Transformer</td>
+<td>Parallel attention over full sequence</td>
+<td>Context length vs. memory</td>
+</tr>
+<tr>
+<td>Fine-Tuning</td>
+<td>Specialize a pre-trained model for your task</td>
+<td>Cost vs. performance gain</td>
+</tr>
+<tr>
+<td>Few-Shot</td>
+<td>Show examples in prompt instead of writing rules</td>
+<td>Token budget vs. accuracy</td>
+</tr>
+<tr>
+<td>RAG</td>
+<td>Retrieve relevant docs, inject into prompt</td>
+<td>Latency vs. freshness</td>
+</tr>
+<tr>
+<td>Vector DB</td>
+<td>Nearest-neighbor search in embedding space</td>
+<td>Recall vs. speed</td>
+</tr>
+<tr>
+<td>MCP</td>
+<td>USB-C standard for connecting AI to tools</td>
+<td>Standardization vs. flexibility</td>
+</tr>
+<tr>
+<td>A2A</td>
+<td>Protocol for agents to delegate to other agents</td>
+<td>Coordination vs. complexity</td>
+</tr>
+<tr>
+<td>Context Engineering</td>
+<td>Curate exactly what goes in the context window</td>
+<td>Relevance vs. completeness</td>
+</tr>
+<tr>
+<td>Agents</td>
+<td>LLM + tools + memory + planning loop</td>
+<td>Autonomy vs. reliability</td>
+</tr>
+<tr>
+<td>RLHF</td>
+<td>Human preferences shape model via reward signal</td>
+<td>Alignment vs. capability</td>
+</tr>
+<tr>
+<td>Chain of Thought</td>
+<td>Force model to reason step by step</td>
+<td>Latency vs. accuracy</td>
+</tr>
+<tr>
+<td>Reasoning Models</td>
+<td>Hidden thinking phase before final answer</td>
+<td>Time/cost vs. correctness</td>
+</tr>
+<tr>
+<td>Multimodal</td>
+<td>See, hear, and read in unified model</td>
+<td>Complexity vs. capability</td>
+</tr>
+<tr>
+<td>SLM</td>
+<td>Compact model for edge/private deployment</td>
+<td>Capability vs. efficiency</td>
+</tr>
+<tr>
+<td>Distillation</td>
+<td>Compress teacher&#39;s knowledge into small student</td>
+<td>Quality vs. model size</td>
+</tr>
+<tr>
+<td>Quantization</td>
+<td>Reduce weight precision (32-bit → 4-bit)</td>
+<td>Size/speed vs. accuracy</td>
+</tr>
+</tbody></table>
+<hr>
+<p><em>AI Concepts Reference Guide — Staff AI Engineer System Design Interview Preparation</em>
+<em>Covers: LLMs, Transformers, RAG, Agents, Reasoning, Multimodal, Distillation, Quantization, and more</em></p>
+
+</body>
+</html>

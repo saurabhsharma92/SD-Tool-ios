@@ -17,14 +17,27 @@ struct BlockNodeView: View {
     let onTap: () -> Void
     let onDelete: () -> Void
     let onSetScaling: (ScalingMode) -> Void
+    let onRename: (String) -> Void
+    let onResize: ((CGFloat) -> Void)?
 
     private let size: CGFloat = 64
 
     private var blockHeight: CGFloat {
         switch node.type {
-        case .apiGateway, .reverseProxy: return 90
+        case .apiGateway, .reverseProxy: return node.customHeight ?? 130
         default: return size
         }
+    }
+
+    private var blockWidth: CGFloat {
+        switch node.type {
+        case .apiGateway, .reverseProxy: return 66
+        default: return size
+        }
+    }
+
+    private var isResizable: Bool {
+        node.type == .apiGateway || node.type == .reverseProxy
     }
 
     var body: some View {
@@ -45,31 +58,55 @@ struct BlockNodeView: View {
 
     private func singleBlock(highlighted: Bool) -> some View {
         VStack(spacing: 4) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(blockColor.opacity(0.14))
-                    .frame(width: size, height: blockHeight)
-                    .overlay(
+            ZStack(alignment: .topTrailing) {
+                VStack(spacing: 0) {
+                    ZStack {
                         RoundedRectangle(cornerRadius: 12)
-                            .stroke(
-                                highlighted ? blockColor : blockColor.opacity(0.35),
-                                lineWidth: highlighted ? 2.5 : 1.5
+                            .fill(blockColor.opacity(0.14))
+                            .frame(width: blockWidth, height: blockHeight)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(
+                                        highlighted ? blockColor : blockColor.opacity(0.35),
+                                        lineWidth: highlighted ? 2.5 : 1.5
+                                    )
                             )
-                    )
-                    .shadow(color: highlighted ? blockColor.opacity(0.25) : .clear, radius: 6)
+                            .shadow(color: highlighted ? blockColor.opacity(0.25) : .clear, radius: 6)
 
-                Image(systemName: node.type.icon)
-                    .font(.system(size: 22))
-                    .foregroundStyle(blockColor)
+                        Image(systemName: node.type.icon)
+                            .font(.system(size: 22))
+                            .foregroundStyle(blockColor)
+                    }
+
+                    // Resize handle — only for API Gateway / Reverse Proxy
+                    if isResizable, let resize = onResize {
+                        ResizeHandle(
+                            currentHeight: blockHeight,
+                            onResize: resize
+                        )
+                    }
+                }
+
+                // Pencil badge on unnamed server nodes — tap to rename directly
+                if node.type == .server && node.label == nil {
+                    Button { onRename("") } label: {
+                        Image(systemName: "pencil.circle.fill")
+                            .font(.system(size: 15))
+                            .foregroundStyle(.orange)
+                            .background(Color(.systemBackground).clipShape(Circle()))
+                    }
+                    .buttonStyle(.plain)
+                    .offset(x: 5, y: -5)
+                }
             }
 
-            Text(node.type.rawValue)
+            Text(node.displayName)
                 .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+                .foregroundStyle(node.label != nil ? .primary : .secondary)
+                .lineLimit(2)
                 .minimumScaleFactor(0.7)
         }
-        .frame(width: size + 20)
+        .frame(width: blockWidth + 20)
     }
 
     // MARK: - Horizontal scaling: 3 explicit side-by-side blocks
@@ -100,7 +137,7 @@ struct BlockNodeView: View {
                     }
                 }
             }
-            Text(node.type.rawValue + " ×3")
+            Text(node.displayName + " ×3")
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
@@ -145,6 +182,9 @@ struct BlockNodeView: View {
                 Label("Remove Scaling", systemImage: "minus.circle")
             }
         }
+        Button { onRename(node.label ?? "") } label: {
+            Label("Rename", systemImage: "pencil")
+        }
         Divider()
         Button(role: .destructive) {
             onDelete()
@@ -153,7 +193,7 @@ struct BlockNodeView: View {
         }
     }
 
-    // MARK: - Colour
+    // MARK: - Colour (keep after contextMenuItems)
 
     private var blockColor: Color {
         switch node.type {
@@ -169,5 +209,39 @@ struct BlockNodeView: View {
         case .writeReplica: return Color(hue: 0.08, saturation: 0.8, brightness: 0.85) // coral
         case .fileStorage:  return Color(hue: 0.42, saturation: 0.6, brightness: 0.75) // forest green
         }
+    }
+}
+
+// MARK: - Resize handle
+
+private struct ResizeHandle: View {
+    let currentHeight: CGFloat
+    let onResize: (CGFloat) -> Void
+
+    @State private var dragging   = false
+    @State private var baseHeight: CGFloat = 0
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<3, id: \.self) { _ in
+                Capsule()
+                    .fill(Color.secondary.opacity(0.45))
+                    .frame(width: 14, height: 3)
+            }
+        }
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 3)
+                .onChanged { val in
+                    if !dragging {
+                        dragging    = true
+                        baseHeight  = currentHeight
+                    }
+                    let newH = max(80, min(400, baseHeight + val.translation.height))
+                    onResize(newH)
+                }
+                .onEnded { _ in dragging = false }
+        )
     }
 }

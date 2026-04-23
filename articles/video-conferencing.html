@@ -1,0 +1,1692 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Design Interview: Video Conferencing System</title>
+</head>
+<body>
+
+<h1>System Design Interview: Video Conferencing System</h1>
+<h3>Zoom / Google Meet Scale</h3>
+<div class="note">
+
+<p><strong>Staff Engineer Interview Preparation Guide</strong> -- High Level Design Round</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-requirements">Requirements</a></li>
+<li><a href="#2-capacity-estimation">Capacity Estimation</a></li>
+<li><a href="#3-high-level-architecture">High-Level Architecture</a></li>
+<li><a href="#4-core-components-deep-dive">Core Components Deep Dive</a></li>
+<li><a href="#5-real-time-communication-fundamentals">Real-Time Communication Fundamentals</a></li>
+<li><a href="#6-media-architecture-patterns">Media Architecture Patterns</a></li>
+<li><a href="#7-sfu-deep-dive">SFU Deep Dive</a></li>
+<li><a href="#8-signaling-server">Signaling Server</a></li>
+<li><a href="#9-adaptive-bitrate--congestion-control">Adaptive Bitrate &amp; Congestion Control</a></li>
+<li><a href="#10-recording-service">Recording Service</a></li>
+<li><a href="#11-chat--reactions">Chat &amp; Reactions</a></li>
+<li><a href="#12-screen-sharing">Screen Sharing</a></li>
+<li><a href="#13-large-meetings--webinars">Large Meetings &amp; Webinars</a></li>
+<li><a href="#14-breakout-rooms">Breakout Rooms</a></li>
+<li><a href="#15-security">Security</a></li>
+<li><a href="#16-data-models--storage">Data Models &amp; Storage</a></li>
+<li><a href="#17-scalability-strategies">Scalability Strategies</a></li>
+<li><a href="#18-design-trade-offs">Design Trade-offs</a></li>
+<li><a href="#19-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. Requirements</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Video conferencing is a rich system design topic because it spans real-time communication, distributed systems, and media engineering. Start by clarifying whether the interviewer wants depth on the media pipeline (WebRTC, codecs, SFU) or breadth on the platform (scheduling, recording, chat, integrations).</p>
+</div>
+
+
+<h3>Questions to Ask the Interviewer</h3>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Question</th>
+<th>Why It Matters</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Scale</strong></td>
+<td>How many concurrent participants per meeting?</td>
+<td>Determines P2P vs SFU vs MCU architecture</td>
+</tr>
+<tr>
+<td><strong>Quality</strong></td>
+<td>HD video required? 4K?</td>
+<td>Bandwidth and encoding requirements</td>
+</tr>
+<tr>
+<td><strong>Features</strong></td>
+<td>Screen share, recording, chat?</td>
+<td>Scope of services to design</td>
+</tr>
+<tr>
+<td><strong>Latency</strong></td>
+<td>What is acceptable end-to-end delay?</td>
+<td>&lt; 150ms for conversation, &lt; 400ms still usable</td>
+</tr>
+<tr>
+<td><strong>Geography</strong></td>
+<td>Global users or single region?</td>
+<td>Media server placement strategy</td>
+</tr>
+<tr>
+<td><strong>Platform</strong></td>
+<td>Web browser, native app, or both?</td>
+<td>WebRTC compatibility considerations</td>
+</tr>
+<tr>
+<td><strong>Security</strong></td>
+<td>End-to-end encryption required?</td>
+<td>E2E encryption prevents server-side processing</td>
+</tr>
+<tr>
+<td><strong>Recording</strong></td>
+<td>Server-side or client-side recording?</td>
+<td>Architecture for recording pipeline</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>Functional Requirements</h3>
+<ul>
+<li>Create a meeting with a unique link/code</li>
+<li>Join a meeting via link, code, or calendar integration</li>
+<li>Real-time video and audio for all participants</li>
+<li>Screen sharing (full screen, application window, or browser tab)</li>
+<li>In-meeting text chat with message history</li>
+<li>Meeting recording with playback</li>
+<li>Mute/unmute audio and video controls</li>
+<li>Participant management (host can mute, remove, admit from waiting room)</li>
+<li>Virtual backgrounds and noise suppression</li>
+<li>Raise hand and emoji reactions</li>
+</ul>
+<h3>Non-Functional Requirements</h3>
+<ul>
+<li><strong>Latency:</strong> &lt; 150ms end-to-end (glass-to-glass) for interactive conversation</li>
+<li><strong>Scale:</strong> Support 1,000 participants per meeting, 100 with video enabled</li>
+<li><strong>Availability:</strong> 99.99% uptime (&lt; 52 minutes downtime/year)</li>
+<li><strong>Quality:</strong> Adaptive quality from 360p to 1080p based on network conditions</li>
+<li><strong>Bandwidth:</strong> Minimize bandwidth usage through adaptive bitrate and simulcast</li>
+<li><strong>Global:</strong> Low latency for participants across different continents</li>
+<li><strong>Security:</strong> Encrypted media streams, optional end-to-end encryption</li>
+</ul>
+<hr>
+<h2>2. Capacity Estimation</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Video conferencing bandwidth math is unique because it involves upstream AND downstream per participant, and the numbers scale very differently based on the media architecture (P2P, SFU, MCU). Walk through the math for each architecture to show you understand the trade-offs.</p>
+</div>
+
+
+<h3>Traffic Estimation</h3>
+<pre><code>Daily active users: 300 million
+Average meetings per user per day: 2
+Average meeting duration: 40 minutes
+Average participants per meeting: 6
+Concurrent meetings (peak): 15 million
+Concurrent participants (peak): 90 million
+</code></pre>
+<h3>Bandwidth Per Participant</h3>
+<pre><code>Video streams:
+  720p @ 30fps: ~1.5 Mbps
+  1080p @ 30fps: ~3.0 Mbps
+  360p @ 30fps: ~0.5 Mbps
+  Screen share (1080p, low motion): ~1.0 Mbps
+
+Audio stream:
+  Opus codec: ~50 kbps (mono), ~80 kbps (stereo)
+
+Per participant in a 6-person SFU meeting:
+  Upload: 1 video (1.5 Mbps) + 1 audio (0.05 Mbps) = ~1.55 Mbps
+  Download: 5 videos (7.5 Mbps) + 5 audio (0.25 Mbps) = ~7.75 Mbps
+  Total per participant: ~9.3 Mbps
+</code></pre>
+<h3>Server Bandwidth</h3>
+<pre><code>SFU server handling one 6-person meeting:
+  Inbound: 6 x 1.55 Mbps = ~9.3 Mbps
+  Outbound: 6 x 7.75 Mbps = ~46.5 Mbps
+  Total: ~55.8 Mbps per meeting
+
+Single SFU server (10 Gbps NIC):
+  Can handle ~180 meetings of 6 people
+  Or ~1,080 participants
+
+For 90 million concurrent participants:
+  90M / 1,080 = ~83,000 SFU servers needed at peak
+</code></pre>
+<h3>Storage Estimation</h3>
+<pre><code>Recorded meetings:
+  Assume 10% of meetings are recorded
+  15M concurrent meetings x 40 min avg x 10% = 1.5M recorded meetings/day
+  Average recording size (720p, 40 min): ~400 MB
+  Daily recording storage: 1.5M x 400 MB = ~600 TB/day
+  30-day retention: ~18 PB
+</code></pre>
+<div class="note">
+
+<p>These numbers illustrate why video conferencing companies are among the largest consumers of bandwidth and cloud infrastructure. The key optimization is NOT sending video streams that nobody is watching (e.g., participants not visible in the current layout).</p>
+</div>
+
+
+<hr>
+<h2>3. High-Level Architecture</h2>
+<pre class="mermaid">
+graph TB
+    subgraph "Clients"
+        C1[Browser / Desktop App]
+        C2[Mobile App]
+        C3[Room System]
+    end
+
+    subgraph "Edge Layer"
+        LB[Global Load Balancer<br/>GeoDNS]
+        TURN1[TURN Relay<br/>Region A]
+        TURN2[TURN Relay<br/>Region B]
+    end
+
+    subgraph "Signaling Infrastructure"
+        SIG[Signaling Server<br/>WebSocket]
+        MQ[Message Queue<br/>Redis Pub/Sub]
+    end
+
+    subgraph "Media Infrastructure"
+        SFU1[SFU Server<br/>Region A]
+        SFU2[SFU Server<br/>Region B]
+        SFU3[SFU Server<br/>Region C]
+        CASCADE[Cascade Bridge<br/>Inter-region]
+    end
+
+    subgraph "Platform Services"
+        AUTH[Auth Service]
+        MEET[Meeting Service]
+        CHAT[Chat Service]
+        REC[Recording Service]
+        NOTIF[Notification Service]
+    end
+
+    subgraph "Storage"
+        DB[(Meeting DB<br/>PostgreSQL)]
+        CACHE[(Cache<br/>Redis)]
+        OBJ[(Object Storage<br/>S3)]
+        CDN[CDN<br/>Recording Playback]
+    end
+
+    C1 --> LB
+    C2 --> LB
+    C3 --> LB
+
+    LB --> SIG
+    LB --> TURN1
+    LB --> TURN2
+
+    C1 -.->|Media| SFU1
+    C2 -.->|Media| SFU2
+
+    SIG --> MQ
+    SIG --> MEET
+    SIG --> AUTH
+
+    SFU1 <--> CASCADE
+    SFU2 <--> CASCADE
+    SFU3 <--> CASCADE
+
+    SFU1 --> REC
+    MEET --> DB
+    MEET --> CACHE
+    CHAT --> MQ
+    REC --> OBJ
+    OBJ --> CDN
+</pre>
+<h3>Architecture Overview</h3>
+<p>The system has three distinct communication planes:</p>
+<p><strong>Signaling Plane (WebSocket):</strong> Handles meeting creation, participant join/leave, offer/answer exchange, ICE candidate exchange, and control messages (mute, raise hand). This is low-bandwidth, high-reliability communication over WebSocket with fallback to HTTP long-polling.</p>
+<p><strong>Media Plane (UDP/RTP):</strong> Carries the actual audio and video data. Uses UDP for lowest latency (dropped packets are preferable to delayed packets for real-time media). WebRTC establishes peer-to-peer connections where possible, or routes through SFU/TURN servers.</p>
+<p><strong>Data Plane (HTTP/REST):</strong> Handles meeting scheduling, user management, recording access, and chat history retrieval. Standard REST APIs with a traditional web architecture.</p>
+<div class="important">
+
+<p>These three planes must be designed independently. The signaling plane needs high availability and low latency. The media plane needs massive bandwidth and geographic proximity to users. The data plane needs standard web-scale architecture. Conflating them is a common interview mistake.</p>
+</div>
+
+
+<hr>
+<h2>4. Core Components Deep Dive</h2>
+<h3>Meeting Service</h3>
+<p>The meeting service manages the lifecycle of meetings: creation, scheduling, participant management, and cleanup.</p>
+<p><strong>Meeting Creation Flow:</strong></p>
+<ol>
+<li>User requests to create a meeting</li>
+<li>Service generates a unique meeting ID (UUID) and a human-readable join code (e.g., &quot;abc-defg-hij&quot;)</li>
+<li>Meeting metadata is stored in the database</li>
+<li>A meeting link is generated and returned to the host</li>
+<li>Calendar integration (optional) sends invites with the link</li>
+</ol>
+<p><strong>Meeting Join Flow:</strong></p>
+<ol>
+<li>Participant opens the meeting link or enters the join code</li>
+<li>Client authenticates and connects to the signaling server via WebSocket</li>
+<li>Signaling server looks up the meeting and verifies access (password, waiting room)</li>
+<li>If approved, the signaling server assigns an SFU server (based on participant location)</li>
+<li>Client establishes WebRTC connection to the assigned SFU</li>
+<li>SFU begins forwarding media streams from existing participants</li>
+</ol>
+<p><strong>SFU Assignment:</strong> The meeting service uses a geo-aware assignment algorithm. It considers the participant&#39;s location (from IP geolocation), the locations of existing participants, and current SFU server load. For meetings with participants in multiple regions, it may assign different SFUs and connect them via cascading.</p>
+<h3>STUN/TURN Infrastructure</h3>
+<p><strong>STUN (Session Traversal Utilities for NAT):</strong> A lightweight server that helps clients discover their public IP address and port mapping. When a client behind a NAT sends a STUN request, the STUN server responds with the client&#39;s public-facing IP:port. This information is used in ICE candidates for establishing direct peer-to-peer connections.</p>
+<p><strong>TURN (Traversal Using Relays around NAT):</strong> When direct P2P connection fails (symmetric NAT, corporate firewalls), media is relayed through a TURN server. The TURN server receives media from the sender and forwards it to the receiver. This adds latency (one extra hop) but works through almost any network configuration.</p>
+<p><strong>ICE (Interactive Connectivity Establishment):</strong> The framework that coordinates STUN and TURN to find the best possible connection path:</p>
+<ol>
+<li>Gather candidates: local addresses, STUN-discovered addresses, TURN relay addresses</li>
+<li>Exchange candidates with the remote peer via the signaling server</li>
+<li>Try all candidate pairs in parallel (connectivity checks)</li>
+<li>Select the best working pair (prefer direct &gt; STUN &gt; TURN)</li>
+</ol>
+<pre class="mermaid">
+graph TB
+    subgraph "Participant A (behind NAT)"
+        CA[Client A]
+        NAT_A[NAT/Firewall]
+    end
+
+    subgraph "Participant B (behind NAT)"
+        CB[Client B]
+        NAT_B[NAT/Firewall]
+    end
+
+    STUN[STUN Server]
+    TURN[TURN Server]
+    SIG[Signaling Server]
+
+    CA -->|1. What is my public IP?| STUN
+    STUN -->|2. Your IP is 203.0.113.5:4567| CA
+    CB -->|1. What is my public IP?| STUN
+    STUN -->|2. Your IP is 198.51.100.8:8901| CB
+
+    CA <-->|3. Exchange ICE candidates| SIG
+    SIG <-->|3. Exchange ICE candidates| CB
+
+    CA <-.->|4a. Try direct P2P| CB
+    CA <-->|4b. Relay via TURN| TURN
+    TURN <-->|4b. Relay via TURN| CB
+</pre>
+<div class="note">
+
+<p>In practice, about 85% of WebRTC connections succeed with direct P2P or STUN. The remaining 15% require TURN relay, mostly from corporate networks with restrictive firewalls. TURN servers are bandwidth-intensive and expensive, so minimizing TURN usage is a key optimization.</p>
+</div>
+
+
+<hr>
+<h2>5. Real-Time Communication Fundamentals</h2>
+<h3>WebRTC Protocol Stack</h3>
+<p>WebRTC (Web Real-Time Communication) is an open standard that provides peer-to-peer audio, video, and data communication directly in web browsers and native apps.</p>
+<pre><code>Application Layer:
+  Video: VP8 / VP9 / H.264 / AV1 codecs
+  Audio: Opus codec
+  Data:  SCTP (DataChannel)
+
+Security Layer:
+  DTLS (Datagram Transport Layer Security)
+  SRTP (Secure Real-time Transport Protocol)
+
+Transport Layer:
+  ICE / STUN / TURN (NAT traversal)
+  UDP (preferred) / TCP (fallback)
+
+Network Layer:
+  IP
+</code></pre>
+<p><strong>Why UDP and not TCP?</strong> TCP guarantees ordered, reliable delivery. If a packet is lost, TCP retransmits it and blocks all subsequent packets until the retransmission arrives (head-of-line blocking). For real-time video, a 200ms old frame is useless -- you would rather skip it and show the next frame. UDP allows the application to decide what to do about lost packets (typically: skip them).</p>
+<h3>SDP (Session Description Protocol)</h3>
+<p>Before two WebRTC peers can exchange media, they must agree on:</p>
+<ul>
+<li>What codecs they both support (e.g., VP9 and Opus)</li>
+<li>What media streams they will send/receive</li>
+<li>Network transport parameters</li>
+</ul>
+<p>This negotiation happens via SDP (Session Description Protocol) messages exchanged through the signaling server:</p>
+<pre><code>SDP Offer/Answer Exchange:
+
+1. Caller creates an SDP &quot;offer&quot; describing their capabilities
+2. Offer is sent to callee via signaling server
+3. Callee creates an SDP &quot;answer&quot; with compatible parameters
+4. Answer is sent back to caller via signaling server
+5. Both sides now know the agreed-upon media parameters
+6. ICE connectivity checks begin
+7. Media flows once connectivity is established
+</code></pre>
+<h3>Audio Processing Pipeline</h3>
+<p>Raw audio from the microphone goes through several processing steps before encoding:</p>
+<pre><code>Microphone → AEC → NS → AGC → Opus Encoder → Network
+
+AEC: Acoustic Echo Cancellation
+  Removes the echo of the remote participant&#39;s audio playing through speakers
+
+NS: Noise Suppression
+  Removes background noise (keyboard typing, fan noise, traffic)
+
+AGC: Automatic Gain Control
+  Normalizes volume so quiet speakers are boosted and loud speakers are reduced
+
+Opus Encoder:
+  Encodes processed audio at 48 kHz, typically 50 kbps
+  Opus is the standard WebRTC audio codec (low latency, high quality)
+</code></pre>
+<h3>Video Processing Pipeline</h3>
+<pre><code>Camera → Preprocessing → Encoder → Packetizer → Network
+
+Preprocessing:
+  - Virtual background (requires segmentation ML model)
+  - Face framing / auto-zoom
+  - Beauty filters
+
+Encoder (VP9 or H.264):
+  - Keyframes (I-frames): Full image, sent periodically or on demand
+  - Delta frames (P-frames): Only the difference from previous frame
+  - Typical keyframe interval: 2-3 seconds
+
+Packetizer:
+  - Splits encoded frame into MTU-sized RTP packets (typically 1200 bytes)
+  - Adds sequence numbers for reassembly
+  - A 720p keyframe might be 30-50 KB = 25-40 RTP packets
+</code></pre>
+<hr>
+<h2>6. Media Architecture Patterns</h2>
+<h3>P2P Mesh</h3>
+<p>In a mesh topology, every participant connects directly to every other participant. Each participant sends their video/audio stream to every other participant individually.</p>
+<pre class="mermaid">
+graph TB
+    subgraph "P2P Mesh (4 participants)"
+        A[Participant A] <-->|stream| B[Participant B]
+        A <-->|stream| C[Participant C]
+        A <-->|stream| D[Participant D]
+        B <-->|stream| C
+        B <-->|stream| D
+        C <-->|stream| D
+    end
+</pre>
+<p><strong>Upload per participant:</strong> (N-1) copies of your stream
+<strong>Download per participant:</strong> (N-1) streams from others
+<strong>Total connections:</strong> N x (N-1) / 2</p>
+<table>
+<thead>
+<tr>
+<th>Participants</th>
+<th>Upload Streams</th>
+<th>Download Streams</th>
+<th>Connections</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>2</td>
+<td>1</td>
+<td>1</td>
+<td>1</td>
+</tr>
+<tr>
+<td>3</td>
+<td>2</td>
+<td>2</td>
+<td>3</td>
+</tr>
+<tr>
+<td>4</td>
+<td>3</td>
+<td>3</td>
+<td>6</td>
+</tr>
+<tr>
+<td>5</td>
+<td>4</td>
+<td>4</td>
+<td>10</td>
+</tr>
+<tr>
+<td>10</td>
+<td>9</td>
+<td>9</td>
+<td>45</td>
+</tr>
+</tbody></table>
+<p><strong>Practical limit: 4-5 participants.</strong> Beyond that, the upload bandwidth requirement becomes prohibitive for most consumer internet connections. At 1.5 Mbps per stream, 5 participants need 6 Mbps upload each.</p>
+<p><strong>Advantages:</strong> No server infrastructure needed, lowest possible latency (direct connection), no single point of failure, true end-to-end encryption is natural.</p>
+<p><strong>Disadvantages:</strong> Upload bandwidth scales linearly with participants, CPU load for encoding scales linearly, not practical beyond 4-5 people.</p>
+<h3>SFU (Selective Forwarding Unit)</h3>
+<p>In an SFU architecture, each participant sends their stream once to the SFU server. The SFU then forwards (selects and relays) streams to each participant based on what they need to see.</p>
+<pre class="mermaid">
+graph TB
+    subgraph "SFU Architecture (6 participants)"
+        A[Participant A] -->|1 stream up| SFU[SFU Server]
+        B[Participant B] -->|1 stream up| SFU
+        C[Participant C] -->|1 stream up| SFU
+        D[Participant D] -->|1 stream up| SFU
+        E[Participant E] -->|1 stream up| SFU
+        F[Participant F] -->|1 stream up| SFU
+
+        SFU -->|5 streams down| A
+        SFU -->|5 streams down| B
+        SFU -->|5 streams down| C
+        SFU -->|5 streams down| D
+        SFU -->|5 streams down| E
+        SFU -->|5 streams down| F
+    end
+</pre>
+<p><strong>Upload per participant:</strong> 1 stream (always)
+<strong>Download per participant:</strong> Up to (N-1) streams
+<strong>Server bandwidth:</strong> N uploads + N x (N-1) downloads</p>
+<p><strong>Practical limit: 50-100 participants</strong> with video, thousands with most participants audio-only.</p>
+<p><strong>Advantages:</strong> Low upload requirement for clients (just one stream), server can make intelligent forwarding decisions, no transcoding needed (forwarding is cheap), scalable to dozens of participants.</p>
+<p><strong>Disadvantages:</strong> Requires server infrastructure, server bandwidth is substantial, download bandwidth still scales with participants.</p>
+<h3>MCU (Multipoint Control Unit)</h3>
+<p>In an MCU architecture, the server receives all streams, decodes them, composes them into a single mixed stream (like a TV broadcast with a grid layout), re-encodes, and sends one combined stream to each participant.</p>
+<pre class="mermaid">
+graph TB
+    subgraph "MCU Architecture"
+        A[Participant A] -->|1 stream up| MCU[MCU Server<br/>Decode + Mix + Encode]
+        B[Participant B] -->|1 stream up| MCU
+        C[Participant C] -->|1 stream up| MCU
+        D[Participant D] -->|1 stream up| MCU
+
+        MCU -->|1 mixed stream| A
+        MCU -->|1 mixed stream| B
+        MCU -->|1 mixed stream| C
+        MCU -->|1 mixed stream| D
+    end
+</pre>
+<p><strong>Upload per participant:</strong> 1 stream
+<strong>Download per participant:</strong> 1 mixed stream (always)
+<strong>Server CPU:</strong> Must decode ALL streams + encode N output streams</p>
+<p><strong>Advantages:</strong> Minimal client bandwidth (1 up, 1 down regardless of participants), works even on very low-bandwidth connections, simple client implementation.</p>
+<p><strong>Disadvantages:</strong> Enormous server CPU cost (decode + composite + encode for every participant), higher latency (transcoding adds 50-200ms), fixed layout (server decides the grid), difficult to scale, loss of individual stream quality.</p>
+<h3>Comparison Summary</h3>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>P2P Mesh</th>
+<th>SFU</th>
+<th>MCU</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Client upload</td>
+<td>High (N-1 streams)</td>
+<td>Low (1 stream)</td>
+<td>Low (1 stream)</td>
+</tr>
+<tr>
+<td>Client download</td>
+<td>High (N-1 streams)</td>
+<td>Medium (N-1 streams)</td>
+<td>Low (1 stream)</td>
+</tr>
+<tr>
+<td>Server CPU</td>
+<td>None</td>
+<td>Low (forwarding only)</td>
+<td>Very high (transcode)</td>
+</tr>
+<tr>
+<td>Server bandwidth</td>
+<td>None</td>
+<td>High</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Latency</td>
+<td>Lowest</td>
+<td>Low</td>
+<td>Higher (+50-200ms)</td>
+</tr>
+<tr>
+<td>Max participants</td>
+<td>4-5</td>
+<td>50-100</td>
+<td>Hundreds</td>
+</tr>
+<tr>
+<td>Flexibility</td>
+<td>High</td>
+<td>High</td>
+<td>Low (fixed layout)</td>
+</tr>
+<tr>
+<td>E2E encryption</td>
+<td>Easy</td>
+<td>Possible</td>
+<td>Not possible</td>
+</tr>
+<tr>
+<td>Cost</td>
+<td>Zero server cost</td>
+<td>Moderate</td>
+<td>Very expensive</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Most modern video conferencing systems (Zoom, Google Meet, Microsoft Teams) use SFU as the primary architecture. Mention that real systems often use a hybrid approach: P2P for 1-on-1 calls, SFU for small-medium meetings, and SFU + CDN/HLS for large webinars.</p>
+</div>
+
+
+<hr>
+<h2>7. SFU Deep Dive</h2>
+<p>The SFU is the workhorse of modern video conferencing. Let us explore it in detail.</p>
+<h3>Simulcast</h3>
+<p>The key to making SFU efficient is simulcast. Instead of the sender encoding video at a single quality level, the sender encodes at multiple quality levels simultaneously (e.g., 1080p, 720p, 360p). The SFU then selects the appropriate quality for each receiver based on:</p>
+<ul>
+<li><strong>Receiver&#39;s available bandwidth:</strong> A receiver on a slow connection gets 360p</li>
+<li><strong>Receiver&#39;s viewport size:</strong> A small thumbnail in a grid layout gets 360p; the active speaker gets 720p or 1080p</li>
+<li><strong>Receiver&#39;s device capabilities:</strong> Mobile devices may prefer lower resolution</li>
+</ul>
+<pre class="mermaid">
+graph LR
+    subgraph "Sender"
+        CAM[Camera<br/>1080p source]
+        E1[Encode 1080p<br/>3 Mbps]
+        E2[Encode 720p<br/>1.5 Mbps]
+        E3[Encode 360p<br/>0.5 Mbps]
+    end
+
+    subgraph "SFU"
+        FW[Selective<br/>Forwarder]
+    end
+
+    subgraph "Receivers"
+        R1[Receiver A<br/>Active speaker view<br/>Gets 1080p]
+        R2[Receiver B<br/>Grid view, good network<br/>Gets 720p]
+        R3[Receiver C<br/>Mobile, poor network<br/>Gets 360p]
+    end
+
+    CAM --> E1
+    CAM --> E2
+    CAM --> E3
+
+    E1 -->|1080p| FW
+    E2 -->|720p| FW
+    E3 -->|360p| FW
+
+    FW -->|1080p| R1
+    FW -->|720p| R2
+    FW -->|360p| R3
+</pre>
+<p><strong>CPU cost for sender:</strong> Encoding three streams is roughly 2x the cost of encoding one (encoders share motion estimation). Modern CPUs and hardware encoders (NVENC, Quick Sync) handle this efficiently.</p>
+<p><strong>Bandwidth savings:</strong> In a 6-person meeting with grid view, each participant receives five 360p streams instead of five 720p/1080p streams. That is 5 x 0.5 = 2.5 Mbps down instead of 5 x 1.5 = 7.5 Mbps. A 3x bandwidth reduction.</p>
+<h3>SFU Forwarding Logic</h3>
+<p>The SFU&#39;s forwarding decision for each subscriber happens on every video frame:</p>
+<pre><code>function selectLayer(subscriber, publisher):
+    // Determine what quality this subscriber needs for this publisher
+    if subscriber.layout == ACTIVE_SPEAKER and publisher == activeSpeaker:
+        desiredLayer = HIGH  // active speaker gets highest quality
+    else if subscriber.layout == GRID:
+        if gridSize &lt;= 4:
+            desiredLayer = MEDIUM
+        else:
+            desiredLayer = LOW
+    else if publisher is screensharing:
+        desiredLayer = HIGH  // screen share always high quality
+    else:
+        desiredLayer = LOW  // thumbnails, non-visible
+
+    // Constrain by subscriber&#39;s available bandwidth
+    available = subscriber.estimatedBandwidth - subscriber.currentUsage
+    if desiredLayer == HIGH and available &lt; 3.0 Mbps:
+        desiredLayer = MEDIUM
+    if desiredLayer == MEDIUM and available &lt; 1.5 Mbps:
+        desiredLayer = LOW
+
+    return desiredLayer
+</code></pre>
+<h3>Active Speaker Detection</h3>
+<p>The SFU detects which participant is currently speaking by analyzing the audio levels in incoming RTP packets. WebRTC RTP packets include an &quot;audio level&quot; header extension (RFC 6464) that indicates the volume of the audio in each packet.</p>
+<pre><code>Active Speaker Algorithm:
+1. For each participant, compute a running average of audio levels
+   over the last 1-2 seconds
+2. Apply a smoothing function to avoid rapid switching
+   (hysteresis: require 500ms of continuous speech to switch)
+3. The participant with the highest smoothed audio level is the
+   active speaker
+4. Notify all subscribers of speaker changes via a data channel message
+5. Subscribers can then request the high-quality layer for the
+   active speaker
+</code></pre>
+<h3>SFU Cascading (Multi-Region)</h3>
+<p>When meeting participants are in different geographic regions, using a single SFU server means some participants will have high latency. Cascading connects SFU servers across regions:</p>
+<pre class="mermaid">
+graph TB
+    subgraph "US West"
+        A[Participant A<br/>San Francisco]
+        B[Participant B<br/>Los Angeles]
+        SFU_US[SFU Server<br/>US West]
+    end
+
+    subgraph "Europe"
+        C[Participant C<br/>London]
+        D[Participant D<br/>Berlin]
+        SFU_EU[SFU Server<br/>Frankfurt]
+    end
+
+    subgraph "Asia"
+        E[Participant E<br/>Tokyo]
+        SFU_AS[SFU Server<br/>Tokyo]
+    end
+
+    A --> SFU_US
+    B --> SFU_US
+
+    C --> SFU_EU
+    D --> SFU_EU
+
+    E --> SFU_AS
+
+    SFU_US <-->|Cascade Link<br/>Inter-region backbone| SFU_EU
+    SFU_US <-->|Cascade Link| SFU_AS
+    SFU_EU <-->|Cascade Link| SFU_AS
+</pre>
+<p>Each SFU sends one copy of each participant&#39;s stream to every other SFU in the cascade. This is more efficient than having each remote participant connect individually to a distant SFU.</p>
+<p><strong>Optimization: Only cascade active streams.</strong> If the meeting has 50 participants but only 5 have video enabled, only cascade those 5 video streams. Audio is always cascaded (it is low bandwidth).</p>
+<div class="important">
+
+<p>Cascading adds one extra hop of latency (the inter-region link, typically 50-150ms depending on distance). This is still better than the alternative of all participants connecting to a single distant SFU, which would add the full round-trip latency for every packet.</p>
+</div>
+
+
+<hr>
+<h2>8. Signaling Server</h2>
+<p>The signaling server coordinates the establishment and management of media connections. It does NOT carry any media data -- only control messages.</p>
+<h3>Signaling Protocol</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Participant A
+    participant SIG as Signaling Server
+    participant SFU as SFU Server
+    participant B as Participant B
+
+    A->>SIG: JOIN meeting-123
+    SIG->>SIG: Authenticate, check meeting exists
+    SIG->>SIG: Assign SFU server (geo-based)
+    SIG->>A: JOINED (sfu_url, ice_servers, participants)
+
+    A->>SFU: SDP Offer (I want to publish video+audio)
+    SFU->>A: SDP Answer (accepted, here are my ICE candidates)
+    A->>SFU: ICE Candidates
+    SFU->>A: ICE Candidates
+    Note over A,SFU: WebRTC connection established
+
+    A->>SFU: Video + Audio stream begins
+
+    SIG->>B: PARTICIPANT_JOINED (A's info)
+
+    B->>SFU: SUBSCRIBE to A's stream
+    SFU->>B: SDP Offer (forwarding A's stream to you)
+    B->>SFU: SDP Answer
+    Note over B,SFU: B now receives A's stream
+
+    A->>SIG: MUTE_VIDEO
+    SIG->>B: PARTICIPANT_VIDEO_MUTED (A)
+
+    A->>SIG: RAISE_HAND
+    SIG->>B: PARTICIPANT_RAISED_HAND (A)
+
+    A->>SIG: LEAVE
+    SIG->>B: PARTICIPANT_LEFT (A)
+    SFU->>SFU: Stop forwarding A's streams
+</pre>
+<h3>Signaling Message Types</h3>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Messages</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Session</strong></td>
+<td>JOIN, LEAVE, KICK</td>
+<td>Meeting room management</td>
+</tr>
+<tr>
+<td><strong>Media</strong></td>
+<td>SDP_OFFER, SDP_ANSWER, ICE_CANDIDATE</td>
+<td>WebRTC negotiation</td>
+</tr>
+<tr>
+<td><strong>Control</strong></td>
+<td>MUTE_AUDIO, MUTE_VIDEO, UNMUTE</td>
+<td>Media control</td>
+</tr>
+<tr>
+<td><strong>Interaction</strong></td>
+<td>RAISE_HAND, REACTION, CHAT_MESSAGE</td>
+<td>User interactions</td>
+</tr>
+<tr>
+<td><strong>Layout</strong></td>
+<td>SPEAKER_CHANGED, PIN_PARTICIPANT</td>
+<td>View management</td>
+</tr>
+<tr>
+<td><strong>Admin</strong></td>
+<td>ADMIT_FROM_WAITING_ROOM, LOCK_MEETING</td>
+<td>Host controls</td>
+</tr>
+<tr>
+<td><strong>Recording</strong></td>
+<td>START_RECORDING, STOP_RECORDING</td>
+<td>Recording control</td>
+</tr>
+</tbody></table>
+<h3>WebSocket Connection Management</h3>
+<p>Each participant maintains a single WebSocket connection to the signaling server. The server must handle:</p>
+<p><strong>Connection multiplexing:</strong> Many participants in the same meeting connect to the same signaling server (or a cluster). Use Redis Pub/Sub or a similar system to broadcast messages within a meeting room across server instances.</p>
+<p><strong>Heartbeat:</strong> Clients send periodic pings (every 5-10 seconds). If the server does not receive a heartbeat within the timeout (30 seconds), it considers the participant disconnected and notifies others.</p>
+<p><strong>Reconnection:</strong> If the WebSocket disconnects, the client automatically reconnects and sends a REJOIN message with its previous session token. The server restores the participant&#39;s state without requiring a full rejoin flow.</p>
+<pre><code>Signaling Server Cluster:
+
+Participant A ──WebSocket──&gt; Sig Server 1 ──Redis Pub/Sub──&gt; Sig Server 2 &lt;──WebSocket── Participant B
+                                    |                              |
+                                    └──── Meeting State Store (Redis) ────┘
+</code></pre>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Emphasize that the signaling server is NOT on the media path. It only handles setup and control. This means it has modest bandwidth requirements (kilobytes per second per participant) and can be a standard horizontally-scaled web service with WebSocket support.</p>
+</div>
+
+
+<hr>
+<h2>9. Adaptive Bitrate &amp; Congestion Control</h2>
+<h3>The Problem</h3>
+<p>Internet connections are unreliable. Bandwidth fluctuates, packets get lost, and jitter varies. A video conferencing system must adapt in real-time to deliver the best possible quality given current network conditions.</p>
+<h3>Bandwidth Estimation</h3>
+<p>WebRTC uses two main mechanisms for bandwidth estimation:</p>
+<p><strong>REMB (Receiver Estimated Maximum Bitrate):</strong> The receiver estimates the available bandwidth based on packet arrival times and loss rates, then sends a REMB message back to the sender. The sender adjusts its encoding bitrate accordingly.</p>
+<p><strong>Transport-CC (Transport-Wide Congestion Control):</strong> The receiver sends detailed transport feedback (arrival times of every received packet) to the sender. The sender runs a congestion control algorithm (GCC - Google Congestion Control) that is more sophisticated than REMB, using both delay-based and loss-based signals.</p>
+<h3>Degradation Strategy</h3>
+<p>When bandwidth drops, the system degrades quality in a specific order to minimize the impact on communication:</p>
+<pre><code>Best quality                                    Worst quality
+|                                                          |
+1080p@30fps → 720p@30fps → 720p@15fps → 360p@15fps → Audio-only
+     3 Mbps      1.5 Mbps     0.8 Mbps     0.3 Mbps    0.05 Mbps
+</code></pre>
+<p><strong>Degradation priority (what to sacrifice first):</strong></p>
+<ol>
+<li><strong>Resolution first:</strong> Drop from 1080p to 720p to 360p. Viewers notice resolution loss less than they notice stuttering.</li>
+<li><strong>Frame rate second:</strong> Drop from 30fps to 15fps. Motion becomes slightly jerky but is still usable for conversation.</li>
+<li><strong>Video last resort:</strong> Disable video entirely and go audio-only. Audio is far more important for communication than video.</li>
+<li><strong>Audio quality never sacrificed.</strong> Opus codec at 50kbps is highly robust and very low bandwidth. Audio must always work.</li>
+</ol>
+<h3>Jitter Buffer</h3>
+<p>Network jitter (variation in packet arrival times) causes choppy audio/video even when no packets are lost. The jitter buffer smooths this out:</p>
+<pre><code>Without jitter buffer:
+Packets arrive: |P1|  |P2|    |P3||P4|     |P5|
+Playback:       |P1|  |P2|    |P3||P4|     |P5|  ← choppy
+
+With jitter buffer (50ms buffer):
+Packets arrive: |P1|  |P2|    |P3||P4|     |P5|
+Buffer fills:   [P1, P2]
+Playback:            |P1| |P2| |P3| |P4| |P5|  ← smooth
+                     ^---- 50ms delay, but smooth
+</code></pre>
+<p>The jitter buffer size is adaptive:</p>
+<ul>
+<li>Low jitter (stable network): Small buffer (20-50ms), low latency</li>
+<li>High jitter (unstable network): Large buffer (100-200ms), higher latency but smooth</li>
+</ul>
+<div class="warning">
+
+<p>The jitter buffer adds latency. A 100ms jitter buffer means the audio/video is 100ms behind real-time. For an interactive conversation, this is noticeable but acceptable. The system must balance smoothness (larger buffer) against responsiveness (smaller buffer).</p>
+</div>
+
+
+<hr>
+<h2>10. Recording Service</h2>
+<h3>Server-Side Recording</h3>
+<p>The recording service joins the meeting as a hidden participant. It subscribes to all audio and video streams from the SFU, then composes and encodes them into a recording file.</p>
+<pre class="mermaid">
+graph LR
+    subgraph "SFU"
+        S[SFU Server]
+    end
+
+    subgraph "Recording Pipeline"
+        RB[Recording Bot<br/>Hidden Participant]
+        DEC[Decoder<br/>VP9/Opus → Raw]
+        COMP[Compositor<br/>Layout Engine]
+        ENC[Encoder<br/>H.264 + AAC]
+        MUX[Muxer<br/>MP4 Container]
+    end
+
+    subgraph "Storage"
+        TMP[Temporary<br/>Local Storage]
+        OBJ[Object Storage<br/>S3/GCS]
+        CDN[CDN<br/>Playback]
+    end
+
+    S -->|All streams| RB
+    RB --> DEC
+    DEC --> COMP
+    COMP --> ENC
+    ENC --> MUX
+    MUX --> TMP
+    TMP -->|Upload on complete| OBJ
+    OBJ --> CDN
+</pre>
+<p><strong>Layout composition:</strong> The compositor arranges participant video streams into a grid or active-speaker layout, similar to what participants see in the meeting. It re-renders this layout at 30fps, mixing in screen share content when active.</p>
+<p><strong>Audio mixing:</strong> All audio streams are decoded, mixed into a single audio track (with normalization to prevent loud participants from dominating), and encoded as AAC or Opus.</p>
+<p><strong>Output format:</strong> MP4 (H.264 video + AAC audio) for broad compatibility. Some systems also produce WebM (VP9 + Opus) for web playback.</p>
+<h3>Individual Track Recording</h3>
+<p>An alternative approach records each participant&#39;s audio and video as separate tracks:</p>
+<p><strong>Advantages:</strong> Enables post-meeting editing (e.g., different layouts, highlighting specific speakers), transcription from individual audio tracks is more accurate, and individual tracks can be stored as-is without compositing CPU cost.</p>
+<p><strong>Disadvantages:</strong> Requires post-processing to produce a viewable recording, more complex storage management, larger total storage size.</p>
+<h3>Recording Storage and Access</h3>
+<pre><code>Recording lifecycle:
+1. During meeting: Write chunks to local SSD (fast, temporary)
+2. Meeting ends: Upload complete recording to object storage (S3)
+3. Post-processing: Generate thumbnails, extract transcript
+4. Access: Serve via CDN with signed URLs (time-limited access)
+5. Retention: Configurable per organization (30 days to forever)
+6. Archival: Move to cheaper storage tier (Glacier) after retention period
+</code></pre>
+<hr>
+<h2>11. Chat &amp; Reactions</h2>
+<h3>In-Meeting Chat</h3>
+<p>Chat messages are delivered through the signaling WebSocket connection. They do not use the media path.</p>
+<pre><code>Chat message flow:
+1. Sender types message and presses send
+2. Client sends CHAT_MESSAGE to signaling server via WebSocket
+3. Signaling server broadcasts to all participants in the meeting
+4. Signaling server persists message to chat history store
+5. All connected clients display the message in real-time
+6. Late joiners retrieve chat history via REST API on join
+</code></pre>
+<p><strong>Message types:</strong> Text messages, file links (files uploaded to object storage), reactions (emoji sent to all participants, displayed as floating overlay), and polls.</p>
+<p><strong>Persistence:</strong> Chat messages are stored in a database associated with the meeting ID. They are available during the meeting via the signaling server and after the meeting via REST API, subject to the meeting&#39;s retention policy.</p>
+<h3>Reactions and Non-Verbal Feedback</h3>
+<p>Reactions (thumbs up, applause, raise hand) are ephemeral signaling messages:</p>
+<pre><code>Reaction message:
+{
+  &quot;type&quot;: &quot;REACTION&quot;,
+  &quot;participant_id&quot;: &quot;user-123&quot;,
+  &quot;reaction&quot;: &quot;thumbs_up&quot;,
+  &quot;timestamp&quot;: 1680000000000
+}
+</code></pre>
+<p>The signaling server broadcasts reactions to all participants. Clients display them as animated overlays that fade after 3-5 seconds. Reactions are NOT persisted (they are ephemeral).</p>
+<p><strong>Raise hand</strong> is different -- it is a persistent state (raised until lowered). The signaling server maintains a list of raised hands and includes it in the participant state for late joiners.</p>
+<hr>
+<h2>12. Screen Sharing</h2>
+<h3>Capture and Encoding</h3>
+<p>Screen sharing is treated as an additional video track in the WebRTC connection:</p>
+<ol>
+<li><p><strong>Capture:</strong> The browser&#39;s <code>getDisplayMedia()</code> API or the native OS screen capture API captures the screen content (entire screen, application window, or browser tab).</p>
+</li>
+<li><p><strong>Encoding differences from webcam video:</strong></p>
+<ul>
+<li>Higher resolution (typically 1080p or even 1440p for text readability)</li>
+<li>Lower frame rate (5-15 fps for static content like slides, higher for demos/videos)</li>
+<li>Different codec parameters: prioritize sharpness over smoothness (screen content has sharp text and edges)</li>
+<li>Content-adaptive: detect whether content is mostly static (slides) or dynamic (video playback) and adjust accordingly</li>
+</ul>
+</li>
+<li><p><strong>Transmission:</strong> Sent as a separate video track through the same WebRTC connection. The SFU forwards it as a high-priority stream to all subscribers.</p>
+</li>
+</ol>
+<h3>Optimization for Screen Content</h3>
+<pre><code>Screen share optimization:
+- Use VP9 &quot;screen content coding&quot; mode or H.264 &quot;screen&quot; profile
+  - Better compression for text and sharp edges
+  - Can detect repeated patterns (code editors, spreadsheets)
+- Adaptive frame rate:
+  - Static slide deck: 2-5 fps (saves bandwidth)
+  - Scrolling/typing: 10-15 fps
+  - Video playback: 30 fps
+- Region of interest:
+  - Only encode the changed region of the screen
+  - If only a cursor moves, only transmit cursor-area updates
+</code></pre>
+<div class="note">
+
+<p>Screen sharing with computer audio (e.g., sharing a video with sound) requires capturing the system audio output and mixing it into the audio track. This is OS-dependent and has varying levels of browser support.</p>
+</div>
+
+
+<hr>
+<h2>13. Large Meetings &amp; Webinars</h2>
+<h3>The Scale Challenge</h3>
+<p>A standard SFU meeting with 50 participants where everyone can share video works fine. But what about 1,000 participants? Or 10,000 viewers in a webinar?</p>
+<h3>Tiered Participant Model</h3>
+<pre class="mermaid">
+graph TB
+    subgraph "Panelists (5-10 people)"
+        P1[Speaker A<br/>Full duplex audio+video]
+        P2[Speaker B<br/>Full duplex audio+video]
+        P3[Moderator<br/>Full duplex audio+video]
+    end
+
+    subgraph "SFU Layer"
+        SFU[SFU Server<br/>Handles panelists]
+    end
+
+    subgraph "Distribution Layer"
+        CDN1[CDN Edge<br/>Region A]
+        CDN2[CDN Edge<br/>Region B]
+        CDN3[CDN Edge<br/>Region C]
+    end
+
+    subgraph "Audience (1000+ viewers)"
+        V1[Viewer 1<br/>Receive only]
+        V2[Viewer 2<br/>Receive only]
+        VN[Viewer N<br/>Receive only]
+    end
+
+    P1 <-->|WebRTC| SFU
+    P2 <-->|WebRTC| SFU
+    P3 <-->|WebRTC| SFU
+
+    SFU -->|Transcode to HLS/DASH| CDN1
+    SFU -->|Transcode to HLS/DASH| CDN2
+    SFU -->|Transcode to HLS/DASH| CDN3
+
+    CDN1 -->|HLS stream| V1
+    CDN2 -->|HLS stream| V2
+    CDN3 -->|HLS stream| VN
+</pre>
+<p><strong>Panelists</strong> (speakers, hosts) connect via WebRTC to the SFU for low-latency bidirectional communication. This is the standard SFU model.</p>
+<p><strong>Viewers</strong> (audience) receive a composed stream via HLS (HTTP Live Streaming) or DASH through a CDN. This adds 5-30 seconds of latency but scales to millions of viewers using standard CDN infrastructure.</p>
+<p><strong>Promotion:</strong> A viewer can be &quot;promoted&quot; to panelist (e.g., for Q&amp;A). The system establishes a WebRTC connection for the promoted viewer and tears down their HLS stream.</p>
+<h3>Low-Latency Large Meetings (WebRTC-Based)</h3>
+<p>For meetings where viewer interaction latency matters (e.g., interactive townhalls), some systems support receive-only WebRTC connections for viewers:</p>
+<ul>
+<li>Viewers establish a WebRTC connection but only subscribe (no publish)</li>
+<li>The SFU only forwards the active speaker&#39;s stream(s) to viewers</li>
+<li>With simulcast, viewers receive low-quality streams</li>
+<li>This can scale to 1,000-3,000 viewers per SFU server</li>
+<li>Beyond that, use SFU cascading: multiple SFU servers connected in a tree</li>
+</ul>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> The key insight for large meetings is the asymmetry between panelists and viewers. Panelists need low-latency bidirectional communication (WebRTC + SFU). Viewers need scalable unidirectional streaming (CDN + HLS). Design for both in the same meeting.</p>
+</div>
+
+
+<hr>
+<h2>14. Breakout Rooms</h2>
+<h3>Architecture</h3>
+<p>Breakout rooms are sub-meetings within a main meeting. The host assigns participants to rooms, and each room operates as a mini-meeting.</p>
+<pre><code>Main Meeting (20 participants)
+  ├── Breakout Room 1 (5 participants) → SFU session 1a
+  ├── Breakout Room 2 (5 participants) → SFU session 1b
+  ├── Breakout Room 3 (5 participants) → SFU session 1c
+  └── Breakout Room 4 (5 participants) → SFU session 1d
+
+Host can:
+  - Broadcast message to all rooms
+  - Join any room temporarily
+  - Move participants between rooms
+  - Close breakout rooms (everyone returns to main)
+</code></pre>
+<p><strong>Implementation:</strong> Each breakout room is a separate SFU routing context. When breakout rooms are created:</p>
+<ol>
+<li>The signaling server creates sub-sessions for each room</li>
+<li>Participants are instructed (via signaling) to unsubscribe from the main meeting streams and subscribe to their room&#39;s streams</li>
+<li>The SFU reconfigures its forwarding tables: participants in Room 1 only receive media from other Room 1 participants</li>
+<li>When breakout rooms close, all participants re-subscribe to the main meeting streams</li>
+</ol>
+<p><strong>Key optimization:</strong> Participants do not need to establish new WebRTC connections for breakout rooms. The SFU simply changes which streams it forwards to each participant. This makes room transitions near-instant.</p>
+<hr>
+<h2>15. Security</h2>
+<h3>Encryption Layers</h3>
+<p><strong>SRTP (Secure Real-time Transport Protocol):</strong> All WebRTC media is encrypted with SRTP by default. The encryption keys are exchanged during the DTLS handshake between the client and the SFU. This provides hop-by-hop encryption: the media is encrypted between the client and the SFU, but the SFU can decrypt it (it needs to in order to forward/select streams).</p>
+<p><strong>End-to-End Encryption (E2EE):</strong> For highest security, the media is encrypted at the sender before it reaches the SFU, and only decrypted at the receiver. The SFU forwards encrypted packets it cannot read.</p>
+<pre><code>Without E2EE:
+  Sender → [encrypt] → SFU [decrypt, forward, encrypt] → Receiver → [decrypt]
+  SFU can see media content
+
+With E2EE:
+  Sender → [E2EE encrypt] → [SRTP encrypt] → SFU [SRTP decrypt, forward, SRTP encrypt] → [SRTP decrypt] → Receiver → [E2EE decrypt]
+  SFU only sees E2EE-encrypted payload, cannot read content
+</code></pre>
+<p><strong>E2EE trade-offs:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Without E2EE</th>
+<th>With E2EE</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Server-side recording</td>
+<td>Possible</td>
+<td>Not possible (server cannot decode)</td>
+</tr>
+<tr>
+<td>Server-side transcription</td>
+<td>Possible</td>
+<td>Not possible</td>
+</tr>
+<tr>
+<td>Simulcast SFU selection</td>
+<td>Works normally</td>
+<td>Requires &quot;envelope&quot; encryption per layer</td>
+</tr>
+<tr>
+<td>Key management</td>
+<td>Simple (DTLS)</td>
+<td>Complex (group key distribution)</td>
+</tr>
+<tr>
+<td>Trust model</td>
+<td>Trust the server operator</td>
+<td>Trust only participants</td>
+</tr>
+</tbody></table>
+<h3>Meeting Security Features</h3>
+<p><strong>Waiting Room:</strong> Participants join a holding area and must be explicitly admitted by the host. The signaling server holds JOIN requests in a queue and notifies the host.</p>
+<p><strong>Meeting Password:</strong> Required for joining. Validated at the signaling server before allowing the participant to connect to the SFU.</p>
+<p><strong>Meeting Lock:</strong> Once all participants have joined, the host can lock the meeting. No new participants can join, even with the correct password.</p>
+<p><strong>Participant Authentication:</strong> Verified participants show their authenticated identity (name, email, organization). Guest/anonymous participants are clearly marked.</p>
+<hr>
+<h2>16. Data Models &amp; Storage</h2>
+<h3>Core Data Models</h3>
+<p><strong>Meeting Table</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>meeting_id</td>
+<td>UUID (PK)</td>
+<td>Unique meeting identifier</td>
+</tr>
+<tr>
+<td>meeting_code</td>
+<td>VARCHAR(12)</td>
+<td>Human-readable join code</td>
+</tr>
+<tr>
+<td>host_user_id</td>
+<td>UUID (FK)</td>
+<td>Meeting creator/host</td>
+</tr>
+<tr>
+<td>title</td>
+<td>VARCHAR(255)</td>
+<td>Meeting title</td>
+</tr>
+<tr>
+<td>scheduled_start</td>
+<td>TIMESTAMP</td>
+<td>Scheduled start time (null for instant meetings)</td>
+</tr>
+<tr>
+<td>scheduled_end</td>
+<td>TIMESTAMP</td>
+<td>Scheduled end time</td>
+</tr>
+<tr>
+<td>actual_start</td>
+<td>TIMESTAMP</td>
+<td>When the first participant joined</td>
+</tr>
+<tr>
+<td>actual_end</td>
+<td>TIMESTAMP</td>
+<td>When the last participant left</td>
+</tr>
+<tr>
+<td>status</td>
+<td>ENUM</td>
+<td>SCHEDULED, ACTIVE, ENDED</td>
+</tr>
+<tr>
+<td>password_hash</td>
+<td>VARCHAR(255)</td>
+<td>Optional meeting password</td>
+</tr>
+<tr>
+<td>waiting_room_enabled</td>
+<td>BOOLEAN</td>
+<td>Whether waiting room is active</td>
+</tr>
+<tr>
+<td>recording_enabled</td>
+<td>BOOLEAN</td>
+<td>Whether recording is allowed</td>
+</tr>
+<tr>
+<td>e2ee_enabled</td>
+<td>BOOLEAN</td>
+<td>Whether E2EE is enforced</td>
+</tr>
+<tr>
+<td>max_participants</td>
+<td>INT</td>
+<td>Maximum allowed participants</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>Creation time</td>
+</tr>
+</tbody></table>
+<p><strong>Participant Table</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>participant_id</td>
+<td>UUID (PK)</td>
+<td>Unique session identifier</td>
+</tr>
+<tr>
+<td>meeting_id</td>
+<td>UUID (FK)</td>
+<td>Which meeting</td>
+</tr>
+<tr>
+<td>user_id</td>
+<td>UUID (FK)</td>
+<td>Authenticated user (null for guests)</td>
+</tr>
+<tr>
+<td>display_name</td>
+<td>VARCHAR(100)</td>
+<td>Name shown in meeting</td>
+</tr>
+<tr>
+<td>role</td>
+<td>ENUM</td>
+<td>HOST, CO_HOST, PANELIST, PARTICIPANT, VIEWER</td>
+</tr>
+<tr>
+<td>joined_at</td>
+<td>TIMESTAMP</td>
+<td>When they joined</td>
+</tr>
+<tr>
+<td>left_at</td>
+<td>TIMESTAMP</td>
+<td>When they left</td>
+</tr>
+<tr>
+<td>duration_seconds</td>
+<td>INT</td>
+<td>Total time in meeting</td>
+</tr>
+<tr>
+<td>audio_enabled</td>
+<td>BOOLEAN</td>
+<td>Audio state at departure</td>
+</tr>
+<tr>
+<td>video_enabled</td>
+<td>BOOLEAN</td>
+<td>Video state at departure</td>
+</tr>
+<tr>
+<td>sfu_server_id</td>
+<td>VARCHAR(50)</td>
+<td>Assigned SFU server</td>
+</tr>
+<tr>
+<td>region</td>
+<td>VARCHAR(20)</td>
+<td>Geographic region</td>
+</tr>
+<tr>
+<td>connection_quality</td>
+<td>ENUM</td>
+<td>GOOD, FAIR, POOR</td>
+</tr>
+</tbody></table>
+<p><strong>Recording Table</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>recording_id</td>
+<td>UUID (PK)</td>
+<td>Unique recording identifier</td>
+</tr>
+<tr>
+<td>meeting_id</td>
+<td>UUID (FK)</td>
+<td>Associated meeting</td>
+</tr>
+<tr>
+<td>started_by</td>
+<td>UUID (FK)</td>
+<td>Who started the recording</td>
+</tr>
+<tr>
+<td>started_at</td>
+<td>TIMESTAMP</td>
+<td>Recording start time</td>
+</tr>
+<tr>
+<td>ended_at</td>
+<td>TIMESTAMP</td>
+<td>Recording end time</td>
+</tr>
+<tr>
+<td>duration_seconds</td>
+<td>INT</td>
+<td>Recording duration</td>
+</tr>
+<tr>
+<td>file_size_bytes</td>
+<td>BIGINT</td>
+<td>Size of recording file</td>
+</tr>
+<tr>
+<td>storage_url</td>
+<td>VARCHAR(500)</td>
+<td>Object storage path</td>
+</tr>
+<tr>
+<td>cdn_url</td>
+<td>VARCHAR(500)</td>
+<td>CDN playback URL</td>
+</tr>
+<tr>
+<td>format</td>
+<td>ENUM</td>
+<td>MP4, WEBM</td>
+</tr>
+<tr>
+<td>resolution</td>
+<td>VARCHAR(10)</td>
+<td>Recording resolution</td>
+</tr>
+<tr>
+<td>status</td>
+<td>ENUM</td>
+<td>RECORDING, PROCESSING, READY, FAILED, DELETED</td>
+</tr>
+<tr>
+<td>transcript_url</td>
+<td>VARCHAR(500)</td>
+<td>Associated transcript file</td>
+</tr>
+<tr>
+<td>retention_until</td>
+<td>TIMESTAMP</td>
+<td>When to auto-delete</td>
+</tr>
+</tbody></table>
+<h3>Storage Technologies</h3>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Storage</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Meeting metadata</td>
+<td>PostgreSQL</td>
+<td>Relational queries, transactional</td>
+</tr>
+<tr>
+<td>Active meeting state</td>
+<td>Redis</td>
+<td>Low-latency, ephemeral, pub/sub</td>
+</tr>
+<tr>
+<td>Chat messages</td>
+<td>PostgreSQL + Redis</td>
+<td>Persist + real-time delivery</td>
+</tr>
+<tr>
+<td>Recordings</td>
+<td>S3/GCS</td>
+<td>Large files, durable, CDN-compatible</td>
+</tr>
+<tr>
+<td>User accounts</td>
+<td>PostgreSQL</td>
+<td>Standard CRUD</td>
+</tr>
+<tr>
+<td>Analytics/metrics</td>
+<td>ClickHouse/BigQuery</td>
+<td>Time-series, aggregation queries</td>
+</tr>
+<tr>
+<td>SFU routing state</td>
+<td>In-memory (SFU process)</td>
+<td>Ultra-low latency, ephemeral</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>17. Scalability Strategies</h2>
+<h3>Media Server Scaling</h3>
+<p><strong>Horizontal scaling of SFU servers:</strong> Each SFU server handles a fixed number of participants (typically 500-2,000 depending on server size and video usage). Add more servers to handle more concurrent meetings.</p>
+<p><strong>Geographic distribution:</strong> Deploy SFU servers in every major region. Assign participants to the closest SFU. For cross-region meetings, use SFU cascading.</p>
+<pre><code>SFU Server Regions:
+  US East (Virginia): 500 servers
+  US West (Oregon): 300 servers
+  Europe (Frankfurt): 400 servers
+  Asia Pacific (Tokyo): 200 servers
+  Asia Pacific (Singapore): 200 servers
+  South America (Sao Paulo): 100 servers
+
+Total: 1,700 SFU servers
+Capacity: ~2M concurrent participants
+</code></pre>
+<p><strong>Auto-scaling:</strong> Monitor SFU server CPU, bandwidth, and participant count. Scale up by provisioning new servers when utilization exceeds 70%. Scale down by draining meetings (wait for them to end naturally) before decommissioning servers.</p>
+<h3>Signaling Server Scaling</h3>
+<p>Signaling servers are stateless (meeting state is in Redis). Scale horizontally behind a load balancer with sticky sessions (WebSocket connections must stay on the same server for their lifetime).</p>
+<pre><code>Signaling infrastructure:
+  Load Balancer (Layer 7, WebSocket-aware)
+    ├── Sig Server 1 (5,000 WebSocket connections)
+    ├── Sig Server 2 (5,000 WebSocket connections)
+    ├── ...
+    └── Sig Server N
+  Redis Cluster (pub/sub for cross-server messaging)
+</code></pre>
+<h3>TURN Server Scaling</h3>
+<p>TURN servers are bandwidth-intensive. Each TURN relay consumes bandwidth equal to the media streams it relays. Scale by adding more TURN servers in each region.</p>
+<p><strong>Cost optimization:</strong> TURN is expensive (server bandwidth costs). Minimize TURN usage by:</p>
+<ul>
+<li>Using STUN first (works for most connections)</li>
+<li>Trying ICE TCP before falling back to TURN (TCP works through more firewalls than UDP)</li>
+<li>Using TURN only as a last resort</li>
+</ul>
+<h3>Recording Service Scaling</h3>
+<p>Recording is CPU-intensive (decode + composite + encode). Scale recording workers independently from SFU servers. Use a task queue to distribute recording jobs across workers.</p>
+<div class="note">
+
+<p>A single recording worker can handle 2-4 concurrent recordings (limited by CPU for video encoding). For 1.5M concurrent recorded meetings, you would need 375K-750K recording workers. In practice, recording is much less common (perhaps 5-10% of meetings), bringing this to a manageable 18K-37K workers.</p>
+</div>
+
+
+<hr>
+<h2>18. Design Trade-offs</h2>
+<h3>SFU vs MCU</h3>
+<table>
+<thead>
+<tr>
+<th>Consideration</th>
+<th>Choose SFU When</th>
+<th>Choose MCU When</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Client capability</td>
+<td>Clients have decent bandwidth</td>
+<td>Clients have very limited bandwidth</td>
+</tr>
+<tr>
+<td>Server cost</td>
+<td>Want to minimize server CPU cost</td>
+<td>CPU cost is acceptable</td>
+</tr>
+<tr>
+<td>Flexibility</td>
+<td>Need per-participant quality control</td>
+<td>Fixed layout is acceptable</td>
+</tr>
+<tr>
+<td>Latency</td>
+<td>Lowest latency is critical</td>
+<td>Extra 50-200ms is acceptable</td>
+</tr>
+<tr>
+<td>E2EE</td>
+<td>End-to-end encryption is needed</td>
+<td>E2EE is not needed</td>
+</tr>
+<tr>
+<td>Scale</td>
+<td>Medium meetings (5-100 people)</td>
+<td>Very large meetings where MCU reduces client bandwidth</td>
+</tr>
+</tbody></table>
+<p><strong>Modern consensus:</strong> SFU with simulcast is the standard choice. MCU is mostly used for interoperability with legacy video conferencing systems (SIP/H.323 room systems).</p>
+<h3>WebRTC vs HLS/DASH for Viewers</h3>
+<table>
+<thead>
+<tr>
+<th>Consideration</th>
+<th>WebRTC</th>
+<th>HLS/DASH</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Latency</td>
+<td>&lt; 500ms</td>
+<td>5-30 seconds</td>
+</tr>
+<tr>
+<td>Scale</td>
+<td>Hundreds-thousands</td>
+<td>Millions (CDN)</td>
+</tr>
+<tr>
+<td>Interactivity</td>
+<td>Full (can be promoted to speaker)</td>
+<td>Limited (chat only)</td>
+</tr>
+<tr>
+<td>Infrastructure</td>
+<td>SFU servers (expensive)</td>
+<td>CDN (commodity)</td>
+</tr>
+<tr>
+<td>Browser support</td>
+<td>All modern browsers</td>
+<td>All browsers</td>
+</tr>
+<tr>
+<td>Cost per viewer</td>
+<td>High (SFU resources)</td>
+<td>Low (CDN)</td>
+</tr>
+</tbody></table>
+<h3>Recording: Server-Side vs Client-Side</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Server-side</td>
+<td>Centralized, consistent quality, works for all clients</td>
+<td>CPU-intensive, requires server infrastructure</td>
+</tr>
+<tr>
+<td>Client-side</td>
+<td>No server cost, works with E2EE</td>
+<td>Depends on client device capability, inconsistent quality</td>
+</tr>
+<tr>
+<td>Individual tracks</td>
+<td>Enables post-editing, better transcription</td>
+<td>Requires post-processing, more storage</td>
+</tr>
+</tbody></table>
+<h3>Consistency vs Availability for Meeting State</h3>
+<p>Meeting state (who is in the meeting, who is muted, who is sharing) needs to be consistent but also highly available. The system uses eventual consistency with a short convergence window:</p>
+<ul>
+<li>Signaling server broadcasts state changes to all participants</li>
+<li>If a participant misses an update (WebSocket reconnection), they request full state on rejoin</li>
+<li>The SFU maintains its own routing state independently of the signaling server</li>
+<li>In the rare case of signaling server failure, the SFU continues forwarding media (participants can still see and hear each other, but cannot mute/unmute via UI)</li>
+</ul>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> When discussing trade-offs, frame them as &quot;for our requirements, X is better because...&quot; rather than stating absolutes. For example: &quot;For meetings up to 100 participants, SFU is clearly the right choice because it balances latency, cost, and flexibility. For webinars with 10,000 viewers, we switch to CDN-based distribution because SFU server costs would be prohibitive.&quot;</p>
+</div>
+
+
+<hr>
+<h2>19. Interview Cheat Sheet</h2>
+<h3>30-Second Summary</h3>
+<blockquote>
+<p>A video conferencing system has three planes: signaling (WebSocket for setup and control), media (WebRTC/UDP for audio and video), and data (REST for scheduling and history). The core media architecture uses an SFU (Selective Forwarding Unit) where each participant uploads one stream and the SFU selectively forwards streams to each subscriber. Simulcast (encoding at multiple qualities) lets the SFU adapt per-receiver. For cross-region meetings, SFU cascading connects servers via backbone links. Large meetings use a hybrid model: panelists on WebRTC/SFU, viewers on HLS/CDN. NAT traversal uses ICE (STUN for discovery, TURN for relay). Adaptive bitrate degrades gracefully: resolution first, then frame rate, then video off, audio always preserved.</p>
+</blockquote>
+<h3>Key Numbers to Remember</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Target end-to-end latency</td>
+<td>&lt; 150ms</td>
+</tr>
+<tr>
+<td>720p video bitrate</td>
+<td>~1.5 Mbps</td>
+</tr>
+<tr>
+<td>1080p video bitrate</td>
+<td>~3.0 Mbps</td>
+</tr>
+<tr>
+<td>Opus audio bitrate</td>
+<td>~50 kbps</td>
+</tr>
+<tr>
+<td>SFU participants per server</td>
+<td>500-2,000</td>
+</tr>
+<tr>
+<td>P2P practical limit</td>
+<td>4-5 participants</td>
+</tr>
+<tr>
+<td>SFU practical limit</td>
+<td>50-100 with video</td>
+</tr>
+<tr>
+<td>TURN relay usage</td>
+<td>~15% of connections</td>
+</tr>
+<tr>
+<td>HLS latency</td>
+<td>5-30 seconds</td>
+</tr>
+<tr>
+<td>WebRTC connection setup</td>
+<td>1-3 seconds</td>
+</tr>
+<tr>
+<td>Jitter buffer typical size</td>
+<td>20-100ms</td>
+</tr>
+<tr>
+<td>Recording size (720p, 1hr)</td>
+<td>~600 MB</td>
+</tr>
+</tbody></table>
+<h3>Architecture Decisions to Justify</h3>
+<table>
+<thead>
+<tr>
+<th>Decision</th>
+<th>Justification</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>SFU over P2P</td>
+<td>P2P does not scale beyond 4-5 participants due to upload bandwidth</td>
+</tr>
+<tr>
+<td>SFU over MCU</td>
+<td>SFU avoids expensive server-side transcoding; simulcast provides per-receiver quality</td>
+</tr>
+<tr>
+<td>Simulcast (3 quality layers)</td>
+<td>Allows SFU to select optimal quality per subscriber without transcoding</td>
+</tr>
+<tr>
+<td>Separate signaling and media planes</td>
+<td>Different scaling characteristics; signaling is cheap, media is expensive</td>
+</tr>
+<tr>
+<td>UDP for media transport</td>
+<td>Dropped packets are better than delayed packets for real-time communication</td>
+</tr>
+<tr>
+<td>Geographic SFU distribution</td>
+<td>Media latency is dominated by physical distance; servers must be close to users</td>
+</tr>
+<tr>
+<td>SFU cascading for multi-region</td>
+<td>Better than all participants connecting to one distant SFU</td>
+</tr>
+<tr>
+<td>CDN/HLS for large audiences</td>
+<td>WebRTC does not scale to thousands of viewers cost-effectively</td>
+</tr>
+<tr>
+<td>Redis for signaling state</td>
+<td>Low-latency pub/sub for cross-server messaging in signaling cluster</td>
+</tr>
+</tbody></table>
+<h3>Common Follow-Up Questions</h3>
+<p><strong>Q: How do you handle a participant with a very poor network connection?</strong>
+A: The adaptive bitrate system detects high packet loss and jitter via Transport-CC feedback. It progressively degrades quality: lower resolution, lower frame rate, eventually audio-only. The jitter buffer increases to smooth out irregular packet arrival. If the connection is truly unusable, the client shows a &quot;reconnecting&quot; state and attempts to re-establish the WebRTC connection.</p>
+<p><strong>Q: How do you ensure low latency for global meetings?</strong>
+A: Deploy SFU servers in every major region. Use geo-aware assignment to connect each participant to the closest SFU. For cross-region meetings, cascade SFU servers via dedicated backbone links (lower latency and jitter than public internet). The cascade adds one hop of latency (50-150ms depending on distance) but is still better than all participants connecting to a distant single SFU.</p>
+<p><strong>Q: What happens if an SFU server crashes mid-meeting?</strong>
+A: Participants detect the failure within seconds (WebRTC ICE connection timeout). The signaling server detects the SFU heartbeat failure and reassigns affected participants to a backup SFU server. Participants automatically reconnect and re-establish media streams. There is a brief interruption (5-10 seconds) during failover.</p>
+<p><strong>Q: How does virtual background work?</strong>
+A: A machine learning model (body segmentation) runs on the client device. It classifies each pixel as &quot;person&quot; or &quot;background&quot; in real-time. Background pixels are replaced with the chosen virtual background image or blur effect. This is done before video encoding, so the SFU and other participants receive the processed video. The ML model runs at 30fps on the client&#39;s GPU.</p>
+<p><strong>Q: Why not use TCP for media?</strong>
+A: TCP provides reliable, ordered delivery. If a packet is lost, TCP retransmits it and blocks all subsequent data (head-of-line blocking). For a 30fps video stream, a single lost packet could delay the next 100-200ms of video while waiting for retransmission. UDP allows the application to skip lost packets and continue with the next frame, which is the correct behavior for real-time media.</p>
+<p><strong>Q: How do you handle 1,000 participants in a single meeting?</strong>
+A: Use a tiered model. A small number (10-20) are active panelists connected via WebRTC to the SFU. The remaining 980+ are viewers who either receive a low-latency WebRTC receive-only stream (for interactive meetings) or an HLS stream via CDN (for webinars). Only the active speaker&#39;s video is forwarded to viewers, minimizing bandwidth. Viewers can interact via chat (signaling plane) and can be promoted to panelist for Q&amp;A.</p>
+<h3>Red Flags to Avoid</h3>
+<ul>
+<li>Do NOT propose a centralized media server (MCU) as the default architecture -- SFU is the modern standard</li>
+<li>Do NOT forget about NAT traversal (STUN/TURN) -- most clients are behind NATs</li>
+<li>Do NOT use TCP for media transport -- explain why UDP is necessary</li>
+<li>Do NOT ignore the bandwidth math -- show you understand upload vs download asymmetry</li>
+<li>Do NOT treat recording as trivial -- it requires a full pipeline (decode, composite, encode, store)</li>
+<li>Do NOT propose P2P for meetings with more than 5 participants</li>
+<li>Do NOT forget simulcast when discussing SFU -- it is the key to SFU efficiency</li>
+<li>Do NOT confuse signaling with media -- they are separate planes with different requirements</li>
+<li>Do NOT ignore geographic distribution -- media latency is dominated by physical distance</li>
+</ul>
+<hr>
+<div class="tip">
+
+<p><strong>Final Interview Tip:</strong> The video conferencing question tests your understanding of real-time systems, networking fundamentals, and scalable media distribution. The key differentiator is depth on the media architecture: P2P vs SFU vs MCU trade-offs, simulcast, adaptive bitrate, and the hybrid approach for large meetings. Practice drawing the SFU architecture with simulcast and cascading -- it is the centerpiece of the design.</p>
+</div>
+
+
+</body>
+</html>

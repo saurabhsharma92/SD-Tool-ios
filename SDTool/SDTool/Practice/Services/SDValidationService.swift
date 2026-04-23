@@ -23,19 +23,28 @@ actor SDValidationService {
         level: SDLevel,
         isGuest: Bool,
         userId: String? = nil,
-        problemId: String? = nil
+        problemId: String? = nil,
+        problemTitle: String = ""
     ) async -> ValidationResult {
         let score  = scoreAlgorithmically(user: graph, level: level)
         let passed = score >= 0.8
 
-        // Compute gaps for feedback
-        let reqComps  = Set(level.requiredComponents)
-        let userComps = Set(graph.components)
+        // Count-aware gap detection
+        let reqCounts  = Dictionary(grouping: level.requiredComponents, by: { $0 }).mapValues { $0.count }
+        let userCounts = Dictionary(grouping: graph.components, by: { $0 }).mapValues { $0.count }
+        var missingComponents: [String] = []
+        for (type, reqCount) in reqCounts.sorted(by: { $0.key < $1.key }) {
+            let userCount = userCounts[type] ?? 0
+            if userCount < reqCount {
+                let msg = reqCount == 1 ? type : "\(type) (need \(reqCount), have \(userCount))"
+                missingComponents.append(msg)
+            }
+        }
+        let extraComponents = userCounts.keys.filter { (reqCounts[$0] ?? 0) == 0 }.sorted()
+
         let reqConns  = Set(level.requiredConnections)
         let userConns = Set(graph.connections.map { $0.joined(separator: "→") })
-        let missingComponents  = Array(reqComps.subtracting(userComps)).sorted()
         let missingConnections = Array(reqConns.subtracting(userConns)).sorted()
-        let extraComponents    = Array(userComps.subtracting(reqComps)).sorted()
 
         var result: ValidationResult
 
@@ -48,7 +57,7 @@ actor SDValidationService {
                 aiFeedback: nil, fallbackHint: level.feedbackHint,
                 isGuestFallback: true, isQuotaFallback: false,
                 missingComponents: gaps.missing, missingConnections: gaps.missingConns,
-                extraComponents: gaps.extra
+                extraComponents: gaps.extra, namingWarnings: [:]
             )
         } else {
             // Quota exhausted: skip AI
@@ -59,18 +68,27 @@ actor SDValidationService {
                     aiFeedback: nil, fallbackHint: level.feedbackHint,
                     isGuestFallback: false, isQuotaFallback: true,
                     missingComponents: gaps.missing, missingConnections: gaps.missingConns,
-                    extraComponents: gaps.extra
+                    extraComponents: gaps.extra, namingWarnings: [:]
                 )
             } else {
                 let aiFeedback = try? await GeminiService.shared.evaluateSystemDesign(
                     graph: graph, level: level, score: score
                 )
+                let namingWarnings: [String: String]
+                if !graph.nodeLabels.isEmpty, !problemTitle.isEmpty {
+                    namingWarnings = (try? await GeminiService.shared.validateNodeNames(
+                        labels: Array(graph.nodeLabels.values),
+                        problemTitle: problemTitle
+                    )) ?? [:]
+                } else {
+                    namingWarnings = [:]
+                }
                 result = ValidationResult(
                     passed: passed, score: score,
                     aiFeedback: aiFeedback, fallbackHint: level.feedbackHint,
                     isGuestFallback: false, isQuotaFallback: false,
                     missingComponents: gaps.missing, missingConnections: gaps.missingConns,
-                    extraComponents: gaps.extra
+                    extraComponents: gaps.extra, namingWarnings: namingWarnings
                 )
             }
         }
@@ -98,22 +116,26 @@ actor SDValidationService {
     /// components/connections reduce the score — not just missing ones.
     /// Returns a value in [0, 1] where 1.0 = exact match.
     func scoreAlgorithmically(user: DesignGraph, level: SDLevel) -> Float {
-        func f1(required: Set<String>, user: Set<String>) -> Float {
+        func countF1(required: [String], user: [String]) -> Float {
             guard !required.isEmpty else { return 1.0 }
-            let correct = Float(required.intersection(user).count)
-            let precision: Float = user.isEmpty ? 0 : correct / Float(user.count)
-            let recall:    Float = correct / Float(required.count)
+            var reqCounts:  [String: Int] = [:]
+            var userCounts: [String: Int] = [:]
+            required.forEach { reqCounts[$0,  default: 0] += 1 }
+            user.forEach     { userCounts[$0, default: 0] += 1 }
+            let tp = Float(reqCounts.keys.reduce(0) { $0 + min(reqCounts[$1]!, userCounts[$1, default: 0]) })
+            let precision: Float = user.isEmpty ? 0 : tp / Float(user.count)
+            let recall:    Float = tp / Float(required.count)
             guard (precision + recall) > 0 else { return 0 }
             return 2 * precision * recall / (precision + recall)
         }
 
-        let compScore = f1(
-            required: Set(level.requiredComponents),
-            user:     Set(user.components)
+        let compScore = countF1(
+            required: level.requiredComponents,
+            user:     user.components
         )
-        let connScore = f1(
-            required: Set(level.requiredConnections),
-            user:     Set(user.connections.map { $0.joined(separator: "→") })
+        let connScore = countF1(
+            required: level.requiredConnections,
+            user:     user.connections.map { $0.joined(separator: "→") }
         )
 
         return (compScore + connScore) / 2.0

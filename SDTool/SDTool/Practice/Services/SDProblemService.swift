@@ -32,7 +32,7 @@ actor SDProblemService {
     /// On failure, falls back to the last cached result.
     func fetchProblems() async throws -> [SDProblem] {
         do {
-            let snapshot = try await db.collection(collection).getDocuments()
+            let snapshot = try await db.collection(collection).getDocuments(source: .server)
 
             let problems: [SDProblem] = try snapshot.documents.compactMap { doc in
                 var data = doc.data()

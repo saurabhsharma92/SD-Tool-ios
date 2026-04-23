@@ -19,6 +19,8 @@ Thank you for helping make SDTool better! There are three ways to contribute:
 
 ## Submitting an Article
 
+Articles are written in **HTML** and rendered in the app's built-in browser with beautiful PreTeXt-inspired typography. Legacy `.md` articles also work but new articles should be `.html`.
+
 ### Step 1 — Fork and Clone
 
 ```bash
@@ -28,41 +30,76 @@ cd SD-Tool-ios
 git checkout -b article/your-topic-name
 ```
 
-### Step 2 — Copy the Template
+### Step 2 — Create the Article
 
 ```bash
-cp article-template.md articles/your-topic-name.md
+cp article-template.html articles/your-topic-name.html
 ```
 
-Use lowercase with hyphens for the filename: `database-sharding.md`, `consistent-hashing.md`.
+Use lowercase with hyphens: `database-sharding.html`, `rate-limiting.html`.
 
-### Step 3 — Write the Article
+**Article template** (`article-template.html`):
 
-Fill in each section of the template. Guidelines:
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Your Article Title</title>
+</head>
+<body>
+
+<h1>Your Article Title</h1>
+<p class="article-meta">Category · Estimated read time</p>
+
+<h2>Introduction</h2>
+<p>Your content here...</p>
+
+<!-- Architecture diagram -->
+<pre class="mermaid">
+graph LR
+  A[Client] --> B[API Gateway]
+  B --> C[Server]
+</pre>
+
+<!-- Callout boxes -->
+<div class="note">A helpful note.</div>
+<div class="warning">Important warning.</div>
+<div class="tip">A pro tip.</div>
+
+</body>
+</html>
+```
+
+The app automatically injects the CSS — you don't need to link it in the file.
+
+### Step 3 — Writing Guidelines
 
 | Rule | Detail |
 |---|---|
 | Minimum length | 800 words |
-| Diagrams | Use Mermaid for architecture diagrams (renders natively in app) |
-| Images | Use absolute GitHub raw URLs |
+| Diagrams | Use `<pre class="mermaid">` blocks (renders natively) |
+| Images | Use `<img src="https://raw.githubusercontent.com/...">` with absolute URLs |
+| Code | Use `<pre><code>` for code blocks |
 | Tone | Technical but accessible — written for senior engineers |
-| No promotion | No affiliate links, sponsored content, or product advertisements |
+| No promotion | No affiliate links, sponsored content, or advertisements |
 | Language | English only |
 
 ### Step 4 — Register in index.md
 
-Add a row to `articles/index.md`:
+Add one line to `articles/index.md` using `=` as delimiter:
 
-```markdown
-| your-topic-name.md | Your Topic Name | Category |
+```
+your-topic-name.html=Your Topic Name|Category
 ```
 
-Use an existing category. If your topic needs a new one, mention it in the PR.
+Use an existing category (`Basics`, `System Design`, `AI-ML`). If you need a new category, mention it in the PR.
 
 ### Step 5 — Open a Pull Request
 
 ```bash
-git add articles/your-topic-name.md articles/index.md
+git add articles/your-topic-name.html articles/index.md
 git commit -m "article: Add Your Topic Name"
 git push origin article/your-topic-name
 ```

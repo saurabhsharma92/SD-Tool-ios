@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Your Article Title</title>
+  <!--
+    The app automatically injects articles.css and mermaid.js — no links needed here.
+    Register this file in articles/index.md:
+      your-topic-name.html=Your Topic Name|Category
+  -->
+</head>
+<body>
+
+<h1>Your Article Title</h1>
+<p class="article-meta">Category &middot; ~15 min read</p>
+
+<!-- ============================================================
+     QUICK REFERENCE
+     =============================================================
+     Headings:       <h1> page title  <h2> section  <h3> subsection
+     Paragraph:      <p>...</p>
+     Bold / Italic:  <strong>  <em>
+     Inline code:    <code>text</code>
+     Code block:     <pre><code>...</code></pre>
+     Table:          <table><thead><tr><th>…</tr></thead><tbody><tr><td>…</tbody></table>
+     Callout note:   <div class="note">…</div>
+     Callout warning:<div class="warning">…</div>
+     Callout tip:    <div class="tip">…</div>
+     Callout key:    <div class="important">…</div>
+     Mermaid:        <pre class="mermaid">graph LR …</pre>
+     Image:          <img src="https://raw.githubusercontent.com/…" alt="…">
+     Collapsible:    <details><summary>Title</summary><p>…</p></details>
+     Horizontal rule:<hr>
+     ============================================================ -->
+
+<hr>
+
+<h2>Table of Contents</h2>
+<ol>
+  <li><a href="#requirements">Requirements</a></li>
+  <li><a href="#architecture">High-Level Architecture</a></li>
+  <li><a href="#deep-dive">Deep Dive</a></li>
+  <li><a href="#tradeoffs">Trade-offs</a></li>
+  <li><a href="#cheatsheet">Cheat Sheet</a></li>
+</ol>
+
+<hr>
+
+<h2 id="requirements">1. Requirements</h2>
+
+<div class="tip">
+  Always clarify requirements in the first 5 minutes of a system design interview.
+  This shows structured thinking.
+</div>
+
+<h3>Functional Requirements</h3>
+<ul>
+  <li>Feature one</li>
+  <li>Feature two</li>
+  <li>Feature three</li>
+</ul>
+
+<h3>Non-Functional Requirements</h3>
+<table>
+  <thead>
+    <tr><th>Property</th><th>Target</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Availability</td><td>99.99%</td></tr>
+    <tr><td>Latency (P99)</td><td>&lt; 100ms</td></tr>
+    <tr><td>Throughput</td><td>10,000 RPS</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="architecture">2. High-Level Architecture</h2>
+
+<pre class="mermaid">
+graph LR
+  Client --> APIGateway[API Gateway]
+  APIGateway --> ServiceA[Service A]
+  APIGateway --> ServiceB[Service B]
+  ServiceA --> DB[(Database)]
+  ServiceB --> Cache[(Cache)]
+</pre>
+
+<p>Explain the architecture here...</p>
+
+<hr>
+
+<h2 id="deep-dive">3. Deep Dive</h2>
+
+<h3>Component A</h3>
+<p>Describe the component...</p>
+
+<pre><code>// Example code
+function example() {
+  return "Hello, system design!";
+}
+</code></pre>
+
+<div class="note">
+  Add any important clarification here.
+</div>
+
+<h3>Component B</h3>
+<p>Describe the component...</p>
+
+<details>
+  <summary>Implementation detail (expand)</summary>
+  <p>More in-depth explanation that is collapsed by default to keep the article scannable.</p>
+</details>
+
+<hr>
+
+<h2 id="tradeoffs">4. Trade-offs</h2>
+
+<table>
+  <thead>
+    <tr><th>Decision</th><th>Pro</th><th>Con</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>SQL vs NoSQL</td>
+      <td>ACID guarantees</td>
+      <td>Harder to scale horizontally</td>
+    </tr>
+    <tr>
+      <td>Push vs Pull</td>
+      <td>Lower latency</td>
+      <td>Higher server load</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="warning">
+  Common mistake: choosing the wrong consistency model for your use case.
+</div>
+
+<hr>
+
+<h2 id="cheatsheet">5. Interview Cheat Sheet</h2>
+
+<div class="important">
+  <strong>Key points to remember:</strong>
+  <ul>
+    <li>Point 1</li>
+    <li>Point 2</li>
+    <li>Point 3</li>
+  </ul>
+</div>
+
+</body>
+</html>

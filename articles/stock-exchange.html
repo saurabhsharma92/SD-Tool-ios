@@ -1,0 +1,1680 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Design Interview: Stock Exchange & Order Matching Engine</title>
+</head>
+<body>
+
+<h1>System Design Interview: Stock Exchange &amp; Order Matching Engine</h1>
+<h3>NASDAQ / NYSE Scale Trading Platform</h3>
+<div class="note">
+
+<p><strong>Staff Engineer Interview Preparation Guide</strong> -- High Level Design Round</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-requirements">Requirements</a></li>
+<li><a href="#2-capacity-estimation">Capacity Estimation</a></li>
+<li><a href="#3-high-level-architecture">High-Level Architecture</a></li>
+<li><a href="#4-core-components-deep-dive">Core Components Deep Dive</a></li>
+<li><a href="#5-order-types--lifecycle">Order Types &amp; Lifecycle</a></li>
+<li><a href="#6-order-matching-engine">Order Matching Engine</a></li>
+<li><a href="#7-order-book-data-structure">Order Book Data Structure</a></li>
+<li><a href="#8-sequencer--deterministic-processing">Sequencer &amp; Deterministic Processing</a></li>
+<li><a href="#9-market-data-service">Market Data Service</a></li>
+<li><a href="#10-trade-settlement--clearing">Trade Settlement &amp; Clearing</a></li>
+<li><a href="#11-risk-management">Risk Management</a></li>
+<li><a href="#12-data-models--storage">Data Models &amp; Storage</a></li>
+<li><a href="#13-persistence--event-sourcing">Persistence &amp; Event Sourcing</a></li>
+<li><a href="#14-failover--disaster-recovery">Failover &amp; Disaster Recovery</a></li>
+<li><a href="#15-scalability-strategies">Scalability Strategies</a></li>
+<li><a href="#16-design-trade-offs">Design Trade-offs</a></li>
+<li><a href="#17-centralized-vs-decentralized-exchanges">Centralized vs Decentralized Exchanges</a></li>
+<li><a href="#18-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. Requirements</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Stock exchange design is one of the most technically demanding system design questions. Begin by clarifying whether the interviewer wants the full exchange (matching engine, market data, settlement) or just the matching engine. The scope difference is enormous.</p>
+</div>
+
+
+<h3>Questions to Ask the Interviewer</h3>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Question</th>
+<th>Why It Matters</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Scope</strong></td>
+<td>Full exchange or just matching engine?</td>
+<td>Determines whether settlement/clearing is in scope</td>
+</tr>
+<tr>
+<td><strong>Assets</strong></td>
+<td>Equities only, or also options/futures?</td>
+<td>Derivatives add complexity to margin calculations</td>
+</tr>
+<tr>
+<td><strong>Participants</strong></td>
+<td>Retail traders, institutional, or both?</td>
+<td>Institutional requires FIX protocol, co-location</td>
+</tr>
+<tr>
+<td><strong>Latency</strong></td>
+<td>What is acceptable matching latency?</td>
+<td>Sub-millisecond requires specialized architecture</td>
+</tr>
+<tr>
+<td><strong>Throughput</strong></td>
+<td>Peak orders per second?</td>
+<td>Drives single-threaded vs partitioned design</td>
+</tr>
+<tr>
+<td><strong>Market Hours</strong></td>
+<td>Continuous trading or auction-based?</td>
+<td>Opening/closing auctions have different matching rules</td>
+</tr>
+<tr>
+<td><strong>Regulation</strong></td>
+<td>Audit trail requirements?</td>
+<td>Every order event must be persisted with nanosecond timestamps</td>
+</tr>
+<tr>
+<td><strong>Geography</strong></td>
+<td>Single data center or multi-region?</td>
+<td>Exchanges typically run in a single data center for consistency</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>Functional Requirements</h3>
+<ul>
+<li>Place buy and sell orders (market, limit, stop, cancel)</li>
+<li>Match orders using price-time priority (FIFO)</li>
+<li>Maintain a real-time order book per instrument</li>
+<li>Broadcast real-time market data (price feeds, trade reports)</li>
+<li>Provide trade history and confirmations to participants</li>
+<li>Support order amendments and cancellations</li>
+<li>Execute opening and closing auctions</li>
+<li>Settle trades through a clearing house</li>
+</ul>
+<h3>Non-Functional Requirements</h3>
+<ul>
+<li><strong>Latency:</strong> &lt; 1ms for order matching (median), &lt; 5ms P99</li>
+<li><strong>Throughput:</strong> 100,000 orders per second per instrument during peak</li>
+<li><strong>Consistency:</strong> Strong consistency for all trade executions -- no phantom fills</li>
+<li><strong>Availability:</strong> 99.99% during market hours (planned downtime only outside hours)</li>
+<li><strong>Durability:</strong> Zero data loss -- every order event must be persisted before acknowledgment</li>
+<li><strong>Determinism:</strong> Given the same input sequence, the system must produce identical outputs</li>
+<li><strong>Fairness:</strong> Orders at the same price must be filled in strict arrival order</li>
+<li><strong>Auditability:</strong> Complete audit trail with nanosecond-precision timestamps</li>
+</ul>
+<hr>
+<h2>2. Capacity Estimation</h2>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Stock exchange capacity estimation is different from typical web systems. The focus is on throughput (orders/sec) and latency (microseconds), not storage or bandwidth. Show you understand this distinction.</p>
+</div>
+
+
+<h3>Traffic Estimation</h3>
+<pre><code>Active traders (daily) = 1,000,000
+Listed instruments (stocks) = 10,000
+Peak orders per second (total) = 100,000
+Average orders per second = 20,000
+Orders per instrument per second (popular stock) = 5,000 - 10,000
+
+Average order message size = 200 bytes
+Market data update size = 100 bytes
+</code></pre>
+<h3>Throughput Analysis</h3>
+<pre><code>Incoming order throughput:
+  100,000 orders/sec x 200 bytes = 20 MB/sec inbound
+
+Market data outbound (per instrument, all levels):
+  10,000 updates/sec x 100 bytes = 1 MB/sec per instrument
+  Top 100 instruments = 100 MB/sec total market data output
+
+Trade confirmations:
+  Assuming 30% fill rate = 30,000 trades/sec
+  30,000 x 300 bytes = 9 MB/sec outbound
+</code></pre>
+<h3>Storage Estimation</h3>
+<pre><code>Orders per trading day:
+  100,000 orders/sec x 6.5 hours x 3600 sec = 2.34 billion orders/day
+  2.34B x 200 bytes = ~470 GB/day (raw order data)
+
+Trades per day:
+  ~700 million trades/day
+  700M x 300 bytes = ~210 GB/day
+
+Event log (all events including modifications):
+  ~5 billion events/day x 250 bytes = ~1.25 TB/day
+
+Annual storage (252 trading days):
+  Orders: ~118 TB/year
+  Event log: ~315 TB/year
+</code></pre>
+<h3>Latency Budget</h3>
+<pre><code>Network ingress (gateway to sequencer): &lt; 10 us
+Sequencing (assign global sequence number): &lt; 5 us
+Matching engine processing: &lt; 100 us
+Persistence (write-ahead log): &lt; 50 us (async)
+Market data dissemination: &lt; 100 us
+Total end-to-end: &lt; 500 us target, &lt; 1ms P99
+</code></pre>
+<div class="note">
+
+<p>Real exchanges like NASDAQ report median latencies around 50-100 microseconds. The 1ms target is a reasonable interview-level constraint. If the interviewer pushes for tighter numbers, discuss kernel bypass (DPDK), FPGA-based matching, and custom network stacks.</p>
+</div>
+
+
+<hr>
+<h2>3. High-Level Architecture</h2>
+<pre class="mermaid">
+graph TB
+    subgraph "Clients"
+        RT[Retail Traders<br/>REST/WebSocket]
+        IT[Institutional Traders<br/>FIX Protocol]
+        MM[Market Makers<br/>FIX / Binary]
+    end
+
+    subgraph "Gateway Layer"
+        GW1[Order Gateway 1]
+        GW2[Order Gateway 2]
+        GW3[Order Gateway 3]
+    end
+
+    subgraph "Core Exchange"
+        SEQ[Sequencer<br/>Total Order]
+        ME[Matching Engine<br/>Per Instrument]
+        RB[Ring Buffer<br/>Event Journal]
+    end
+
+    subgraph "Post-Trade"
+        MD[Market Data<br/>Service]
+        TS[Trade Settlement<br/>& Clearing]
+        RM[Risk Management<br/>Service]
+    end
+
+    subgraph "Persistence"
+        WAL[Write-Ahead Log]
+        ES[Event Store]
+        DB[(Trade Database)]
+    end
+
+    subgraph "Distribution"
+        MDF[Market Data Feed<br/>Multicast/WebSocket]
+        RPT[Reporting &<br/>Compliance]
+    end
+
+    RT --> GW1
+    IT --> GW2
+    MM --> GW3
+
+    GW1 --> SEQ
+    GW2 --> SEQ
+    GW3 --> SEQ
+
+    SEQ --> RB
+    RB --> ME
+    ME --> MD
+    ME --> TS
+    ME --> RM
+
+    RB --> WAL
+    WAL --> ES
+
+    MD --> MDF
+    TS --> DB
+    RM --> GW1
+    RM --> GW2
+    RM --> GW3
+
+    RPT --> ES
+    RPT --> DB
+</pre>
+<h3>Architecture Principles</h3>
+<p>The exchange architecture follows several principles that differ sharply from typical web systems:</p>
+<p><strong>Single-threaded matching per instrument.</strong> This is not a limitation -- it is a deliberate design choice. A single thread eliminates all locking overhead, ensures deterministic behavior, and makes the system trivially reproducible from an event log. Modern CPUs can process millions of operations per second on a single core.</p>
+<p><strong>Separation of sequencing and matching.</strong> The sequencer assigns a global sequence number to every incoming order before it reaches the matching engine. This creates a total ordering that enables deterministic replay and simplifies failover.</p>
+<p><strong>Event-sourced everything.</strong> Every state change is recorded as an immutable event. The order book is never persisted directly -- it is always derived by replaying events. This provides a complete audit trail and enables point-in-time recovery.</p>
+<div class="important">
+
+<p>Unlike web services where you scale horizontally with load balancers, an exchange scales by partitioning instruments across matching engine instances. Each instrument has exactly one matching engine -- there is no replication for the active book. This is a fundamental constraint of strong consistency in order matching.</p>
+</div>
+
+
+<hr>
+<h2>4. Core Components Deep Dive</h2>
+<h3>Order Gateway</h3>
+<p>The gateway is the entry point for all client connections. It handles:</p>
+<p><strong>Protocol Translation:</strong> Clients connect via FIX (Financial Information eXchange) protocol for institutional traders or REST/WebSocket for retail. The gateway normalizes all incoming orders into an internal binary format optimized for low-latency processing.</p>
+<p><strong>Authentication &amp; Session Management:</strong> Each client establishes a session with a unique session ID. The gateway validates API keys, checks IP whitelists, and manages connection state. FIX sessions use sequence numbers to detect and recover from message gaps.</p>
+<p><strong>Throttling &amp; Rate Limiting:</strong> Each participant has a configurable rate limit (e.g., 1,000 orders/second for retail, 50,000/second for market makers). The gateway enforces these limits using token bucket algorithms. Exceeding the limit results in order rejection, not queuing.</p>
+<p><strong>Pre-validation:</strong> Basic validation happens at the gateway: valid instrument symbol, valid order type, correct field formats, account exists. This prevents obviously invalid orders from consuming matching engine capacity.</p>
+<pre class="mermaid">
+graph LR
+    subgraph "Order Gateway"
+        A[Protocol Handler<br/>FIX / REST / Binary] --> B[Authentication<br/>& Session]
+        B --> C[Rate Limiter<br/>Token Bucket]
+        C --> D[Validator<br/>Basic Checks]
+        D --> E[Serializer<br/>Internal Binary Format]
+    end
+
+    E --> F[To Sequencer]
+</pre>
+<h3>Sequencer</h3>
+<p>The sequencer is the most critical component for correctness. It assigns a monotonically increasing sequence number to every incoming order event. This number establishes the total ordering that the matching engine relies on for price-time priority.</p>
+<p><strong>Why a separate sequencer?</strong> Without total ordering, two orders arriving at &quot;the same time&quot; could be processed in different orders by different components, leading to inconsistent state. The sequencer serializes all events through a single point.</p>
+<p><strong>Implementation:</strong> The sequencer is typically a single-threaded process that reads from a network buffer, stamps each message with a sequence number and nanosecond timestamp, writes it to a ring buffer (journal), and forwards it to the matching engine. The entire operation takes 1-5 microseconds per message.</p>
+<p><strong>Ring Buffer Design (LMAX Disruptor Pattern):</strong></p>
+<pre><code>Ring Buffer (pre-allocated, fixed size):
++----+----+----+----+----+----+----+----+
+| E1 | E2 | E3 | E4 |    |    |    |    |
++----+----+----+----+----+----+----+----+
+                      ^write
+  ^read (matching engine)
+       ^read (market data)
+            ^read (persistence)
+</code></pre>
+<p>The ring buffer is a lock-free, pre-allocated circular array. The sequencer is the sole writer. Multiple consumers (matching engine, market data, persistence) read independently at their own pace using memory barriers instead of locks.</p>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> If the interviewer asks &quot;what happens if the sequencer is a bottleneck?&quot;, explain that at 200 bytes per order and 5 microseconds per sequencing operation, a single sequencer can handle 200,000 orders/second. For higher throughput, you partition by instrument family (e.g., tech stocks on sequencer A, financial stocks on sequencer B), with each partition having its own sequencer and matching engine.</p>
+</div>
+
+
+<h3>Risk Management Engine</h3>
+<p>Pre-trade risk checks run before orders reach the matching engine. These checks must be fast (&lt; 50 microseconds) to avoid adding latency:</p>
+<p><strong>Margin Check:</strong> Does the trader have sufficient margin/buying power for this order? For a buy order of 1,000 shares at $150, verify the account has at least $150,000 in available margin (or the margin requirement percentage thereof).</p>
+<p><strong>Position Limits:</strong> Has the trader exceeded their maximum position size for this instrument? Regulators and the exchange set limits to prevent market manipulation.</p>
+<p><strong>Fat Finger Protection:</strong> Is the order price within a reasonable range of the current market price? An order to buy at $1,500 when the stock trades at $150 is likely an error. The exchange defines &quot;price bands&quot; (e.g., +/- 10% of last trade) and rejects orders outside them.</p>
+<p><strong>Order Rate Check:</strong> Is this participant sending orders at an abnormal rate? Sudden bursts may indicate a malfunctioning algorithm.</p>
+<table>
+<thead>
+<tr>
+<th>Risk Check</th>
+<th>Typical Limit</th>
+<th>Action on Breach</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Margin</td>
+<td>Account-specific</td>
+<td>Reject order</td>
+</tr>
+<tr>
+<td>Position limit</td>
+<td>5% of outstanding shares</td>
+<td>Reject order</td>
+</tr>
+<tr>
+<td>Price band</td>
+<td>+/- 10% of last trade</td>
+<td>Reject order</td>
+</tr>
+<tr>
+<td>Order rate</td>
+<td>50,000/sec for market makers</td>
+<td>Throttle / disconnect</td>
+</tr>
+<tr>
+<td>Maximum order size</td>
+<td>25,000 shares</td>
+<td>Reject order</td>
+</tr>
+<tr>
+<td>Daily loss limit</td>
+<td>Account-specific</td>
+<td>Disable trading</td>
+</tr>
+</tbody></table>
+<div class="warning">
+
+<p>Risk checks are a double-edged sword. Too strict and you reject legitimate orders. Too lenient and you allow potentially market-disrupting trades. In an interview, acknowledge this tension and propose configurable, per-participant risk parameters.</p>
+</div>
+
+
+<hr>
+<h2>5. Order Types &amp; Lifecycle</h2>
+<h3>Order Types</h3>
+<p><strong>Market Order:</strong> Execute immediately at the best available price. The trader prioritizes execution certainty over price. A market buy order will match against the lowest-priced sell orders in the book until the order is fully filled. The execution price is not guaranteed -- in a fast-moving market, the trader may get a worse price than expected (slippage).</p>
+<p><strong>Limit Order:</strong> Execute at the specified price or better. A limit buy at $100 will only execute at $100 or lower. If no matching sell orders exist at $100 or below, the order sits in the order book until a matching order arrives or the trader cancels it. Limit orders provide price certainty but not execution certainty.</p>
+<p><strong>Stop Order (Stop-Loss):</strong> Becomes a market order when the instrument&#39;s price crosses a specified trigger price. A stop sell at $95 means: &quot;If the price drops to $95 or below, sell at market price.&quot; Stop orders are used for risk management -- they limit downside exposure. Internally, the exchange maintains a list of stop orders and monitors the last trade price. When triggered, the stop order converts to a market order and enters the matching queue.</p>
+<p><strong>Stop-Limit Order:</strong> Like a stop order, but converts to a limit order instead of a market order when triggered. This gives the trader both a trigger condition and a price floor/ceiling.</p>
+<p><strong>Cancel Order:</strong> Removes a previously submitted order from the book. The exchange must verify that the order belongs to the requesting participant and that it has not already been filled.</p>
+<p><strong>Cancel-Replace (Amend) Order:</strong> Atomically cancels an existing order and places a new one. This is used to adjust price or quantity without losing queue position (if the price remains the same and only quantity decreases).</p>
+<h3>Order Lifecycle</h3>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> Submitted: Trader sends order
+    Submitted --> Validated: Gateway validates
+    Validated --> Sequenced: Sequencer assigns seqnum
+    Sequenced --> RiskChecked: Risk engine approves
+    RiskChecked --> Rejected: Risk check fails
+    Sequenced --> Queued: Enters matching engine
+    Queued --> PartiallyFilled: Partial match found
+    PartiallyFilled --> PartiallyFilled: More partial fills
+    PartiallyFilled --> Filled: Remaining quantity matched
+    Queued --> Filled: Full match found immediately
+    Queued --> Resting: No match, added to book
+    Resting --> PartiallyFilled: Later match arrives
+    Resting --> Filled: Later full match
+    Resting --> Cancelled: Trader cancels
+    Resting --> Expired: End of day / GTD expiry
+    Filled --> [*]
+    Cancelled --> [*]
+    Rejected --> [*]
+    Expired --> [*]
+</pre>
+<h3>Time-In-Force Options</h3>
+<table>
+<thead>
+<tr>
+<th>TIF Code</th>
+<th>Name</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>DAY</td>
+<td>Day Order</td>
+<td>Expires at market close</td>
+</tr>
+<tr>
+<td>GTC</td>
+<td>Good Till Cancelled</td>
+<td>Stays until filled or cancelled (up to 90 days)</td>
+</tr>
+<tr>
+<td>IOC</td>
+<td>Immediate or Cancel</td>
+<td>Fill as much as possible immediately, cancel remainder</td>
+</tr>
+<tr>
+<td>FOK</td>
+<td>Fill or Kill</td>
+<td>Fill entirely or reject completely -- no partial fills</td>
+</tr>
+<tr>
+<td>GTD</td>
+<td>Good Till Date</td>
+<td>Stays until specified date</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>IOC and FOK orders never rest in the order book. They are either executed immediately or rejected. Market makers use IOC orders extensively because they want immediate execution without the risk of leaving stale orders in the book.</p>
+</div>
+
+
+<hr>
+<h2>6. Order Matching Engine</h2>
+<p>The matching engine is the heart of the exchange. It receives sequenced orders and executes matching logic using price-time priority (the most common algorithm used by major exchanges).</p>
+<h3>Price-Time Priority (FIFO Matching)</h3>
+<p>The matching algorithm follows two simple rules:</p>
+<ol>
+<li><strong>Price Priority:</strong> The best-priced orders execute first. For buy orders, higher prices have higher priority. For sell orders, lower prices have higher priority.</li>
+<li><strong>Time Priority:</strong> Among orders at the same price, the order that arrived first executes first (FIFO).</li>
+</ol>
+<h3>Matching Algorithm</h3>
+<p>When a new buy order arrives:</p>
+<pre><code>function matchBuyOrder(incomingBuy):
+    while incomingBuy.remainingQty &gt; 0:
+        bestAsk = orderBook.getBestAsk()  // lowest sell price
+
+        if bestAsk is null:
+            break  // no sell orders in book
+
+        if incomingBuy is LimitOrder AND incomingBuy.price &lt; bestAsk.price:
+            break  // buy price too low, no match possible
+
+        // Match against orders at the best ask price level
+        while incomingBuy.remainingQty &gt; 0 AND bestAsk has orders:
+            restingSell = bestAsk.getFirstOrder()  // FIFO
+            fillQty = min(incomingBuy.remainingQty, restingSell.remainingQty)
+            fillPrice = restingSell.price  // price of resting order
+
+            executeTrade(incomingBuy, restingSell, fillQty, fillPrice)
+
+            incomingBuy.remainingQty -= fillQty
+            restingSell.remainingQty -= fillQty
+
+            if restingSell.remainingQty == 0:
+                bestAsk.removeFirstOrder()
+
+        if bestAsk has no orders:
+            orderBook.removeAskLevel(bestAsk.price)
+
+    if incomingBuy.remainingQty &gt; 0:
+        if incomingBuy is LimitOrder:
+            orderBook.addToBids(incomingBuy)  // rest in book
+        // else: market order, remaining is cancelled (or rejected if FOK)
+</code></pre>
+<h3>Matching Example</h3>
+<p>Initial order book state:</p>
+<pre><code>         BID (Buy)                    ASK (Sell)
+    Qty    Price                  Price    Qty
+    200    $99.90                $100.10    300
+    500    $99.80                $100.20    150
+    100    $99.70                $100.30    400
+</code></pre>
+<p>A new market buy order arrives for 400 shares:</p>
+<p><strong>Step 1:</strong> Match against best ask ($100.10, 300 shares available)</p>
+<ul>
+<li>Fill 300 shares at $100.10</li>
+<li>Remaining: 400 - 300 = 100 shares</li>
+</ul>
+<p><strong>Step 2:</strong> Best ask level exhausted. Move to next level ($100.20, 150 shares)</p>
+<ul>
+<li>Fill 100 shares at $100.20</li>
+<li>Remaining: 100 - 100 = 0 shares</li>
+</ul>
+<p><strong>Result:</strong> Two trades executed:</p>
+<ul>
+<li>Trade 1: 300 shares @ $100.10</li>
+<li>Trade 2: 100 shares @ $100.20</li>
+<li>Average fill price: (300 x 100.10 + 100 x 100.20) / 400 = $100.125</li>
+</ul>
+<pre><code>         BID (Buy)                    ASK (Sell)
+    Qty    Price                  Price    Qty
+    200    $99.90                $100.20     50  &lt;-- reduced
+    500    $99.80                $100.30    400
+    100    $99.70
+</code></pre>
+<pre class="mermaid">
+sequenceDiagram
+    participant T as Trader
+    participant GW as Gateway
+    participant SQ as Sequencer
+    participant ME as Matching Engine
+    participant OB as Order Book
+    participant MD as Market Data
+
+    T->>GW: Buy 400 shares MARKET
+    GW->>GW: Validate & authenticate
+    GW->>SQ: Forward order
+    SQ->>SQ: Assign seq# 10042
+    SQ->>ME: Sequenced order
+
+    ME->>OB: Get best ask ($100.10, 300 qty)
+    ME->>ME: Fill 300 @ $100.10
+    ME->>OB: Remove filled sell order
+    ME->>OB: Get best ask ($100.20, 150 qty)
+    ME->>ME: Fill 100 @ $100.20
+    ME->>OB: Update sell order (qty 150 -> 50)
+
+    ME->>MD: Trade report (300@$100.10)
+    ME->>MD: Trade report (100@$100.20)
+    ME->>MD: Updated order book
+    ME->>GW: Execution report to buyer
+    ME->>GW: Execution report to seller(s)
+
+    MD->>T: Real-time price update
+</pre>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Walk through a concrete matching example with actual numbers. This demonstrates you truly understand the algorithm, not just the abstract description. Draw the order book before and after on the whiteboard.</p>
+</div>
+
+
+<hr>
+<h2>7. Order Book Data Structure</h2>
+<p>The order book is the most performance-critical data structure in the exchange. It must support these operations efficiently:</p>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Frequency</th>
+<th>Target Latency</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Add order to book</td>
+<td>Very high</td>
+<td>O(log N) or O(1)</td>
+</tr>
+<tr>
+<td>Cancel order from book</td>
+<td>Very high</td>
+<td>O(1)</td>
+</tr>
+<tr>
+<td>Get best bid/ask</td>
+<td>Every match</td>
+<td>O(1)</td>
+</tr>
+<tr>
+<td>Match and remove from front of price level</td>
+<td>High</td>
+<td>O(1)</td>
+</tr>
+<tr>
+<td>Get full book depth (for market data)</td>
+<td>Moderate</td>
+<td>O(N) acceptable</td>
+</tr>
+</tbody></table>
+<h3>Data Structure Design</h3>
+<pre class="mermaid">
+graph TB
+    subgraph "Order Book for AAPL"
+        subgraph "Bid Side (Sorted Descending)"
+            B1["Price Level $99.90<br/>Queue: [Order A: 200]"]
+            B2["Price Level $99.80<br/>Queue: [Order B: 300, Order C: 200]"]
+            B3["Price Level $99.70<br/>Queue: [Order D: 100]"]
+        end
+
+        subgraph "Ask Side (Sorted Ascending)"
+            A1["Price Level $100.10<br/>Queue: [Order E: 150, Order F: 150]"]
+            A2["Price Level $100.20<br/>Queue: [Order G: 150]"]
+            A3["Price Level $100.30<br/>Queue: [Order H: 400]"]
+        end
+    end
+
+    B1 --- B2
+    B2 --- B3
+    A1 --- A2
+    A2 --- A3
+</pre>
+<h3>Implementation Approaches</h3>
+<p><strong>Approach 1: Sorted TreeMap (Red-Black Tree)</strong></p>
+<p>Each side of the book (bids, asks) is a red-black tree keyed by price. Each node contains a doubly-linked list (FIFO queue) of orders at that price level.</p>
+<pre><code>BidSide: TreeMap&lt;Price, OrderQueue&gt;  // sorted descending
+AskSide: TreeMap&lt;Price, OrderQueue&gt;  // sorted ascending
+
+OrderQueue: DoublyLinkedList&lt;Order&gt;  // FIFO within price level
+
+OrderIndex: HashMap&lt;OrderID, Order&gt;  // O(1) lookup for cancellations
+</code></pre>
+<ul>
+<li>Insert order: O(log P) where P is number of distinct price levels (typically &lt; 1000)</li>
+<li>Cancel order: O(1) via order index + doubly-linked list removal</li>
+<li>Best bid/ask: O(1) -- cache the best price level</li>
+<li>Match at best price: O(1) -- dequeue from front of linked list</li>
+</ul>
+<p><strong>Approach 2: Array-Based (for instruments with tick-based pricing)</strong></p>
+<p>Many instruments have a minimum price increment (tick). For an instrument with a tick size of $0.01 and a typical price range of $50-$200, there are only 15,000 possible price levels. Use a fixed-size array indexed by price (converted to tick offset).</p>
+<pre><code>const TICK_SIZE = 0.01
+const MIN_PRICE = 0.00
+const MAX_PRICE = 10000.00
+const NUM_LEVELS = (MAX_PRICE - MIN_PRICE) / TICK_SIZE = 1,000,000
+
+bidLevels: Array&lt;OrderQueue&gt;[NUM_LEVELS]
+askLevels: Array&lt;OrderQueue&gt;[NUM_LEVELS]
+bestBidIndex: int  // maintained on insert/remove
+bestAskIndex: int
+</code></pre>
+<ul>
+<li>Insert order: O(1) -- direct array access by price index</li>
+<li>Cancel order: O(1) -- same as TreeMap approach</li>
+<li>Best bid/ask: O(1) -- maintained as a variable</li>
+<li>Match at best price: O(1)</li>
+</ul>
+<p>The array approach wastes memory on empty price levels but provides O(1) access for everything, which is preferred in ultra-low-latency environments.</p>
+<div class="important">
+
+<p>The order book MUST be entirely in-memory. Disk access during order matching would add milliseconds of latency. The entire book for one instrument rarely exceeds 100 MB of memory, so this is easily feasible.</p>
+</div>
+
+
+<h3>Memory Layout Considerations</h3>
+<p>For ultra-low-latency, memory layout matters enormously:</p>
+<ul>
+<li><strong>Pre-allocate all memory</strong> at startup. No dynamic allocation during trading hours (malloc/new causes unpredictable GC pauses).</li>
+<li><strong>Use object pools</strong> for order objects. When an order is filled or cancelled, return it to the pool.</li>
+<li><strong>Pack data tightly</strong> to maximize CPU cache hits. An order should fit in 1-2 cache lines (64-128 bytes).</li>
+<li><strong>Avoid pointers across memory pages.</strong> Use array indices instead of pointers for linked list nodes.</li>
+</ul>
+<pre><code>Optimized Order Layout (64 bytes, 1 cache line):
++--------+--------+--------+--------+
+| OrderID (8B)    | Price (8B)      |
++--------+--------+--------+--------+
+| Quantity (4B)   | Remaining (4B)  |
++--------+--------+--------+--------+
+| Timestamp (8B)  | AccountID (8B)  |
++--------+--------+--------+--------+
+| InstrumentID(4B)| Side (1B)       |
+| OrderType (1B)  | TIF (1B)        |
+| Status (1B)     | Flags (4B)      |
+| PrevIdx (4B)    | NextIdx (4B)    |
++--------+--------+--------+--------+
+</code></pre>
+<hr>
+<h2>8. Sequencer &amp; Deterministic Processing</h2>
+<h3>Why Determinism Matters</h3>
+<p>A stock exchange must be deterministic: given the same sequence of input events, it must always produce the same sequence of output events. This property is critical for:</p>
+<ol>
+<li><strong>Failover:</strong> A hot standby matching engine replays the same event log and arrives at identical state.</li>
+<li><strong>Regulatory audit:</strong> Regulators can replay the event log and verify that the exchange operated correctly.</li>
+<li><strong>Debugging:</strong> Production issues can be reproduced by replaying the event log in a test environment.</li>
+<li><strong>Reconciliation:</strong> Multiple downstream systems (clearing, settlement, reporting) can independently derive consistent state from the same event log.</li>
+</ol>
+<h3>Sequencer Design</h3>
+<pre class="mermaid">
+graph LR
+    subgraph "Multiple Gateways"
+        G1[Gateway 1]
+        G2[Gateway 2]
+        G3[Gateway 3]
+    end
+
+    subgraph "Sequencer (Single Thread)"
+        NIC[Network Interface<br/>Kernel Bypass]
+        SEQ[Sequence Stamper<br/>Monotonic Counter]
+        RB[Ring Buffer Writer<br/>Memory-mapped]
+    end
+
+    subgraph "Consumers (Independent)"
+        ME[Matching Engine]
+        PER[Persistence Writer]
+        MDF[Market Data Fan-out]
+        REP[Replication to Standby]
+    end
+
+    G1 --> NIC
+    G2 --> NIC
+    G3 --> NIC
+
+    NIC --> SEQ
+    SEQ --> RB
+
+    RB --> ME
+    RB --> PER
+    RB --> MDF
+    RB --> REP
+</pre>
+<p><strong>Single-threaded event loop:</strong></p>
+<pre><code>function sequencerLoop():
+    sequenceNumber = loadLastSequenceNumber()
+    while running:
+        message = networkBuffer.poll()  // non-blocking
+        if message is not null:
+            sequenceNumber++
+            message.sequenceNumber = sequenceNumber
+            message.timestamp = nanoTime()
+            ringBuffer.write(message)
+            // Consumers read from ring buffer asynchronously
+</code></pre>
+<p>The sequencer does minimal work: stamp a sequence number and timestamp, then write to the ring buffer. No validation, no matching, no persistence -- all of that happens downstream. This keeps the sequencer blazingly fast.</p>
+<h3>LMAX Disruptor Pattern</h3>
+<p>The ring buffer follows the LMAX Disruptor pattern, which achieves lock-free communication between the sequencer (producer) and multiple consumers:</p>
+<p><strong>Pre-allocated fixed-size ring:</strong> The buffer is allocated once at startup. Each slot is a fixed-size byte array large enough for any message type. No memory allocation occurs during operation.</p>
+<p><strong>Single producer, multiple consumers:</strong> The sequencer is the sole writer. Each consumer (matching engine, persistence, market data) maintains its own read cursor. Consumers can be at different positions in the buffer.</p>
+<p><strong>Memory barriers instead of locks:</strong> The producer publishes by advancing its write cursor using a memory barrier (store-release). Consumers detect new messages by checking the write cursor using a load-acquire barrier. No mutexes, no condition variables, no context switches.</p>
+<p><strong>Batching:</strong> When a consumer falls behind, it can process multiple messages in a single batch when it catches up. This provides natural back-pressure handling.</p>
+<pre><code>Ring Buffer State:
+Position:  0    1    2    3    4    5    6    7
+          [E1] [E2] [E3] [E4] [E5] [  ] [  ] [  ]
+                                     ^Writer cursor (5)
+                               ^Matching Engine cursor (4)
+                          ^Persistence cursor (3)
+                     ^Market Data cursor (3)
+</code></pre>
+<div class="note">
+
+<p>The LMAX Disruptor can achieve throughput of over 100 million messages per second on commodity hardware. This is far more than any exchange needs, which is why a single sequencer is sufficient.</p>
+</div>
+
+
+<hr>
+<h2>9. Market Data Service</h2>
+<p>The market data service receives trade and order book updates from the matching engine and distributes them to market participants.</p>
+<h3>Market Data Levels</h3>
+<p><strong>Level 1 (L1) -- Top of Book:</strong></p>
+<ul>
+<li>Best bid price and quantity</li>
+<li>Best ask price and quantity</li>
+<li>Last trade price, quantity, and time</li>
+<li>Daily high, low, open, close, volume</li>
+</ul>
+<p>This is what most retail traders see. Updated on every trade and every change to the best bid/ask.</p>
+<p><strong>Level 2 (L2) -- Full Order Book Depth:</strong></p>
+<ul>
+<li>All price levels with aggregated quantity at each level</li>
+<li>Typically shows 10-20 levels on each side</li>
+<li>Updated on every order book change (new order, cancel, fill)</li>
+</ul>
+<p>This is what professional traders use to gauge market depth and anticipate price movements.</p>
+<p><strong>Level 3 (L3) -- Full Order Book with Individual Orders:</strong></p>
+<ul>
+<li>Every individual order in the book (not just aggregated by price level)</li>
+<li>Includes order IDs for tracking specific orders</li>
+<li>Only available to exchange members and market makers</li>
+</ul>
+<h3>Market Data Distribution</h3>
+<p><strong>Multicast (for co-located participants):</strong> UDP multicast provides the lowest latency. The exchange publishes updates to a multicast group, and all subscribers on the same network segment receive them simultaneously. This eliminates the per-subscriber overhead of TCP connections. Reliability is handled via a separate retransmission channel.</p>
+<p><strong>WebSocket (for remote participants):</strong> Clients maintain persistent WebSocket connections to market data servers. The exchange publishes updates through a topic-based pub/sub system. Clients subscribe to specific instruments.</p>
+<p><strong>Snapshot + Incremental Updates:</strong> Clients first request a full snapshot of the order book, then apply incremental updates (deltas). This reduces bandwidth and allows clients to maintain a local copy of the book.</p>
+<h3>Candlestick Aggregation</h3>
+<p>The market data service also computes OHLCV (Open, High, Low, Close, Volume) candles at various time intervals:</p>
+<pre><code>Candlestick for AAPL, 1-minute interval, 10:30-10:31:
+  Open:   $150.25 (first trade in interval)
+  High:   $150.80 (highest trade price)
+  Low:    $150.10 (lowest trade price)
+  Close:  $150.50 (last trade in interval)
+  Volume: 45,000 shares (total shares traded)
+</code></pre>
+<p>Standard intervals: 1 second, 1 minute, 5 minutes, 15 minutes, 1 hour, 1 day.</p>
+<p>The service maintains running OHLCV state for each instrument and interval, updating on each trade. At the end of each interval, it publishes the completed candle and resets.</p>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> If the interviewer asks about market data at scale, discuss the fan-out problem. With 10,000 instruments and 100,000 subscribers, you cannot send every update to every subscriber. Use topic-based routing where each subscriber only receives updates for instruments they are subscribed to. The exchange typically distributes via a tier of feed handler servers that aggregate and fan out.</p>
+</div>
+
+
+<hr>
+<h2>10. Trade Settlement &amp; Clearing</h2>
+<h3>What is Settlement?</h3>
+<p>Settlement is the actual transfer of securities and cash between the buyer and seller. In most equity markets, settlement occurs on T+2 (two business days after the trade date). During the settlement window:</p>
+<ol>
+<li><strong>Trade Capture:</strong> The matching engine records the trade details.</li>
+<li><strong>Clearing:</strong> The clearing house (e.g., DTCC in the US) becomes the counterparty to both sides. Buyer owes cash to the clearing house; clearing house owes securities. Seller owes securities; clearing house owes cash. This is called novation and eliminates counterparty risk.</li>
+<li><strong>Netting:</strong> Rather than settling each trade individually, the clearing house nets all trades for each participant. If a broker bought 10,000 shares and sold 8,000 shares of the same stock, they only need to receive 2,000 shares net.</li>
+<li><strong>Settlement:</strong> On T+2, the actual transfer occurs. Securities move from seller&#39;s custodian to buyer&#39;s custodian. Cash moves in the opposite direction.</li>
+</ol>
+<h3>Position Management</h3>
+<p>The exchange and each broker maintain real-time position tracking:</p>
+<pre><code>Position for Broker A, AAPL:
+  Start of Day (SOD) position: +5,000 shares
+  Buys today: +3,000 shares
+  Sells today: -2,000 shares
+  Current position: +6,000 shares
+  Pending settlement (T+1): +500 shares
+  Pending settlement (T+2): -200 shares
+</code></pre>
+<p>Positions are updated in real-time as trades execute. They feed into risk calculations (margin requirements, position limits) and regulatory reporting.</p>
+<h3>Margin and Collateral</h3>
+<p>Traders must maintain margin (collateral) to cover potential losses. The exchange calculates margin requirements using models like SPAN or VaR:</p>
+<table>
+<thead>
+<tr>
+<th>Account Type</th>
+<th>Margin Requirement</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Cash account</td>
+<td>100% of purchase price</td>
+</tr>
+<tr>
+<td>Margin account (Reg T)</td>
+<td>50% initial, 25% maintenance</td>
+</tr>
+<tr>
+<td>Portfolio margin</td>
+<td>Risk-based, typically 15-20%</td>
+</tr>
+<tr>
+<td>Market maker</td>
+<td>Reduced requirements</td>
+</tr>
+</tbody></table>
+<p>When a trader&#39;s margin falls below the maintenance level, the exchange issues a margin call. If not met within the deadline, the exchange liquidates positions to cover the shortfall.</p>
+<hr>
+<h2>11. Risk Management</h2>
+<h3>Pre-Trade Risk Checks</h3>
+<p>Every order passes through risk checks before entering the matching engine. These checks must complete in microseconds to avoid adding latency.</p>
+<pre class="mermaid">
+graph LR
+    subgraph "Risk Check Pipeline"
+        O[Incoming Order] --> PC[Price Check<br/>Within bands?]
+        PC --> QC[Quantity Check<br/>Below max size?]
+        QC --> MC[Margin Check<br/>Sufficient funds?]
+        MC --> PL[Position Limit<br/>Below threshold?]
+        PL --> RC[Rate Check<br/>Within limits?]
+        RC --> DL[Daily Loss Check<br/>Below limit?]
+    end
+
+    DL -->|Pass| ME[Matching Engine]
+    PC -->|Fail| RJ[Reject]
+    QC -->|Fail| RJ
+    MC -->|Fail| RJ
+    PL -->|Fail| RJ
+    RC -->|Fail| RJ
+    DL -->|Fail| RJ
+</pre>
+<h3>Circuit Breakers</h3>
+<p>When a stock&#39;s price moves too rapidly, the exchange halts trading to prevent panic-driven crashes:</p>
+<p><strong>Single-Stock Circuit Breaker (Limit Up/Limit Down):</strong></p>
+<ul>
+<li>Calculate a reference price (typically the average of the last 5 minutes)</li>
+<li>Define bands: +/- 5% for large-cap stocks, +/- 10% for small-cap</li>
+<li>If the best bid/ask hits the band, enter a &quot;Limit State&quot; (15-second pause)</li>
+<li>If no recovery, halt trading for 5 minutes</li>
+</ul>
+<p><strong>Market-Wide Circuit Breaker:</strong></p>
+<ul>
+<li>Level 1: S&amp;P 500 drops 7% from previous close -- halt for 15 minutes</li>
+<li>Level 2: S&amp;P 500 drops 13% -- halt for 15 minutes</li>
+<li>Level 3: S&amp;P 500 drops 20% -- halt for remainder of day</li>
+</ul>
+<h3>Kill Switch</h3>
+<p>The exchange provides each participant with a &quot;kill switch&quot; that instantly cancels all open orders and prevents new orders. This is used when:</p>
+<ul>
+<li>A trading algorithm malfunctions (runaway orders)</li>
+<li>A participant detects a security breach</li>
+<li>The exchange detects abnormal behavior from a participant</li>
+</ul>
+<div class="warning">
+
+<p>The Knight Capital incident (2012) is a cautionary tale: a software deployment error caused their trading system to send millions of erroneous orders in 45 minutes, resulting in $440 million in losses. Modern exchanges require kill switches and provide automatic &quot;heartbeat&quot; monitoring -- if a participant stops sending heartbeats, all their orders are automatically cancelled.</p>
+</div>
+
+
+<hr>
+<h2>12. Data Models &amp; Storage</h2>
+<h3>Core Data Models</h3>
+<p><strong>Order Table</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>order_id</td>
+<td>BIGINT (PK)</td>
+<td>Unique order identifier</td>
+</tr>
+<tr>
+<td>sequence_number</td>
+<td>BIGINT (Unique)</td>
+<td>Global sequence from sequencer</td>
+</tr>
+<tr>
+<td>instrument_id</td>
+<td>INT</td>
+<td>Symbol/instrument being traded</td>
+</tr>
+<tr>
+<td>account_id</td>
+<td>INT</td>
+<td>Trading account</td>
+</tr>
+<tr>
+<td>side</td>
+<td>ENUM</td>
+<td>BUY, SELL</td>
+</tr>
+<tr>
+<td>order_type</td>
+<td>ENUM</td>
+<td>MARKET, LIMIT, STOP, STOP_LIMIT</td>
+</tr>
+<tr>
+<td>time_in_force</td>
+<td>ENUM</td>
+<td>DAY, GTC, IOC, FOK, GTD</td>
+</tr>
+<tr>
+<td>price</td>
+<td>DECIMAL(18,8)</td>
+<td>Limit price (null for market orders)</td>
+</tr>
+<tr>
+<td>stop_price</td>
+<td>DECIMAL(18,8)</td>
+<td>Stop trigger price</td>
+</tr>
+<tr>
+<td>quantity</td>
+<td>INT</td>
+<td>Original order quantity</td>
+</tr>
+<tr>
+<td>remaining_qty</td>
+<td>INT</td>
+<td>Unfilled quantity</td>
+</tr>
+<tr>
+<td>status</td>
+<td>ENUM</td>
+<td>NEW, PARTIALLY_FILLED, FILLED, CANCELLED, REJECTED, EXPIRED</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP(ns)</td>
+<td>Nanosecond-precision creation time</td>
+</tr>
+<tr>
+<td>updated_at</td>
+<td>TIMESTAMP(ns)</td>
+<td>Last update time</td>
+</tr>
+<tr>
+<td>expiry_date</td>
+<td>DATE</td>
+<td>For GTD orders</td>
+</tr>
+</tbody></table>
+<p><strong>Trade (Execution) Table</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>trade_id</td>
+<td>BIGINT (PK)</td>
+<td>Unique trade identifier</td>
+</tr>
+<tr>
+<td>sequence_number</td>
+<td>BIGINT</td>
+<td>Sequence of the event that caused this trade</td>
+</tr>
+<tr>
+<td>instrument_id</td>
+<td>INT</td>
+<td>Traded instrument</td>
+</tr>
+<tr>
+<td>buy_order_id</td>
+<td>BIGINT (FK)</td>
+<td>Buy side order</td>
+</tr>
+<tr>
+<td>sell_order_id</td>
+<td>BIGINT (FK)</td>
+<td>Sell side order</td>
+</tr>
+<tr>
+<td>buyer_account_id</td>
+<td>INT</td>
+<td>Buyer account</td>
+</tr>
+<tr>
+<td>seller_account_id</td>
+<td>INT</td>
+<td>Seller account</td>
+</tr>
+<tr>
+<td>price</td>
+<td>DECIMAL(18,8)</td>
+<td>Execution price</td>
+</tr>
+<tr>
+<td>quantity</td>
+<td>INT</td>
+<td>Number of shares traded</td>
+</tr>
+<tr>
+<td>executed_at</td>
+<td>TIMESTAMP(ns)</td>
+<td>Nanosecond-precision execution time</td>
+</tr>
+<tr>
+<td>settlement_date</td>
+<td>DATE</td>
+<td>Expected settlement date (T+2)</td>
+</tr>
+<tr>
+<td>settlement_status</td>
+<td>ENUM</td>
+<td>PENDING, SETTLED, FAILED</td>
+</tr>
+</tbody></table>
+<p><strong>Position Table</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>account_id</td>
+<td>INT (PK)</td>
+<td>Trading account</td>
+</tr>
+<tr>
+<td>instrument_id</td>
+<td>INT (PK)</td>
+<td>Instrument held</td>
+</tr>
+<tr>
+<td>sod_quantity</td>
+<td>INT</td>
+<td>Start-of-day position</td>
+</tr>
+<tr>
+<td>current_quantity</td>
+<td>INT</td>
+<td>Real-time position</td>
+</tr>
+<tr>
+<td>avg_cost</td>
+<td>DECIMAL(18,8)</td>
+<td>Average cost basis</td>
+</tr>
+<tr>
+<td>realized_pnl</td>
+<td>DECIMAL(18,8)</td>
+<td>Realized profit/loss today</td>
+</tr>
+<tr>
+<td>unrealized_pnl</td>
+<td>DECIMAL(18,8)</td>
+<td>Unrealized P&amp;L based on mark price</td>
+</tr>
+<tr>
+<td>updated_at</td>
+<td>TIMESTAMP(ns)</td>
+<td>Last update time</td>
+</tr>
+</tbody></table>
+<p><strong>Account Table</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>account_id</td>
+<td>INT (PK)</td>
+<td>Account identifier</td>
+</tr>
+<tr>
+<td>participant_id</td>
+<td>INT</td>
+<td>Broker/firm identifier</td>
+</tr>
+<tr>
+<td>account_type</td>
+<td>ENUM</td>
+<td>CASH, MARGIN, MARKET_MAKER</td>
+</tr>
+<tr>
+<td>cash_balance</td>
+<td>DECIMAL(18,8)</td>
+<td>Available cash</td>
+</tr>
+<tr>
+<td>margin_used</td>
+<td>DECIMAL(18,8)</td>
+<td>Margin currently in use</td>
+</tr>
+<tr>
+<td>margin_available</td>
+<td>DECIMAL(18,8)</td>
+<td>Available margin for new orders</td>
+</tr>
+<tr>
+<td>status</td>
+<td>ENUM</td>
+<td>ACTIVE, SUSPENDED, CLOSED</td>
+</tr>
+<tr>
+<td>max_order_rate</td>
+<td>INT</td>
+<td>Orders per second limit</td>
+</tr>
+<tr>
+<td>created_at</td>
+<td>TIMESTAMP</td>
+<td>Account creation date</td>
+</tr>
+</tbody></table>
+<h3>Storage Architecture</h3>
+<p>The exchange uses different storage systems for different purposes:</p>
+<table>
+<thead>
+<tr>
+<th>Storage Layer</th>
+<th>Technology</th>
+<th>Purpose</th>
+<th>Latency</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>In-memory order book</td>
+<td>Custom data structure</td>
+<td>Active matching</td>
+<td>&lt; 1 us</td>
+</tr>
+<tr>
+<td>Write-ahead log</td>
+<td>Memory-mapped file</td>
+<td>Durability before ack</td>
+<td>&lt; 50 us</td>
+</tr>
+<tr>
+<td>Event store</td>
+<td>Append-only log (Kafka)</td>
+<td>Full event history</td>
+<td>&lt; 1 ms</td>
+</tr>
+<tr>
+<td>Trade database</td>
+<td>PostgreSQL / TimeScaleDB</td>
+<td>Post-trade queries</td>
+<td>&lt; 10 ms</td>
+</tr>
+<tr>
+<td>Archive</td>
+<td>S3 / Parquet</td>
+<td>Regulatory retention</td>
+<td>&lt; 1 sec</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>13. Persistence &amp; Event Sourcing</h2>
+<h3>Write-Ahead Log (WAL)</h3>
+<p>Before the matching engine processes an order, the sequencer writes it to a write-ahead log. This ensures that even if the matching engine crashes, no acknowledged orders are lost.</p>
+<p>The WAL is a memory-mapped file that uses sequential writes (append-only). On modern NVMe SSDs, sequential write latency is 10-50 microseconds. The sequencer uses <code>fsync</code> or <code>O_DIRECT</code> to ensure data reaches persistent storage.</p>
+<pre><code>WAL Entry Format:
++----------+--------+-----------+--------+----------+
+| SeqNum   | Len    | Timestamp | Type   | Payload  |
+| (8 bytes)| (4 B)  | (8 bytes) | (1 B)  | (var)    |
++----------+--------+-----------+--------+----------+
+</code></pre>
+<h3>Event Sourcing</h3>
+<p>The exchange is a natural fit for event sourcing. Instead of storing the current state (order book), we store the sequence of events that produced that state:</p>
+<p><strong>Event Types:</strong></p>
+<ul>
+<li><code>OrderAccepted</code> -- new order entered the book</li>
+<li><code>OrderRejected</code> -- order failed validation/risk checks</li>
+<li><code>OrderCancelled</code> -- order removed from book by trader</li>
+<li><code>OrderExpired</code> -- order expired (end of day, GTD)</li>
+<li><code>TradeExecuted</code> -- two orders matched, trade occurred</li>
+<li><code>OrderAmended</code> -- order price/quantity modified</li>
+</ul>
+<p><strong>Deriving State from Events:</strong></p>
+<p>The current order book at any point in time can be reconstructed by replaying events from the beginning (or from a recent snapshot):</p>
+<pre><code>function rebuildOrderBook(events, upToSequence):
+    orderBook = new OrderBook()
+    for event in events where event.seq &lt;= upToSequence:
+        switch event.type:
+            case OrderAccepted:
+                orderBook.addOrder(event.order)
+            case TradeExecuted:
+                orderBook.fillOrder(event.buyOrderId, event.qty)
+                orderBook.fillOrder(event.sellOrderId, event.qty)
+            case OrderCancelled:
+                orderBook.removeOrder(event.orderId)
+            case OrderExpired:
+                orderBook.removeOrder(event.orderId)
+    return orderBook
+</code></pre>
+<p><strong>Snapshots:</strong> Replaying millions of events from scratch is slow. Periodically (e.g., every hour or every million events), the system takes a snapshot of the current order book state. Recovery then requires loading the latest snapshot and replaying only events after the snapshot.</p>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Event sourcing is a powerful concept to discuss in any system design interview. Emphasize that it provides: (1) complete audit trail, (2) point-in-time recovery, (3) deterministic replay for testing and debugging, (4) ability to add new downstream consumers without modifying the core system.</p>
+</div>
+
+
+<hr>
+<h2>14. Failover &amp; Disaster Recovery</h2>
+<h3>Hot Standby Architecture</h3>
+<p>The matching engine runs as a single active instance per instrument (for consistency). A hot standby runs in parallel, consuming the same event stream from the sequencer:</p>
+<pre class="mermaid">
+graph TB
+    subgraph "Primary Data Center"
+        SEQ[Sequencer<br/>Primary]
+        ME1[Matching Engine<br/>Active]
+        RB1[Ring Buffer]
+    end
+
+    subgraph "Standby"
+        ME2[Matching Engine<br/>Hot Standby]
+        RB2[Ring Buffer<br/>Mirror]
+    end
+
+    subgraph "Persistence"
+        WAL[Write-Ahead Log<br/>Replicated]
+    end
+
+    SEQ --> RB1
+    RB1 --> ME1
+    RB1 --> RB2
+    RB2 --> ME2
+    SEQ --> WAL
+
+    ME1 -.->|Heartbeat| ME2
+
+    style ME1 fill:#90EE90
+    style ME2 fill:#FFD700
+</pre>
+<p><strong>Failover Process:</strong></p>
+<ol>
+<li>The standby continuously replays events and maintains its own order book state</li>
+<li>It does NOT produce outputs (trade reports, market data) -- only the active instance does</li>
+<li>If the active instance fails (detected via heartbeat timeout, typically 100ms):
+a. The standby verifies its state is up-to-date (last processed sequence number matches the WAL)
+b. The standby promotes itself to active and begins producing outputs
+c. The gateway layer is notified to route responses from the new active instance</li>
+<li>Failover time target: &lt; 1 second</li>
+</ol>
+<p><strong>Deterministic Replay Guarantee:</strong> Because the sequencer establishes total ordering and the matching algorithm is deterministic, the standby&#39;s order book state is guaranteed to be identical to the primary&#39;s. This is the key property that enables seamless failover.</p>
+<h3>Disaster Recovery</h3>
+<p>For catastrophic data center failure:</p>
+<ul>
+<li><strong>Event log replication:</strong> The WAL is synchronously replicated to a secondary data center. Recovery involves replaying the log on fresh matching engine instances.</li>
+<li><strong>Recovery Time Objective (RTO):</strong> &lt; 30 minutes for full exchange recovery</li>
+<li><strong>Recovery Point Objective (RPO):</strong> Zero data loss (synchronous replication)</li>
+<li><strong>End-of-day backup:</strong> Complete snapshot of all order books, positions, and account states</li>
+</ul>
+<div class="warning">
+
+<p>Synchronous replication to a remote data center adds latency (typically 1-5ms for cross-region). Most exchanges accept this trade-off for the RPO=0 guarantee, but some ultra-low-latency venues use asynchronous replication and accept a small RPO window (a few milliseconds of potential data loss).</p>
+</div>
+
+
+<hr>
+<h2>15. Scalability Strategies</h2>
+<h3>Instrument-Based Partitioning</h3>
+<p>The primary scaling strategy is partitioning by instrument. Each matching engine instance handles a subset of instruments:</p>
+<pre><code>Matching Engine Cluster:
+  ME-1: AAPL, MSFT, GOOGL, AMZN (high-volume tech)
+  ME-2: JPM, BAC, GS, MS (financials)
+  ME-3: XOM, CVX, COP (energy)
+  ME-4: All remaining instruments (1000+)
+</code></pre>
+<p>Each partition has its own:</p>
+<ul>
+<li>Sequencer (or a shared sequencer that routes to the correct partition)</li>
+<li>Matching engine instance</li>
+<li>Order book (in-memory)</li>
+<li>Hot standby</li>
+</ul>
+<h3>Gateway Scaling</h3>
+<p>Gateways are stateless and horizontally scalable. Add more gateway servers to handle more client connections. Load balancing can be round-robin or sticky (keeping a client on the same gateway for session affinity).</p>
+<h3>Market Data Scaling</h3>
+<p>Market data distribution is the most bandwidth-intensive component. Scale with:</p>
+<p><strong>Fan-out tiers:</strong> A tree of market data servers. The matching engine publishes to tier-1 servers, which fan out to tier-2, which fan out to clients. This reduces the load on the matching engine.</p>
+<p><strong>Conflation:</strong> For slower consumers, combine multiple updates into one. Instead of sending 1,000 order book updates per second, send 10 snapshots per second. This reduces bandwidth at the cost of update frequency.</p>
+<p><strong>Filtering:</strong> Each client subscribes to specific instruments. The market data infrastructure routes updates only to interested clients.</p>
+<h3>What You Cannot Scale Horizontally</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Why Not Horizontal</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Sequencer (per partition)</td>
+<td>Must maintain total ordering</td>
+<td>Vertical scaling, partition by instrument</td>
+</tr>
+<tr>
+<td>Matching engine (per instrument)</td>
+<td>Must maintain consistent order book</td>
+<td>Vertical scaling, fast single-thread</td>
+</tr>
+<tr>
+<td>Risk checks (per account)</td>
+<td>Must have consistent account state</td>
+<td>Cache account state per gateway</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>This is a key insight for the interview: an exchange is one of the few systems where horizontal scaling of the core component (matching) is fundamentally impossible without partitioning by business key (instrument). This is in stark contrast to stateless web services.</p>
+</div>
+
+
+<hr>
+<h2>16. Design Trade-offs</h2>
+<h3>Latency vs Durability</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Latency</th>
+<th>Durability</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Match first, persist async</td>
+<td>&lt; 100 us</td>
+<td>Risk of data loss on crash</td>
+</tr>
+<tr>
+<td>Persist to WAL first, then match</td>
+<td>&lt; 500 us</td>
+<td>Zero data loss</td>
+</tr>
+<tr>
+<td>Persist to replicated WAL first</td>
+<td>&lt; 5 ms</td>
+<td>Zero data loss, survives DC failure</td>
+</tr>
+</tbody></table>
+<p>Most exchanges choose option 2: persist to local WAL before matching. The 400 microseconds of additional latency is acceptable, and the zero-data-loss guarantee is essential.</p>
+<h3>Single-Threaded vs Multi-Threaded Matching</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Single-threaded per instrument</td>
+<td>Deterministic, no locking, simple, reproducible</td>
+<td>Limited to one core&#39;s throughput</td>
+</tr>
+<tr>
+<td>Multi-threaded with locking</td>
+<td>Can use multiple cores</td>
+<td>Lock contention, non-deterministic, complex</td>
+</tr>
+<tr>
+<td>Lock-free multi-threaded</td>
+<td>Low contention</td>
+<td>Extremely complex, still not fully deterministic</td>
+</tr>
+</tbody></table>
+<p>The industry consensus is single-threaded per instrument. A modern CPU core can process 1-10 million matching operations per second, which exceeds the throughput requirements of any single instrument.</p>
+<h3>In-Memory vs Persistent Order Book</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>In-memory only</td>
+<td>Fastest matching</td>
+<td>State lost on crash</td>
+</tr>
+<tr>
+<td>In-memory with WAL recovery</td>
+<td>Fast matching, recoverable</td>
+<td>Recovery takes time (seconds to minutes)</td>
+</tr>
+<tr>
+<td>Persistent (database-backed)</td>
+<td>Always recoverable</td>
+<td>Too slow for matching (ms latency per operation)</td>
+</tr>
+</tbody></table>
+<p>The standard approach is in-memory with WAL recovery. The order book lives only in memory during operation. If the matching engine restarts, it rebuilds the book by replaying the event log (or loading a snapshot + replaying recent events).</p>
+<h3>Fairness: Co-location vs Equal Access</h3>
+<p>Major exchanges offer co-location: participants can place their servers in the same data center as the exchange, reducing network latency to microseconds. This gives co-located participants a speed advantage over remote participants.</p>
+<table>
+<thead>
+<tr>
+<th>Perspective</th>
+<th>Argument</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pro co-location</td>
+<td>Market makers provide liquidity; faster access helps them quote tighter spreads, benefiting all participants</td>
+</tr>
+<tr>
+<td>Anti co-location</td>
+<td>Creates an uneven playing field; high-frequency traders can front-run slower participants</td>
+</tr>
+<tr>
+<td>Compromise (IEX)</td>
+<td>Add a 350-microsecond &quot;speed bump&quot; to all orders, neutralizing the co-location advantage</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p><strong>Interview Tip:</strong> Discussing IEX&#39;s speed bump (the &quot;magic shoebox&quot; -- a 38-mile coil of fiber optic cable that delays all orders by 350 microseconds) shows that you understand the nuances of exchange design beyond just the technical architecture.</p>
+</div>
+
+
+<hr>
+<h2>17. Centralized vs Decentralized Exchanges</h2>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>Centralized Exchange (NYSE/NASDAQ)</th>
+<th>Decentralized Exchange (Uniswap/dYdX)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Matching</strong></td>
+<td>Off-chain, in-memory matching engine</td>
+<td>On-chain AMM (Automated Market Maker) or on-chain order book</td>
+</tr>
+<tr>
+<td><strong>Latency</strong></td>
+<td>Microseconds</td>
+<td>Seconds to minutes (block confirmation)</td>
+</tr>
+<tr>
+<td><strong>Throughput</strong></td>
+<td>100K+ orders/sec</td>
+<td>10-100 transactions/sec (L1), higher on L2</td>
+</tr>
+<tr>
+<td><strong>Custody</strong></td>
+<td>Exchange holds assets (counterparty risk)</td>
+<td>Self-custody via smart contracts</td>
+</tr>
+<tr>
+<td><strong>Transparency</strong></td>
+<td>Order book visible to exchange operator</td>
+<td>Fully transparent on blockchain</td>
+</tr>
+<tr>
+<td><strong>Regulation</strong></td>
+<td>Heavily regulated (SEC, FINRA)</td>
+<td>Largely unregulated (evolving)</td>
+</tr>
+<tr>
+<td><strong>Settlement</strong></td>
+<td>T+2 days</td>
+<td>Atomic (trade = settlement)</td>
+</tr>
+<tr>
+<td><strong>Fees</strong></td>
+<td>Exchange fees + clearing fees</td>
+<td>Gas fees + protocol fees</td>
+</tr>
+<tr>
+<td><strong>Manipulation Risk</strong></td>
+<td>Regulated, but insider access possible</td>
+<td>MEV (Miner Extractable Value), sandwich attacks</td>
+</tr>
+<tr>
+<td><strong>User Experience</strong></td>
+<td>Mature, reliable</td>
+<td>Improving, but more complex (wallets, gas)</td>
+</tr>
+</tbody></table>
+<h3>AMM (Automated Market Maker) Model</h3>
+<p>DEXs like Uniswap replace the order book with liquidity pools and a mathematical pricing formula:</p>
+<pre><code>Constant Product Formula: x * y = k
+
+Where:
+  x = quantity of token A in the pool
+  y = quantity of token B in the pool
+  k = constant (invariant)
+
+To buy dy of token B, you must supply dx of token A such that:
+  (x + dx) * (y - dy) = k
+  dx = (x * dy) / (y - dy)
+</code></pre>
+<p>This eliminates the need for a matching engine entirely. The price is determined by the ratio of tokens in the pool, and it adjusts automatically as trades occur.</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Order Book</th>
+<th>AMM</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Price discovery</td>
+<td>Buy/sell orders set prices</td>
+<td>Formula determines price</td>
+</tr>
+<tr>
+<td>Liquidity provision</td>
+<td>Market makers place orders</td>
+<td>Anyone deposits to pool</td>
+</tr>
+<tr>
+<td>Slippage</td>
+<td>Depends on order book depth</td>
+<td>Depends on pool size and trade size</td>
+</tr>
+<tr>
+<td>Capital efficiency</td>
+<td>High (orders placed at specific prices)</td>
+<td>Low (liquidity spread across all prices)</td>
+</tr>
+<tr>
+<td>Impermanent loss</td>
+<td>N/A</td>
+<td>Risk for liquidity providers</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>18. Interview Cheat Sheet</h2>
+<h3>30-Second Summary</h3>
+<blockquote>
+<p>A stock exchange is a deterministic event-processing system. Orders flow through a gateway (validation, rate limiting) to a sequencer (total ordering) to a matching engine (price-time priority FIFO). The order book is an in-memory data structure with sorted price levels and FIFO queues at each level. Market data is distributed via multicast/WebSocket. Trades settle T+2 through a clearing house. The system achieves sub-millisecond latency through single-threaded processing, pre-allocated memory, and kernel bypass networking.</p>
+</blockquote>
+<h3>Key Numbers to Remember</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Matching latency (median)</td>
+<td>50-100 microseconds</td>
+</tr>
+<tr>
+<td>Matching latency (P99)</td>
+<td>&lt; 1 millisecond</td>
+</tr>
+<tr>
+<td>Orders per second (per instrument)</td>
+<td>10,000 - 100,000</td>
+</tr>
+<tr>
+<td>Total exchange throughput</td>
+<td>1,000,000+ messages/sec</td>
+</tr>
+<tr>
+<td>Order book depth (typical)</td>
+<td>100-1000 price levels per side</td>
+</tr>
+<tr>
+<td>Settlement cycle</td>
+<td>T+2 (two business days)</td>
+</tr>
+<tr>
+<td>Market hours</td>
+<td>6.5 hours (9:30 AM - 4:00 PM ET)</td>
+</tr>
+<tr>
+<td>WAL write latency (NVMe)</td>
+<td>10-50 microseconds</td>
+</tr>
+<tr>
+<td>Ring buffer throughput</td>
+<td>100M+ messages/sec</td>
+</tr>
+<tr>
+<td>Failover time</td>
+<td>&lt; 1 second</td>
+</tr>
+</tbody></table>
+<h3>Architecture Decisions to Justify</h3>
+<table>
+<thead>
+<tr>
+<th>Decision</th>
+<th>Justification</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Single-threaded matching</td>
+<td>Determinism, no locking, reproducible from event log</td>
+</tr>
+<tr>
+<td>Separate sequencer</td>
+<td>Total ordering enables failover, audit, and deterministic replay</td>
+</tr>
+<tr>
+<td>In-memory order book</td>
+<td>Disk access latency (ms) is 1000x too slow for matching</td>
+</tr>
+<tr>
+<td>Event sourcing</td>
+<td>Complete audit trail, point-in-time recovery, regulatory compliance</td>
+</tr>
+<tr>
+<td>Instrument-based partitioning</td>
+<td>Only viable way to scale matching -- each instrument needs a single consistent book</td>
+</tr>
+<tr>
+<td>WAL before matching</td>
+<td>Zero data loss guarantee with minimal latency overhead</td>
+</tr>
+<tr>
+<td>Multicast for market data</td>
+<td>Equal latency to all co-located participants</td>
+</tr>
+</tbody></table>
+<h3>Common Follow-Up Questions</h3>
+<p><strong>Q: How do you handle a market maker that suddenly disconnects?</strong>
+A: Their orders remain in the book until they reconnect and cancel them, or until end of day when all orders expire. The exchange monitors heartbeats and may cancel orders after a configurable timeout to prevent stale liquidity.</p>
+<p><strong>Q: What happens during a flash crash?</strong>
+A: Circuit breakers halt trading. The Limit Up/Limit Down mechanism pauses trading when prices move beyond defined bands. Market-wide circuit breakers halt all trading if broad indices drop significantly.</p>
+<p><strong>Q: How do you ensure fairness among participants?</strong>
+A: Price-time priority ensures the first order at a given price is filled first. The sequencer provides a single source of truth for arrival order. Some exchanges (IEX) add speed bumps to reduce high-frequency trading advantages.</p>
+<p><strong>Q: Can you run the matching engine on multiple cores?</strong>
+A: Not for the same instrument without sacrificing determinism. You can run different instruments on different cores (partitioning). Within a single instrument, single-threaded processing is both sufficient and necessary for correctness.</p>
+<p><strong>Q: How do you test the matching engine?</strong>
+A: Replay production event logs through the test environment and verify output matches. Property-based testing: generate random order sequences and verify invariants (no negative quantities, all fills at valid prices, FIFO ordering preserved).</p>
+<p><strong>Q: What programming language would you choose?</strong>
+A: C++ or Java (with GC-tuning and off-heap memory) are the most common. C++ avoids GC pauses entirely. Java with the LMAX Disruptor pattern (Azul Zing JVM or tuned OpenJDK) can achieve comparable latency. Avoid languages with mandatory GC pauses (Python, Go with stop-the-world GC) for the matching engine hot path.</p>
+<p><strong>Q: How do opening/closing auctions differ from continuous matching?</strong>
+A: During auctions, orders accumulate without matching. At the auction time, the exchange calculates a single price that maximizes the number of shares traded (the equilibrium price) and executes all matchable orders at that single price. This differs from continuous matching where each order is matched immediately upon arrival.</p>
+<h3>Red Flags to Avoid</h3>
+<ul>
+<li>Do NOT propose a database for the order book (too slow)</li>
+<li>Do NOT use distributed consensus (Paxos/Raft) for the matching engine (latency too high)</li>
+<li>Do NOT suggest microservices for the matching hot path (inter-service communication latency)</li>
+<li>Do NOT forget about determinism (it is the defining property of a correct exchange)</li>
+<li>Do NOT assume horizontal scaling of matching (it requires partitioning, not replication)</li>
+<li>Do NOT overlook the sequencer (it is what makes everything else possible)</li>
+<li>Do NOT ignore regulatory requirements (audit trail, circuit breakers, fair access)</li>
+</ul>
+<hr>
+<div class="tip">
+
+<p><strong>Final Interview Tip:</strong> The stock exchange question tests your ability to reason about extreme performance constraints. Unlike most system design questions where &quot;add more servers&quot; is a valid answer, here you must demonstrate understanding of single-threaded performance, memory layout, deterministic processing, and event sourcing. Show that you know WHY these architectural choices are made, not just WHAT they are.</p>
+</div>
+
+
+</body>
+</html>

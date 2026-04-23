@@ -1,0 +1,1124 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Networking and Protocols — Complete System Design Reference</title>
+</head>
+<body>
+
+<h1>Networking and Protocols — Complete System Design Reference</h1>
+<h3>Staff Engineer Interview Preparation Guide</h3>
+<div class="tip">
+
+<p>Networking is the invisible backbone of every distributed system. Interviewers at Staff+ levels expect you to reason about latency, protocol trade-offs, and failure modes — not just name layers. This guide gives you the depth to do that confidently.</p>
+</div>
+
+
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-ip-addressing">IP Addressing</a></li>
+<li><a href="#2-the-osi-model--what-actually-matters">The OSI Model — What Actually Matters</a></li>
+<li><a href="#3-tcp-vs-udp">TCP vs UDP</a></li>
+<li><a href="#4-dns--the-internets-phone-book">DNS — The Internet&#39;s Phone Book</a></li>
+<li><a href="#5-http-evolution--11-2-and-3">HTTP Evolution — 1.1, 2, and 3</a></li>
+<li><a href="#6-https-and-the-tls-handshake">HTTPS and the TLS Handshake</a></li>
+<li><a href="#7-network-latency-and-geographic-considerations">Network Latency and Geographic Considerations</a></li>
+<li><a href="#8-interview-cheat-sheet">Interview Cheat Sheet</a></li>
+</ol>
+<hr>
+<h2>1. IP Addressing</h2>
+<h3>What Is an IP Address?</h3>
+<p>An IP address is a numerical label assigned to every device on a network. It serves two purposes: identification (which device?) and location addressing (where on the network?). Every packet that travels across the internet carries a source and destination IP address in its header.</p>
+<h3>IPv4</h3>
+<p>IPv4 uses 32-bit addresses written as four octets in dotted-decimal notation (e.g., <code>192.168.1.1</code>). This gives a theoretical maximum of roughly 4.3 billion addresses (2^32). That sounded like plenty in the 1980s, but we have long since exhausted the pool.</p>
+<h4>IPv4 Address Classes</h4>
+<table>
+<thead>
+<tr>
+<th>Class</th>
+<th>Range</th>
+<th>Default Mask</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A</td>
+<td>1.0.0.0 – 126.255.255.255</td>
+<td>/8</td>
+<td>Large organizations</td>
+</tr>
+<tr>
+<td>B</td>
+<td>128.0.0.0 – 191.255.255.255</td>
+<td>/16</td>
+<td>Medium organizations</td>
+</tr>
+<tr>
+<td>C</td>
+<td>192.0.0.0 – 223.255.255.255</td>
+<td>/24</td>
+<td>Small networks</td>
+</tr>
+<tr>
+<td>D</td>
+<td>224.0.0.0 – 239.255.255.255</td>
+<td>N/A</td>
+<td>Multicast</td>
+</tr>
+<tr>
+<td>E</td>
+<td>240.0.0.0 – 255.255.255.255</td>
+<td>N/A</td>
+<td>Reserved/experimental</td>
+</tr>
+</tbody></table>
+<div class="note">
+
+<p>Classful addressing is largely historical. Modern networks use CIDR (Classless Inter-Domain Routing) notation like <code>10.0.0.0/16</code> to define subnets of arbitrary size. You should still know the classes — interviewers occasionally reference them.</p>
+</div>
+
+
+<h3>Private vs Public IP Addresses</h3>
+<p>Private IP ranges are reserved for internal networks and are not routable on the public internet:</p>
+<table>
+<thead>
+<tr>
+<th>Range</th>
+<th>CIDR</th>
+<th>Addresses</th>
+<th>Typical Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>10.0.0.0 – 10.255.255.255</td>
+<td>10.0.0.0/8</td>
+<td>~16.7 million</td>
+<td>Cloud VPCs, large corporate networks</td>
+</tr>
+<tr>
+<td>172.16.0.0 – 172.31.255.255</td>
+<td>172.16.0.0/12</td>
+<td>~1 million</td>
+<td>Medium internal networks</td>
+</tr>
+<tr>
+<td>192.168.0.0 – 192.168.255.255</td>
+<td>192.168.0.0/16</td>
+<td>~65,000</td>
+<td>Home routers, small offices</td>
+</tr>
+</tbody></table>
+<p>NAT (Network Address Translation) sits at the boundary, mapping many private addresses to a small number of public addresses. This is how billions of devices share 4.3 billion IPv4 addresses.</p>
+<div class="tip">
+
+<p>In system design interviews, mention that services within a VPC communicate over private IPs, which is faster (no NAT, no public routing) and more secure. Cross-region traffic goes over the public internet unless you use dedicated private links like AWS Direct Connect.</p>
+</div>
+
+
+<h3>IPv6</h3>
+<p>IPv6 uses 128-bit addresses, written as eight groups of four hexadecimal digits separated by colons (e.g., <code>2001:0db8:85a3:0000:0000:8a2e:0370:7334</code>). This yields approximately 3.4 x 10^38 addresses — enough for every grain of sand on Earth to have trillions.</p>
+<p>Key differences from IPv4:</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>IPv4</th>
+<th>IPv6</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Address size</td>
+<td>32 bits</td>
+<td>128 bits</td>
+</tr>
+<tr>
+<td>Address format</td>
+<td>Dotted decimal</td>
+<td>Hexadecimal with colons</td>
+</tr>
+<tr>
+<td>Header size</td>
+<td>Variable (20–60 bytes)</td>
+<td>Fixed 40 bytes</td>
+</tr>
+<tr>
+<td>NAT</td>
+<td>Required (address exhaustion)</td>
+<td>Unnecessary (massive space)</td>
+</tr>
+<tr>
+<td>IPSec</td>
+<td>Optional</td>
+<td>Built-in</td>
+</tr>
+<tr>
+<td>Broadcast</td>
+<td>Supported</td>
+<td>Replaced by multicast</td>
+</tr>
+<tr>
+<td>Fragmentation</td>
+<td>Routers and sender</td>
+<td>Sender only (path MTU discovery)</td>
+</tr>
+</tbody></table>
+<div class="important">
+
+<p>Most system design interviews still assume IPv4 since the vast majority of production infrastructure operates in dual-stack or IPv4-only mode. However, mentioning IPv6 awareness — especially for mobile-first systems where carriers deploy IPv6 heavily — shows depth.</p>
+</div>
+
+
+<hr>
+<h2>2. The OSI Model — What Actually Matters</h2>
+<h3>The Seven Layers</h3>
+<p>The OSI (Open Systems Interconnection) model is a conceptual framework that standardizes how we think about network communication. In practice, the internet uses TCP/IP which collapses some layers, but the OSI model remains the standard vocabulary.</p>
+<pre class="mermaid">
+graph TD
+    L7["Layer 7: Application\nHTTP, HTTPS, DNS, FTP, SMTP, gRPC\nWhat users and apps interact with"]
+    L6["Layer 6: Presentation\nSSL/TLS encryption, data serialization\nJSON, Protobuf, compression"]
+    L5["Layer 5: Session\nSession management, authentication tokens\nOften merged with Application in practice"]
+    L4["Layer 4: Transport\nTCP, UDP\nPort numbers, reliability, flow control"]
+    L3["Layer 3: Network\nIP (IPv4/IPv6), ICMP, routing\nLogical addressing, packet forwarding"]
+    L2["Layer 2: Data Link\nEthernet, Wi-Fi (802.11), ARP\nMAC addresses, frame delivery"]
+    L1["Layer 1: Physical\nCables, radio waves, fiber optics\nBits on the wire"]
+
+    L7 --> L6 --> L5 --> L4 --> L3 --> L2 --> L1
+</pre>
+<h3>What Interviewers Actually Care About</h3>
+<p>In system design interviews, you will primarily reason about three layers:</p>
+<p><strong>Layer 7 (Application):</strong> This is where HTTP, gRPC, WebSockets, and DNS operate. Most design decisions happen here — choosing protocols, designing APIs, handling request routing.</p>
+<p><strong>Layer 4 (Transport):</strong> Understanding TCP vs UDP is critical. Load balancers operate at either L4 or L7, and the choice has major implications for performance and capabilities. TCP&#39;s reliability guarantees and UDP&#39;s speed trade-offs come up constantly.</p>
+<p><strong>Layer 3 (Network):</strong> IP addressing, routing, and subnet design matter when you are discussing VPC architecture, multi-region deployments, or why geographic distance adds latency.</p>
+<div class="tip">
+
+<p>If an interviewer asks about the OSI model, don&#39;t just recite all seven layers. Instead, pick the layers relevant to the design problem and explain what happens at each. For example: &quot;The client&#39;s DNS query resolves at L7, the TCP connection establishes at L4 with a three-way handshake, and packets are routed at L3 through multiple autonomous systems.&quot;</p>
+</div>
+
+
+<h3>The TCP/IP Model vs OSI</h3>
+<p>The TCP/IP model, which is what the internet actually implements, has four layers:</p>
+<table>
+<thead>
+<tr>
+<th>TCP/IP Layer</th>
+<th>OSI Equivalent</th>
+<th>Key Protocols</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Application</td>
+<td>Layers 5, 6, 7</td>
+<td>HTTP, DNS, TLS, FTP</td>
+</tr>
+<tr>
+<td>Transport</td>
+<td>Layer 4</td>
+<td>TCP, UDP</td>
+</tr>
+<tr>
+<td>Internet</td>
+<td>Layer 3</td>
+<td>IP, ICMP, ARP</td>
+</tr>
+<tr>
+<td>Network Access</td>
+<td>Layers 1, 2</td>
+<td>Ethernet, Wi-Fi</td>
+</tr>
+</tbody></table>
+<p>The practical takeaway: OSI is for communication and vocabulary. TCP/IP is how real systems work. Know both, but design with TCP/IP in mind.</p>
+<hr>
+<h2>3. TCP vs UDP</h2>
+<h3>TCP (Transmission Control Protocol)</h3>
+<p>TCP is a connection-oriented, reliable transport protocol. It guarantees that data arrives in order, without duplication, and without corruption. If a packet is lost, TCP detects and retransmits it.</p>
+<h4>The Three-Way Handshake</h4>
+<p>Every TCP connection begins with a three-way handshake to synchronize sequence numbers and establish the connection:</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    Note over C,S: Step 1: Client initiates
+    C->>S: SYN (seq=x)
+    Note right of S: Server receives SYN,<br/>allocates resources
+
+    Note over C,S: Step 2: Server acknowledges
+    S->>C: SYN-ACK (seq=y, ack=x+1)
+    Note left of C: Client receives SYN-ACK,<br/>connection half-open
+
+    Note over C,S: Step 3: Client confirms
+    C->>S: ACK (ack=y+1)
+    Note over C,S: Connection ESTABLISHED<br/>Data transfer can begin
+
+    C->>S: Data packets...
+    S->>C: ACK + Data packets...
+
+    Note over C,S: Connection teardown (4-way)
+    C->>S: FIN
+    S->>C: ACK
+    S->>C: FIN
+    C->>S: ACK
+</pre>
+<div class="warning">
+
+<p>The three-way handshake adds one full round-trip time (RTT) before any data is sent. For a cross-continent connection with 100ms RTT, that is 100ms of pure overhead on every new connection. This is why connection pooling and keep-alive are so important at scale.</p>
+</div>
+
+
+<h4>TCP Congestion Control</h4>
+<p>TCP includes mechanisms to prevent overwhelming the network:</p>
+<p><strong>Slow Start:</strong> A new connection starts with a small congestion window (typically 10 segments since Linux 3.0) and doubles it every RTT until it hits a threshold or experiences loss.</p>
+<p><strong>Congestion Avoidance:</strong> After reaching the threshold, the window grows linearly (additive increase). On packet loss, the window is cut dramatically (multiplicative decrease). This is called AIMD.</p>
+<p><strong>Fast Retransmit:</strong> If the sender receives three duplicate ACKs, it retransmits the missing segment immediately without waiting for a timeout.</p>
+<p><strong>Fast Recovery:</strong> After fast retransmit, TCP does not drop back to slow start. Instead, it halves the congestion window and continues from there.</p>
+<div class="note">
+
+<p>Modern TCP variants like BBR (Bottleneck Bandwidth and Round-trip propagation time), developed by Google, take a fundamentally different approach. Instead of using packet loss as a congestion signal, BBR builds a model of the network path&#39;s bandwidth and RTT, achieving significantly better throughput on long-distance connections.</p>
+</div>
+
+
+<h4>TCP Features Summary</h4>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>How It Works</th>
+<th>Cost</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Ordered delivery</td>
+<td>Sequence numbers on every segment</td>
+<td>Receiver must buffer out-of-order segments</td>
+</tr>
+<tr>
+<td>Reliability</td>
+<td>ACKs + retransmission on loss</td>
+<td>Additional bandwidth, higher latency</td>
+</tr>
+<tr>
+<td>Flow control</td>
+<td>Receiver advertises window size</td>
+<td>Sender may be throttled</td>
+</tr>
+<tr>
+<td>Congestion control</td>
+<td>AIMD, slow start</td>
+<td>Underutilizes bandwidth initially</td>
+</tr>
+<tr>
+<td>Connection setup</td>
+<td>3-way handshake</td>
+<td>1 RTT before data flows</td>
+</tr>
+<tr>
+<td>Connection teardown</td>
+<td>4-way handshake</td>
+<td>Lingering TIME_WAIT states</td>
+</tr>
+</tbody></table>
+<h3>UDP (User Datagram Protocol)</h3>
+<p>UDP is a connectionless, unreliable transport protocol. It sends datagrams with no guarantee of delivery, ordering, or duplicate protection. There is no handshake, no acknowledgment, no congestion control.</p>
+<p>This sounds terrible, but the simplicity is the point. UDP adds almost zero overhead, making it ideal for:</p>
+<ul>
+<li><strong>Real-time media</strong> (voice, video calls): A dropped frame is better than a delayed one</li>
+<li><strong>Online gaming</strong>: Player position updates need to be fresh, not guaranteed</li>
+<li><strong>DNS queries</strong>: Single request-response, no need for connection setup</li>
+<li><strong>IoT telemetry</strong>: High-volume, loss-tolerant sensor data</li>
+</ul>
+<h3>TCP vs UDP Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>TCP</th>
+<th>UDP</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Connection</td>
+<td>Connection-oriented (handshake)</td>
+<td>Connectionless (fire-and-forget)</td>
+</tr>
+<tr>
+<td>Reliability</td>
+<td>Guaranteed delivery with retransmission</td>
+<td>No guarantees</td>
+</tr>
+<tr>
+<td>Ordering</td>
+<td>In-order delivery via sequence numbers</td>
+<td>No ordering</td>
+</tr>
+<tr>
+<td>Flow control</td>
+<td>Yes (sliding window)</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Congestion control</td>
+<td>Yes (slow start, AIMD)</td>
+<td>No (can flood the network)</td>
+</tr>
+<tr>
+<td>Header size</td>
+<td>20–60 bytes</td>
+<td>8 bytes</td>
+</tr>
+<tr>
+<td>Speed</td>
+<td>Slower (overhead)</td>
+<td>Faster (minimal overhead)</td>
+</tr>
+<tr>
+<td>Use cases</td>
+<td>Web, email, file transfer, APIs</td>
+<td>Streaming, gaming, DNS, VoIP</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>When an interviewer asks &quot;TCP or UDP?&quot; for a design, the real question is: &quot;Can your application tolerate packet loss?&quot; If yes, and latency matters more than completeness, UDP (or a UDP-based protocol like QUIC) is the answer. If you need every byte to arrive intact and in order, TCP is the answer.</p>
+</div>
+
+
+<h3>When Applications Build on UDP</h3>
+<p>Many modern protocols layer their own reliability mechanisms on top of UDP to get the best of both worlds:</p>
+<ul>
+<li><strong>QUIC</strong> (used by HTTP/3): Adds reliability, ordering, and encryption on top of UDP, but avoids TCP&#39;s head-of-line blocking</li>
+<li><strong>WebRTC</strong>: Uses UDP with SRTP for media and SCTP (over DTLS over UDP) for data channels</li>
+<li><strong>DNS over UDP</strong>: Single request/response; the application retries if no response comes back</li>
+</ul>
+<h3>TCP Connection Pooling</h3>
+<p>Establishing a new TCP connection is expensive: one RTT for the handshake, plus TCP slow start means the first few requests on a new connection are throttled. Connection pooling maintains a set of pre-established connections that are reused across requests.</p>
+<p><strong>How it works:</strong> Instead of opening a new TCP connection for each request and closing it afterward, the application keeps a pool of idle connections. When a request needs to be made, it borrows a connection from the pool. When the response is received, the connection is returned to the pool rather than closed.</p>
+<table>
+<thead>
+<tr>
+<th>Pool Parameter</th>
+<th>Typical Value</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Max connections per host</td>
+<td>10-100</td>
+<td>Prevents overwhelming a single backend</td>
+</tr>
+<tr>
+<td>Max idle connections</td>
+<td>5-50</td>
+<td>Balances memory usage vs cold-start avoidance</td>
+</tr>
+<tr>
+<td>Idle timeout</td>
+<td>30-120 seconds</td>
+<td>Reclaims connections that sit unused</td>
+</tr>
+<tr>
+<td>Max lifetime</td>
+<td>5-30 minutes</td>
+<td>Prevents stale connections and rebalances after DNS changes</td>
+</tr>
+<tr>
+<td>Connection timeout</td>
+<td>1-5 seconds</td>
+<td>Limits time spent trying to establish new connections</td>
+</tr>
+</tbody></table>
+<div class="important">
+
+<p>Connection pooling interacts with load balancing in subtle ways. If your client pools connections to a load balancer, the LB distributes the connection to a backend at connection time. All subsequent requests on that pooled connection go to the same backend. With HTTP/2 multiplexing over a single connection, this can cause severe load imbalance. The solution is either client-side load balancing or periodic connection recycling (max lifetime).</p>
+</div>
+
+
+<h3>TCP in the Real World: TIME_WAIT</h3>
+<p>When a TCP connection is closed, the side that initiates the close enters a TIME_WAIT state for 2x the Maximum Segment Lifetime (typically 60 seconds total). During this time, the OS holds the socket open to handle late-arriving packets from the now-closed connection.</p>
+<p>In high-throughput systems that rapidly open and close connections (e.g., a load balancer handling thousands of short-lived requests per second), TIME_WAIT sockets can accumulate and exhaust the available port space (65,535 ports per IP). Solutions include:</p>
+<ul>
+<li><strong>Connection pooling</strong> (reuse connections instead of closing them)</li>
+<li><strong><code>SO_REUSEADDR</code> / <code>SO_REUSEPORT</code></strong> socket options</li>
+<li><strong>Tuning <code>tcp_tw_reuse</code></strong> (Linux kernel parameter)</li>
+<li><strong>Using more source IPs</strong> to multiply the available port space</li>
+</ul>
+<hr>
+<h2>4. DNS — The Internet&#39;s Phone Book</h2>
+<h3>What DNS Does</h3>
+<p>The Domain Name System translates human-readable domain names (like <code>api.example.com</code>) into IP addresses (like <code>93.184.216.34</code>). Without DNS, users would need to memorize IP addresses for every service.</p>
+<p>DNS is a globally distributed, hierarchical database. It is one of the most critical pieces of internet infrastructure and one of the most common points of discussion in system design interviews.</p>
+<h3>DNS Resolution Flow</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant B as Browser/App
+    participant LC as Local Cache<br/>(OS + Browser)
+    participant R as Recursive Resolver<br/>(ISP or 8.8.8.8)
+    participant Root as Root Name Server<br/>(13 clusters worldwide)
+    participant TLD as TLD Name Server<br/>(.com, .org, .io)
+    participant Auth as Authoritative NS<br/>(example.com)
+
+    B->>LC: Resolve api.example.com?
+    LC-->>B: Cache HIT (if TTL valid)
+    Note over B,LC: If cache miss, query resolver
+
+    B->>R: Resolve api.example.com?
+    R-->>B: Resolver cache HIT (if TTL valid)
+    Note over R: If cache miss, start iterative resolution
+
+    R->>Root: Where is .com?
+    Root-->>R: .com is at TLD servers a.gtld-servers.net...
+
+    R->>TLD: Where is example.com?
+    TLD-->>R: example.com NS is at ns1.example.com (IP: x.x.x.x)
+
+    R->>Auth: What is the IP for api.example.com?
+    Auth-->>R: A record: 93.184.216.34 (TTL: 300s)
+
+    R-->>B: 93.184.216.34
+    Note over B: Browser connects to 93.184.216.34
+</pre>
+<h3>DNS Record Types</h3>
+<table>
+<thead>
+<tr>
+<th>Record Type</th>
+<th>Purpose</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A</td>
+<td>Maps domain to IPv4 address</td>
+<td><code>api.example.com -&gt; 93.184.216.34</code></td>
+</tr>
+<tr>
+<td>AAAA</td>
+<td>Maps domain to IPv6 address</td>
+<td><code>api.example.com -&gt; 2606:2800:220:1:248:...</code></td>
+</tr>
+<tr>
+<td>CNAME</td>
+<td>Alias one domain to another</td>
+<td><code>www.example.com -&gt; example.com</code></td>
+</tr>
+<tr>
+<td>MX</td>
+<td>Mail exchange server for the domain</td>
+<td><code>example.com -&gt; mail.example.com (priority 10)</code></td>
+</tr>
+<tr>
+<td>NS</td>
+<td>Authoritative name servers for zone</td>
+<td><code>example.com -&gt; ns1.example.com</code></td>
+</tr>
+<tr>
+<td>TXT</td>
+<td>Arbitrary text (SPF, DKIM, verification)</td>
+<td><code>example.com -&gt; &quot;v=spf1 include:...&quot;</code></td>
+</tr>
+<tr>
+<td>SRV</td>
+<td>Service location (host + port)</td>
+<td><code>_sip._tcp.example.com -&gt; sip.example.com:5060</code></td>
+</tr>
+<tr>
+<td>PTR</td>
+<td>Reverse DNS (IP to domain)</td>
+<td><code>34.216.184.93.in-addr.arpa -&gt; example.com</code></td>
+</tr>
+<tr>
+<td>SOA</td>
+<td>Start of Authority (zone metadata)</td>
+<td>Serial number, refresh intervals, admin email</td>
+</tr>
+</tbody></table>
+<div class="important">
+
+<p>CNAME records cannot coexist with other record types at the same name. This means you cannot put a CNAME at the zone apex (e.g., <code>example.com</code>). Many DNS providers offer proprietary &quot;ALIAS&quot; or &quot;ANAME&quot; records to work around this limitation.</p>
+</div>
+
+
+<h3>TTL (Time to Live)</h3>
+<p>TTL is a value (in seconds) that tells resolvers and caches how long to store a DNS record before querying the authoritative server again.</p>
+<table>
+<thead>
+<tr>
+<th>TTL Value</th>
+<th>Meaning</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>60s</td>
+<td>Very short</td>
+<td>During migrations, blue-green deployments</td>
+</tr>
+<tr>
+<td>300s (5 min)</td>
+<td>Short</td>
+<td>Services that change IPs occasionally</td>
+</tr>
+<tr>
+<td>3600s (1 hour)</td>
+<td>Medium</td>
+<td>Stable services, common default</td>
+</tr>
+<tr>
+<td>86400s (24 hours)</td>
+<td>Long</td>
+<td>Rarely changing infrastructure</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>Before a planned migration, lower TTL to 60s well in advance (at least 2x the current TTL before the change). This ensures caches expire quickly when you flip the DNS record to the new IP. After the migration stabilizes, raise the TTL back up.</p>
+</div>
+
+
+<h3>DNS as a Load Balancer</h3>
+<p>DNS can distribute traffic across multiple servers by returning different IP addresses:</p>
+<p><strong>Round-Robin DNS:</strong> The authoritative server returns multiple A records and rotates their order. Simple but crude — it has no awareness of server health, load, or client geography.</p>
+<p><strong>Weighted DNS:</strong> Services like AWS Route 53 let you assign weights to records. A record with weight 70 gets 70% of responses, weight 30 gets 30%.</p>
+<p><strong>Latency-Based DNS:</strong> The resolver measures latency from the client&#39;s resolver to each server region and returns the closest one.</p>
+<p><strong>Geolocation DNS:</strong> Returns different IPs based on the geographic location of the querying resolver.</p>
+<p><strong>Health-Checked DNS (Failover):</strong> The DNS provider actively health-checks your servers and removes unhealthy ones from responses.</p>
+<div class="warning">
+
+<p>DNS-based load balancing has inherent limitations. DNS responses are cached, so failover is not instant — it takes at least one TTL cycle. Clients may also cache aggressively beyond the TTL. For true real-time failover, you need load balancers in front of your servers, with DNS pointing to the load balancer&#39;s stable IP.</p>
+</div>
+
+
+<h3>DNS Security Considerations</h3>
+<p><strong>DNS Spoofing/Poisoning:</strong> An attacker injects false records into a resolver&#39;s cache, redirecting users to malicious servers. DNSSEC (DNS Security Extensions) adds cryptographic signatures to prevent this but is not universally deployed.</p>
+<p><strong>DDoS on DNS:</strong> If your authoritative DNS goes down, your entire service is unreachable. Mitigation: use multiple DNS providers, Anycast-based DNS (like Cloudflare), and long TTLs as a buffer.</p>
+<p><strong>DNS over HTTPS (DoH) and DNS over TLS (DoT):</strong> Traditional DNS queries are sent in plaintext, visible to anyone on the network path. DoH wraps DNS queries inside HTTPS (port 443), making them indistinguishable from normal web traffic. DoT wraps DNS in TLS (port 853), providing encryption without the HTTP overhead. Both prevent ISPs and network operators from snooping on DNS queries.</p>
+<h3>DNS Caching Hierarchy</h3>
+<p>Understanding the caching hierarchy is critical for predicting DNS behavior and debugging issues:</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th align="center">TTL Respect</th>
+<th>Typical Cache Size</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Browser</td>
+<td align="center">Yes</td>
+<td>Hundreds of entries</td>
+<td>Chrome internal cache (1 min default for positive results)</td>
+</tr>
+<tr>
+<td>Operating system</td>
+<td align="center">Yes</td>
+<td>Thousands of entries</td>
+<td>macOS resolver, Windows DNS Client service</td>
+</tr>
+<tr>
+<td>Local network (router)</td>
+<td align="center">Usually</td>
+<td>Varies</td>
+<td>Home router, corporate DNS appliance</td>
+</tr>
+<tr>
+<td>ISP recursive resolver</td>
+<td align="center">Yes</td>
+<td>Millions of entries</td>
+<td>Comcast, AT&amp;T resolvers</td>
+</tr>
+<tr>
+<td>Public resolver</td>
+<td align="center">Yes</td>
+<td>Billions of entries</td>
+<td>Google (8.8.8.8), Cloudflare (1.1.1.1)</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>When debugging DNS propagation after a change, remember that every layer caches independently. Even if you set TTL to 60 seconds, a browser might hold its own cache for longer, or an ISP resolver might serve stale data. For this reason, always lower TTL well before making DNS changes, and test propagation with tools like <code>dig</code> directly against authoritative servers.</p>
+</div>
+
+
+<h3>DNS in Microservices: Service Discovery</h3>
+<p>In microservice architectures, DNS often serves as a lightweight service discovery mechanism:</p>
+<p><strong>Internal DNS:</strong> Services register their instances with an internal DNS server (e.g., Consul DNS, CoreDNS in Kubernetes). When Service A needs to call Service B, it resolves <code>service-b.internal</code> to get the current IP addresses.</p>
+<p><strong>Kubernetes DNS:</strong> Every Kubernetes Service gets a DNS entry like <code>my-service.my-namespace.svc.cluster.local</code>. Pods resolve this to the Service&#39;s ClusterIP, which the kube-proxy then load-balances across healthy pods.</p>
+<p><strong>SRV records for service discovery:</strong> SRV records include both the host and port, making them ideal for services that run on non-standard ports. Consul and other service meshes use SRV records extensively.</p>
+<table>
+<thead>
+<tr>
+<th>Discovery Method</th>
+<th>Latency</th>
+<th>Freshness</th>
+<th>Complexity</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>DNS-based</td>
+<td>Very low (cached)</td>
+<td>TTL-limited (seconds to minutes)</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Client-side (consul, etcd)</td>
+<td>Low</td>
+<td>Near real-time (watch/subscribe)</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Service mesh (Envoy + xDS)</td>
+<td>Minimal</td>
+<td>Real-time (push-based)</td>
+<td>High</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>5. HTTP Evolution — 1.1, 2, and 3</h2>
+<h3>HTTP/1.1</h3>
+<p>HTTP/1.1, standardized in 1997 and refined through 1999, remains widely supported. It is a text-based, request-response protocol over TCP.</p>
+<h4>Key Characteristics</h4>
+<ul>
+<li><strong>Persistent connections (keep-alive):</strong> A single TCP connection can carry multiple sequential requests, avoiding the handshake cost each time. However, only one request can be outstanding per connection at a time.</li>
+<li><strong>Head-of-line blocking:</strong> If request A is slow, requests B and C queued behind it on the same connection must wait. Browsers work around this by opening 6-8 parallel TCP connections per domain.</li>
+<li><strong>Chunked transfer encoding:</strong> Allows streaming responses of unknown size.</li>
+<li><strong>Content negotiation:</strong> Accept headers let clients specify preferred formats (JSON, XML, etc.).</li>
+</ul>
+<h4>The Performance Problem</h4>
+<p>Loading a modern webpage might require 80+ resources (HTML, CSS, JS, images, fonts). With 6 connections and head-of-line blocking, this creates a waterfall of blocked requests. Developers resorted to hacks: domain sharding (spreading resources across subdomains to get more connections), sprite sheets (combining images), and inlining CSS/JS.</p>
+<h3>HTTP/2</h3>
+<p>HTTP/2, standardized in 2015, was designed to solve HTTP/1.1&#39;s performance problems without changing the semantics (methods, headers, status codes all stay the same).</p>
+<h4>Key Features</h4>
+<p><strong>Binary framing layer:</strong> HTTP/2 uses a binary protocol instead of text. Requests and responses are broken into small frames, which are multiplexed over a single TCP connection.</p>
+<p><strong>Multiplexing:</strong> Multiple requests and responses can be in flight simultaneously on the same connection. Each has a unique stream ID. No more head-of-line blocking at the HTTP level.</p>
+<p><strong>Header compression (HPACK):</strong> HTTP headers are highly repetitive (same cookies, user-agent, accept headers on every request). HPACK compresses headers using a static table of common headers and a dynamic table of previously sent headers. This reduces header overhead by 85-90%.</p>
+<p><strong>Server push:</strong> The server can proactively send resources to the client before the client requests them. For example, when a client requests <code>index.html</code>, the server can push <code>style.css</code> and <code>app.js</code> that it knows will be needed. In practice, this feature has seen limited adoption and is deprecated in some browsers.</p>
+<p><strong>Stream prioritization:</strong> Clients can assign priority and dependency relationships between streams, hinting to the server which resources to send first.</p>
+<div class="note">
+
+<p>HTTP/2 solves head-of-line blocking at the application layer, but TCP itself still has head-of-line blocking. If a single TCP packet is lost, the kernel buffers all subsequent packets until the lost one is retransmitted. This means a loss on one stream blocks ALL streams on that connection. This is the fundamental motivation for HTTP/3.</p>
+</div>
+
+
+<h3>HTTP/3 and QUIC</h3>
+<p>HTTP/3, standardized in 2022, replaces TCP with QUIC as the transport protocol. QUIC runs over UDP and implements its own reliability, ordering, flow control, and encryption.</p>
+<h4>Why QUIC Exists</h4>
+<p>TCP&#39;s head-of-line blocking is baked into the kernel&#39;s TCP stack and cannot be fixed without changing the transport layer. QUIC solves this by implementing independent streams at the transport layer — a lost packet on stream 1 only blocks stream 1, not streams 2 and 3.</p>
+<h4>QUIC Features</h4>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>TCP + TLS</th>
+<th>QUIC</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Handshake</td>
+<td>1 RTT (TCP) + 1-2 RTT (TLS) = 2-3 RTT</td>
+<td>1 RTT (combined) or 0-RTT (resumed)</td>
+</tr>
+<tr>
+<td>Head-of-line blocking</td>
+<td>All streams blocked by any loss</td>
+<td>Only affected stream blocked</td>
+</tr>
+<tr>
+<td>Connection migration</td>
+<td>IP change = broken connection</td>
+<td>Connection ID survives IP changes</td>
+</tr>
+<tr>
+<td>Encryption</td>
+<td>TLS is optional, added on top</td>
+<td>Always encrypted, integrated into protocol</td>
+</tr>
+<tr>
+<td>Middlebox ossification</td>
+<td>TCP behavior is rigid (middleboxes inspect/modify)</td>
+<td>UDP passes through most middleboxes unchanged</td>
+</tr>
+</tbody></table>
+<p><strong>0-RTT connection resumption:</strong> If a client has connected to a server before, QUIC can send data immediately in the first packet using cached cryptographic parameters. This is transformative for mobile users switching between Wi-Fi and cellular.</p>
+<p><strong>Connection migration:</strong> TCP connections are identified by the 4-tuple (source IP, source port, destination IP, destination port). If any changes (e.g., switching from Wi-Fi to cellular), the connection breaks. QUIC uses a connection ID that survives IP changes, enabling seamless network transitions.</p>
+<h3>HTTP Version Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>HTTP/1.1</th>
+<th>HTTP/2</th>
+<th>HTTP/3</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Transport</td>
+<td>TCP</td>
+<td>TCP</td>
+<td>QUIC (over UDP)</td>
+</tr>
+<tr>
+<td>Format</td>
+<td>Text</td>
+<td>Binary</td>
+<td>Binary</td>
+</tr>
+<tr>
+<td>Multiplexing</td>
+<td>No (pipelining exists but broken)</td>
+<td>Yes (streams on one connection)</td>
+<td>Yes (independent streams)</td>
+</tr>
+<tr>
+<td>Header compression</td>
+<td>None</td>
+<td>HPACK</td>
+<td>QPACK</td>
+</tr>
+<tr>
+<td>Head-of-line blocking</td>
+<td>Application + transport</td>
+<td>Transport only</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Connection setup</td>
+<td>1 RTT (TCP) + 2 RTT (TLS 1.2)</td>
+<td>1 RTT (TCP) + 1 RTT (TLS 1.3)</td>
+<td>1 RTT or 0-RTT</td>
+</tr>
+<tr>
+<td>Server push</td>
+<td>No</td>
+<td>Yes (deprecated in practice)</td>
+<td>Yes (rarely used)</td>
+</tr>
+<tr>
+<td>Encryption</td>
+<td>Optional</td>
+<td>Practically required (TLS)</td>
+<td>Always (built into QUIC)</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>In an interview, frame the HTTP evolution as solving specific problems: HTTP/2 solved the multiplexing problem but was still limited by TCP; HTTP/3 moved to QUIC/UDP to solve TCP&#39;s head-of-line blocking and handshake latency. Showing you understand <em>why</em> each version exists is more valuable than listing features.</p>
+</div>
+
+
+<hr>
+<h2>6. HTTPS and the TLS Handshake</h2>
+<h3>Why TLS Matters</h3>
+<p>TLS (Transport Layer Security) provides three guarantees:</p>
+<ol>
+<li><strong>Confidentiality:</strong> Data is encrypted so eavesdroppers cannot read it</li>
+<li><strong>Integrity:</strong> Data cannot be tampered with in transit without detection</li>
+<li><strong>Authentication:</strong> The client can verify the server&#39;s identity via certificates</li>
+</ol>
+<h3>The TLS 1.3 Handshake</h3>
+<p>TLS 1.3 (the current standard, finalized in 2018) reduced the handshake from 2 RTT (TLS 1.2) to 1 RTT:</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    Note over C,S: TLS 1.3 Handshake (1 RTT)
+
+    C->>S: ClientHello<br/>Supported cipher suites<br/>Key share (guessed curve)
+    Note right of S: Server picks cipher,<br/>generates key share
+
+    S->>C: ServerHello + Key Share<br/>EncryptedExtensions<br/>Certificate + CertificateVerify<br/>Finished
+
+    Note left of C: Client verifies certificate,<br/>derives session keys
+
+    C->>S: Finished<br/>(+ Application Data)
+
+    Note over C,S: All subsequent data is encrypted<br/>with derived session keys
+</pre>
+<h4>Key TLS Concepts for Interviews</h4>
+<p><strong>Certificate chain:</strong> The server presents its certificate, which is signed by an intermediate CA, which is signed by a root CA that the client trusts. The client walks this chain to verify authenticity.</p>
+<p><strong>Cipher suites:</strong> A combination of algorithms for key exchange (e.g., ECDHE), authentication (e.g., RSA), bulk encryption (e.g., AES-256-GCM), and hashing (e.g., SHA-384). TLS 1.3 dramatically reduced the number of supported cipher suites, removing insecure options.</p>
+<p><strong>Perfect forward secrecy (PFS):</strong> TLS 1.3 mandates ephemeral key exchange (ECDHE). Even if the server&#39;s long-term private key is compromised, past sessions cannot be decrypted because each session used a unique ephemeral key.</p>
+<p><strong>Certificate pinning:</strong> Mobile apps can &quot;pin&quot; specific certificates or public keys, rejecting any certificate not on the pinned list. This prevents man-in-the-middle attacks even if a CA is compromised, but makes certificate rotation operationally complex.</p>
+<p><strong>SNI (Server Name Indication):</strong> The client includes the target hostname in the ClientHello (in plaintext for TLS 1.2, encrypted via ECH in TLS 1.3+). This allows a single IP address to serve multiple TLS-protected domains. Important for shared hosting and CDNs.</p>
+<h3>mTLS (Mutual TLS)</h3>
+<p>In standard TLS, only the server presents a certificate. In mTLS, the client also presents a certificate, and the server verifies it. This is used for:</p>
+<ul>
+<li>Service-to-service communication in microservice architectures (service mesh)</li>
+<li>Zero-trust network architectures</li>
+<li>API authentication where API keys are insufficient</li>
+</ul>
+<div class="tip">
+
+<p>If designing a microservice architecture and the interviewer asks about inter-service security, mention mTLS. Service meshes like Istio and Linkerd automate mTLS certificate management, making it practical at scale. This demonstrates awareness of real-world infrastructure patterns.</p>
+</div>
+
+
+<hr>
+<h2>7. Network Latency and Geographic Considerations</h2>
+<h3>The Speed of Light Problem</h3>
+<p>Light in a vacuum travels at ~300,000 km/s. In fiber optic cable, it travels at roughly 200,000 km/s (about 2/3 the speed of light due to refraction). The cable path between two cities is also longer than the straight-line distance.</p>
+<h4>Approximate Round-Trip Times</h4>
+<table>
+<thead>
+<tr>
+<th>Route</th>
+<th>Distance (fiber path)</th>
+<th align="right">Theoretical min RTT</th>
+<th align="right">Typical RTT</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Same data center</td>
+<td>&lt; 1 km</td>
+<td align="right">&lt; 0.01 ms</td>
+<td align="right">0.1-0.5 ms</td>
+</tr>
+<tr>
+<td>Same region (e.g., us-east AZs)</td>
+<td>10-100 km</td>
+<td align="right">0.1-1 ms</td>
+<td align="right">1-2 ms</td>
+</tr>
+<tr>
+<td>Cross-country (NY to LA)</td>
+<td>~5,000 km</td>
+<td align="right">~50 ms</td>
+<td align="right">60-80 ms</td>
+</tr>
+<tr>
+<td>Transatlantic (NY to London)</td>
+<td>~6,000 km</td>
+<td align="right">~60 ms</td>
+<td align="right">70-90 ms</td>
+</tr>
+<tr>
+<td>Transpacific (SF to Tokyo)</td>
+<td>~9,000 km</td>
+<td align="right">~90 ms</td>
+<td align="right">100-140 ms</td>
+</tr>
+<tr>
+<td>Antipodal (NY to Sydney)</td>
+<td>~16,000 km</td>
+<td align="right">~160 ms</td>
+<td align="right">180-250 ms</td>
+</tr>
+</tbody></table>
+<div class="important">
+
+<p>These are round-trip times for a single packet. A full HTTPS request adds TCP handshake (1 RTT) + TLS handshake (1 RTT for TLS 1.3) + HTTP request/response (1 RTT) = at minimum 3 RTT before receiving any data. For NY to Sydney, that is 3 x 200ms = 600ms of pure network latency before any server processing.</p>
+</div>
+
+
+<h3>Why This Matters for System Design</h3>
+<p><strong>Multi-region deployments:</strong> For a global user base, a single-region deployment means some users experience 300ms+ latency on every API call. Multi-region with read replicas or full active-active architecture brings content closer to users.</p>
+<p><strong>CDN placement:</strong> CDNs work because they cache content at edge locations geographically close to users. Static assets served from a CDN in the same city have ~5ms latency instead of 200ms from a distant origin.</p>
+<p><strong>Database replication lag:</strong> Cross-region database replication is limited by the speed of light. A write in us-east will take at minimum ~60ms to reach eu-west. Design your consistency model accordingly.</p>
+<p><strong>Edge computing:</strong> Running compute at edge locations (Cloudflare Workers, AWS Lambda@Edge) reduces latency for dynamic content by processing it closer to the user.</p>
+<h3>Bandwidth vs Latency</h3>
+<p>A common misconception: more bandwidth does not reduce latency. Bandwidth is how much data you can send per second (the width of the pipe). Latency is how long it takes for a bit to travel from A to B (the length of the pipe).</p>
+<table>
+<thead>
+<tr>
+<th>Problem</th>
+<th>Solution</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Too much data to transfer</td>
+<td>Increase bandwidth, compress data</td>
+</tr>
+<tr>
+<td>Data takes too long to arrive</td>
+<td>Move servers closer, reduce round trips</td>
+</tr>
+<tr>
+<td>Both</td>
+<td>CDN (solves both for cacheable content)</td>
+</tr>
+</tbody></table>
+<div class="tip">
+
+<p>Interviewers love the question: &quot;Your API is slow for users in Asia. How do you fix it?&quot; The answer is NOT &quot;add more servers in us-east&quot; or &quot;increase bandwidth.&quot; The answer involves geographic distribution: deploy read replicas or caches in Asia, use a CDN for static content, and potentially deploy compute in the region for dynamic content.</p>
+</div>
+
+
+<h3>Tail Latency</h3>
+<p>At scale, the worst-case latency matters more than the average. If a single user request fans out to 100 backend services, the response time equals the slowest service (the tail).</p>
+<table>
+<thead>
+<tr>
+<th>Percentile</th>
+<th align="right">Single service latency</th>
+<th align="right">Fan-out to 100 services</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>p50</td>
+<td align="right">5 ms</td>
+<td align="right">~10 ms</td>
+</tr>
+<tr>
+<td>p99</td>
+<td align="right">50 ms</td>
+<td align="right">~50 ms (one will be slow)</td>
+</tr>
+<tr>
+<td>p99.9</td>
+<td align="right">200 ms</td>
+<td align="right">~200 ms (likely one is this slow)</td>
+</tr>
+</tbody></table>
+<p>At 100-service fan-out, the probability that at least one service hits p99 latency is: 1 - (0.99)^100 = 63%. The p99 of a single service becomes the median of the fan-out response.</p>
+<p>Mitigation strategies:</p>
+<ul>
+<li><strong>Hedged requests:</strong> Send the same request to two replicas, take whichever responds first</li>
+<li><strong>Timeouts with fallbacks:</strong> Set aggressive timeouts and degrade gracefully</li>
+<li><strong>Reducing fan-out:</strong> Batch or aggregate to hit fewer services per request</li>
+</ul>
+<hr>
+<h2>8. Interview Cheat Sheet</h2>
+<h3>Quick Reference: Protocol Selection</h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Protocol</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Web API (request-response)</td>
+<td>HTTP/2 over TCP</td>
+<td>Reliable, multiplexed, well-supported</td>
+</tr>
+<tr>
+<td>Real-time video/voice</td>
+<td>UDP (via WebRTC)</td>
+<td>Tolerates loss, minimizes latency</td>
+</tr>
+<tr>
+<td>Mobile-first global app</td>
+<td>HTTP/3 (QUIC)</td>
+<td>0-RTT, connection migration for network switching</td>
+</tr>
+<tr>
+<td>Internal microservices</td>
+<td>gRPC over HTTP/2</td>
+<td>Efficient binary protocol, streaming support</td>
+</tr>
+<tr>
+<td>DNS queries</td>
+<td>UDP (with TCP fallback)</td>
+<td>Simple request-response, low overhead</td>
+</tr>
+<tr>
+<td>File transfer (must be complete)</td>
+<td>TCP</td>
+<td>Guaranteed delivery, ordered</td>
+</tr>
+</tbody></table>
+<h3>Numbers You Should Know</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Speed of light in fiber</td>
+<td>~200,000 km/s (2/3 of vacuum speed)</td>
+</tr>
+<tr>
+<td>Same-region RTT</td>
+<td>1-2 ms</td>
+</tr>
+<tr>
+<td>Cross-continent RTT</td>
+<td>60-150 ms</td>
+</tr>
+<tr>
+<td>TCP handshake cost</td>
+<td>1 RTT</td>
+</tr>
+<tr>
+<td>TLS 1.3 handshake cost</td>
+<td>1 RTT (0 RTT for resumed)</td>
+</tr>
+<tr>
+<td>HTTP/1.1 connections per domain</td>
+<td>6-8 (browser limit)</td>
+</tr>
+<tr>
+<td>IPv4 address space</td>
+<td>~4.3 billion (2^32)</td>
+</tr>
+<tr>
+<td>DNS TTL common default</td>
+<td>300s (5 minutes)</td>
+</tr>
+<tr>
+<td>Typical CDN cache-hit latency</td>
+<td>1-10 ms</td>
+</tr>
+</tbody></table>
+<h3>Common Interview Mistakes</h3>
+<table>
+<thead>
+<tr>
+<th>Mistake</th>
+<th>Better Answer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>&quot;Just use TCP for everything&quot;</td>
+<td>Explain why UDP suits real-time (loss tolerance vs latency)</td>
+</tr>
+<tr>
+<td>&quot;DNS is simple lookup&quot;</td>
+<td>Discuss caching layers, TTL strategy, DNS as load balancer</td>
+</tr>
+<tr>
+<td>&quot;More bandwidth fixes latency&quot;</td>
+<td>Distinguish bandwidth (throughput) from latency (RTT)</td>
+</tr>
+<tr>
+<td>&quot;HTTP/2 solves everything&quot;</td>
+<td>Note TCP head-of-line blocking motivates HTTP/3</td>
+</tr>
+<tr>
+<td>Ignoring geographic latency</td>
+<td>Always consider where users are relative to servers</td>
+</tr>
+<tr>
+<td>&quot;Just add HTTPS&quot;</td>
+<td>Discuss TLS handshake overhead and optimization strategies</td>
+</tr>
+</tbody></table>
+<h3>Key Relationships to Articulate</h3>
+<ol>
+<li><p><strong>TCP is reliable but slow to start</strong> -- handshake cost, slow start, head-of-line blocking. Great for correctness, has latency costs.</p>
+</li>
+<li><p><strong>UDP is fast but unreliable</strong> -- no guarantees, but applications can build exactly the reliability they need on top (QUIC does this).</p>
+</li>
+<li><p><strong>DNS is both critical infrastructure and a design tool</strong> -- use it for geographic routing, load distribution, and failover, but understand its caching means changes are not instantaneous.</p>
+</li>
+<li><p><strong>HTTP versions solve predecessor problems</strong> -- HTTP/2 fixed HTTP/1.1&#39;s multiplexing issue; HTTP/3 fixed HTTP/2&#39;s transport-layer head-of-line blocking.</p>
+</li>
+<li><p><strong>Latency is dominated by physics at global scale</strong> -- no software optimization overcomes the speed of light. The only solution is to move computation and data closer to users.</p>
+</li>
+<li><p><strong>TLS is not optional</strong> -- modern infrastructure mandates encryption. Know the handshake cost and how TLS 1.3 and 0-RTT reduce it.</p>
+</li>
+</ol>
+<hr>
+<div class="tip">
+
+<p>In a system design interview, networking knowledge is the foundation that makes your other answers credible. When you say &quot;we&#39;ll put a CDN in front,&quot; the interviewer wants to know you understand DNS resolution, TCP connection overhead, and geographic latency — not just the word &quot;CDN.&quot; Ground your high-level designs in these protocol-level realities.</p>
+</div>
+
+
+</body>
+</html>

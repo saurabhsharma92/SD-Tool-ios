@@ -1,7 +1,8 @@
 # File Upload & Hosting Service
 *System Design Interview — Dropbox / Google Drive at Scale*
 
-> **🎯 SCOPE:** Senior Software Engineer · FANG Interview Prep · High-Level System Design
+> [!NOTE]
+> **SCOPE:** Senior Software Engineer · FANG Interview Prep · High-Level System Design
 > Architecture • Deep Dives • Flow Diagrams • Trade-offs
 > Covers: Upload Pipeline • Chunking & Deduplication • Sync Engine • Storage Tiers • Collaboration • CDN • Security
 
@@ -27,7 +28,8 @@
 
 Spend the first 5–8 minutes of the interview on requirements. The file storage domain is deceptively broad — Google Drive, Dropbox, iCloud, and OneDrive share a surface-level description but have very different design priorities. Nail the scope before touching a whiteboard.
 
-> **💡 INTERVIEW TIP:** Questions to Ask
+> [!TIP]
+> **INTERVIEW TIP:** Questions to Ask
 >
 > - What is the primary use case: personal storage, enterprise collaboration, or developer API?
 > - Do we need real-time co-editing (Google Docs) or just sync + share (Dropbox)?
@@ -94,7 +96,8 @@ Always state your assumptions explicitly. Interviewers want to see your reasonin
 - Average file size: 500 KB (mix of documents, images, and large files)
 - Read-to-write ratio: 10:1 (files read more often than written)
 
-> **📊 BACK-OF-ENVELOPE:**
+> [!NOTE]
+> **BACK-OF-ENVELOPE:**
 >
 > ```
 > Daily uploads  = 100M DAU × 2 files        = 200 million files/day
@@ -528,7 +531,8 @@ version_id | chunk_index | chunk_hash | byte_offset"]
     P1 & P2 & P3 --> COMP
 ```
 
-> **💡 WHY CONTENT-ADDRESSABLE STORAGE (CAS)?**
+> [!TIP]
+> **WHY CONTENT-ADDRESSABLE STORAGE (CAS)?**
 >
 > 1. **Global Deduplication:** If 10,000 users upload the same PDF, only ONE copy is stored. Dropbox reports 70%+ storage savings.
 > 2. **Integrity Checking:** SHA-256 hash validates data correctness — bit rot is instantly detected.
@@ -570,7 +574,8 @@ Upload state stored in Redis (`upload:{upload_id}`, TTL 72 hours):
 }
 ```
 
-> **⚠️ CHUNK UPLOAD IDEMPOTENCY**
+> [!WARNING]
+> **CHUNK UPLOAD IDEMPOTENCY**
 >
 > If a chunk PUT times out and is retried:
 > - S3 presigned PUT is idempotent (same hash → same object key)
@@ -666,7 +671,8 @@ hash_D ✓ EXISTS"]
     style D2 fill:#27ae60,color:#fff
 ```
 
-> **📊 SAVINGS CALCULATION**
+> [!NOTE]
+> **SAVINGS CALCULATION**
 >
 > - 500 MB file with 4 MB chunks = 125 chunks
 > - Only 2 chunks changed → 8 MB upload instead of 500 MB = **98.4% bandwidth savings**
@@ -759,7 +765,8 @@ request includes link_token?"]
     style DENY fill:#e74c3c,color:#fff
 ```
 
-> **⚡ ACL CACHING**
+> [!TIP]
+> **ACL CACHING**
 >
 > Redis key: `acl:{user_id}:{node_id}` → permission (TTL 60s)
 > Invalidated when: share created/revoked, file moved, owner changed.
@@ -826,7 +833,8 @@ sequenceDiagram
     end
 ```
 
-> **💡 CACHE KEY = content_hash (not URL)**
+> [!TIP]
+> **CACHE KEY = content_hash (not URL)**
 >
 > The same 10 MB PDF uploaded by 1,000 different users produces 1,000 different download URLs — but all resolve to the **same content_hash**. This means one CDN edge fetch serves all 1,000 users. URL-based cache keys would result in 1,000 separate origin fetches.
 
@@ -883,7 +891,8 @@ sequenceDiagram
     Note over KMS: Master Key (CMK) never leaves KMS
 ```
 
-> **🔐 KEY ISOLATION BENEFIT**
+> [!TIP]
+> **KEY ISOLATION BENEFIT**
 >
 > If one file's DEK is compromised, only that file is exposed — not all files. The master key (CMK) never leaves KMS. Re-keying a user rotates only their DEKs; blobs in S3 are untouched.
 
@@ -917,14 +926,16 @@ Every architectural decision is a trade-off. Being able to articulate WHY you ch
 
 ### 9.2 Consistency Analysis
 
-> **🔒 STRONG CONSISTENCY REQUIRED**
+> [!IMPORTANT]
+> **STRONG CONSISTENCY REQUIRED**
 >
 > 1. **File Metadata (create/rename/delete):** ACID transactions — must be atomic. Rename + move must not leave file unreachable if server crashes mid-op.
 > 2. **Quota enforcement:** Check + decrement `storage_used_bytes` must be atomic to prevent over-quota uploads.
 > 3. **Share permission changes:** Revocation of a share must take effect immediately — not eventually.
 > 4. **Version creation:** Assigning version numbers must be strongly ordered — no duplicate versions.
 
-> **🔄 EVENTUAL CONSISTENCY ACCEPTABLE**
+> [!NOTE]
+> **EVENTUAL CONSISTENCY ACCEPTABLE**
 >
 > 1. **Chunk replication:** New chunks replicate to secondary region within seconds — tolerable.
 > 2. **Search index:** Elasticsearch updates lag 5–10 seconds — acceptable for search.
@@ -983,7 +994,8 @@ graph TD
 Replication"| S3_EU & S3_AP
 ```
 
-> **📊 FAILOVER TARGETS**
+> [!NOTE]
+> **FAILOVER TARGETS**
 >
 > | Metric | Target |
 > |--------|--------|
@@ -1022,7 +1034,8 @@ Replication"| S3_EU & S3_AP
 
 ## 11. Interview Strategy & Common Questions
 
-> **⏱️ 45-MINUTE INTERVIEW BREAKDOWN**
+> [!TIP]
+> **45-MINUTE INTERVIEW BREAKDOWN**
 >
 > | Time | Activity |
 > |------|---------|
@@ -1072,7 +1085,8 @@ That's fundamentally different from file sync — it requires Operational Transf
 - Address the **hash oracle problem** in global dedup — shows security awareness
 - Mention **idempotency keys** on upload operations — shows distributed systems maturity
 
-> **🔴 RED FLAGS TO AVOID**
+> [!WARNING]
+> **RED FLAGS TO AVOID**
 >
 > - **Never** store file blobs in a relational database — even for "small" files, it doesn't scale
 > - **Never** propose a single database for metadata without discussing sharding at 500M users

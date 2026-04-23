@@ -55,35 +55,38 @@ graph TD
 - `erDiagram` — database entity relationships
 - `classDiagram` — data models
 
-### 4. Callout Boxes → Blockquotes with Emoji Prefix
+### 4. Callout Boxes → GitHub-Style Alerts
+
+Use `> [!TYPE]` syntax. A GitHub Action auto-converts these to styled `<div>` elements in the HTML output. Four types are supported:
 
 ```markdown
-> **💡 TIP:** Title Here
+> [!TIP]
+> **Title Here**
 > Body text. Can be multi-line.
 > - Bullet points work too
 
-> **📊 KEY NUMBERS:**
+> [!NOTE]
+> **KEY NUMBERS:**
 > - Upload RPS peak: ~7,000 writes/s
 > - Download RPS: ~70,000 reads/s
 
-> **⚠️ WARNING:** Common Mistake
+> [!WARNING]
+> **Common Mistake**
 > Never store blobs in a relational database.
 
-> **🔴 RED FLAG:**
-> Proposing single database without sharding discussion.
-
-> **🔒 STRONG CONSISTENCY REQUIRED**
+> [!IMPORTANT]
+> **STRONG CONSISTENCY REQUIRED**
 > Explanation here.
-
-> **🔄 EVENTUAL CONSISTENCY ACCEPTABLE**
-> Explanation here.
-
-> **⚡ PERFORMANCE NOTE:**
-> Explanation here.
-
-> **⏱️ INTERVIEW BREAKDOWN**
-> Timed structure here.
 ```
+
+| Type | Use for | Color |
+|------|---------|-------|
+| `[!TIP]` | Interview tips, best practices, shortcuts | Green |
+| `[!NOTE]` | Background info, calculations, scope | Blue |
+| `[!WARNING]` | Common mistakes, gotchas, red flags | Orange |
+| `[!IMPORTANT]` | Critical requirements, key decisions | Red |
+
+**Do NOT** use emoji prefixes (the CSS adds labels automatically).
 
 ### 5. Code / Schema Blocks → Fenced with Language Tag
 ```markdown
@@ -115,7 +118,7 @@ FORMAT:
 - Headers: # for title, ## for sections, ### for subsections
 - Data tables: GFM pipe tables (| col | col |) — never ASCII box tables
 - Diagrams: Mermaid code fences (```mermaid) — never ASCII art
-- Callouts/tips/warnings: Blockquotes with emoji prefix (> **💡 TIP:** ...)
+- Callouts/tips/warnings: GitHub-style alerts (> [!TIP], > [!NOTE], > [!WARNING], > [!IMPORTANT])
 - Code/SQL/schemas: Fenced code blocks with language tag (```sql, ```json, etc)
 - Back-of-envelope math: Plain ``` code block (no language tag)
 
@@ -137,7 +140,9 @@ distributed-drive-design.md=File Upload & Hosting Service|System Design
 back-of-envelope-calculations.md=Back Of Envelope Calculations|Basics
 ```
 
-Format: `filename.md=Display Name|Category`
+Format: `filename.html=Display Name|Category`
+
+**Note:** Authors write `.md` files. A GitHub Action automatically converts them to `.html` on push. The `index.md` references the `.html` filenames (the format the app fetches).
 
 ---
 
@@ -145,7 +150,7 @@ Format: `filename.md=Display Name|Category`
 
 For articles exported from Word/Notion/Pandoc with box tables and ASCII art:
 
-1. Convert all `+---+` callout boxes → `> **EMOJI TYPE:** ...` blockquotes
+1. Convert all `+---+` callout boxes → `> [!TIP]` / `> [!NOTE]` / `> [!WARNING]` / `> [!IMPORTANT]` alerts
 2. Convert all pipe/space-aligned tables → GFM `| col |` tables
 3. Replace ALL ASCII art diagrams with equivalent Mermaid
 4. Remove all `\< 200ms` backslash escapes → `< 200ms`

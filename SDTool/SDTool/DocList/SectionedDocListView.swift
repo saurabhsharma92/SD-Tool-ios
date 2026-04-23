@@ -19,6 +19,7 @@ struct SectionedDocListView: View {
     @State private var renameName        = ""
     @State private var renameEmoji       = ""
     @State private var showRenameSheet   = false
+    @State private var selectedDoc:       Doc?       = nil
 
     // Categories derived from synced docs
     private var categories: [String] {
@@ -88,6 +89,11 @@ struct SectionedDocListView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .sheet(item: $selectedDoc) { doc in
+            NavigationStack {
+                DocReaderView(doc: doc)
+            }
+        }
         .alert("New Section", isPresented: $showAddSection) {
             TextField("Emoji", text: $newSectionEmoji)
             TextField("Section name", text: $newSectionName)
@@ -196,7 +202,10 @@ struct SectionedDocListView: View {
     private func docRow(doc: Doc, section: DocSection?, showSectionBadge: Bool = false) -> some View {
         switch doc.state {
         case .remote:
-            remoteDocRow(doc: doc)
+            Button { selectedDoc = doc } label: {
+                remoteDocRowContent(doc: doc)
+            }
+            .buttonStyle(.plain)
         case .downloading:
             HStack {
                 docRowContent(doc: doc, showSectionBadge: false)
@@ -205,9 +214,10 @@ struct SectionedDocListView: View {
             }
             .padding(.vertical, 2)
         case .downloaded:
-            NavigationLink(value: doc) {
+            Button { selectedDoc = doc } label: {
                 docRowContent(doc: doc, showSectionBadge: showSectionBadge)
             }
+            .buttonStyle(.plain)
             .contextMenu { downloadedContextMenu(doc: doc, section: section) }
             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                 Button(role: .destructive) {
@@ -220,8 +230,8 @@ struct SectionedDocListView: View {
         }
     }
 
-    // Remote row — dimmed with download button
-    private func remoteDocRow(doc: Doc) -> some View {
+    // Remote row — dimmed with cloud badge (tapping opens reader which auto-downloads)
+    private func remoteDocRowContent(doc: Doc) -> some View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
@@ -235,19 +245,14 @@ struct SectionedDocListView: View {
                 Text(doc.name)
                     .font(.headline)
                     .foregroundStyle(.secondary)
-                Text("Not downloaded")
+                Text("Tap to open")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
             Spacer()
-            Button {
-                docStore.download(doc)
-            } label: {
-                Image(systemName: "arrow.down.circle")
-                    .font(.title2)
-                    .foregroundStyle(Color.accentColor)
-            }
-            .buttonStyle(.borderless)
+            Image(systemName: "arrow.down.circle")
+                .font(.title2)
+                .foregroundStyle(Color.accentColor)
         }
         .padding(.vertical, 2)
     }
